@@ -58,6 +58,10 @@ Validated with Rust 1.92.0, Java 17.0.20.1, Maven 4.0.0-rc-6, and Gradle 8.13.
   preserved default Maven profiles, custom Gradle Test tasks, root tests, graph
   refresh, clean report isolation, assertion/compilation/resolution failures,
   invalid compile cycles, and missing JDK failure propagation.
+- **88 fixture runs passed**: baseline plus all 21 mutations, full and selected,
+  on both Maven and Gradle. The independently deleted test yields 16 full
+  invocations and four selected invocations. Logs and JSON are retained under
+  `validation-results/coverage-2026-09-21/`.
 - **108 exploratory timing runs** passed the independent execution oracle.
   [Performance results](docs/performance.md) record raw samples and limitations;
   overlapping Rust work makes small timing differences inconclusive.

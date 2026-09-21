@@ -143,7 +143,7 @@ The repository runs these checks on pushes, pull requests, and manual runs:
    additional jobs verify selected execution for Java, Kotlin, integration, and
    edge-case fixture mutations on both build tools.
 3. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
-   revision and across every fixture mutation. Kafka and Redis container tests also
+   revision and across every fixture mutation. Six container tests also
    run on every CI event. The full stage still runs if the selective stage fails,
    unless cancelled.
 
@@ -162,9 +162,10 @@ weekly or manually. Its jobs check older and newer JDK, build-tool, and Kotlin r
 Override the sample Kotlin version with `-PkotlinVersion=...` for Gradle or
 `-Dkotlin.version=...` for Maven.
 
-Kafka and Redis Testcontainers jobs run for pushes and pull requests. They
-require Docker and run the tests in `projects/containers`; Kafka verifies a produced
-record can be consumed, and Redis verifies SET/GET through its mapped port.
+Kafka, Redis, MongoDB, PostgreSQL, MySQL, and RabbitMQ Testcontainers jobs run for
+pushes and pull requests. They require Docker and run the tests in
+`projects/containers`; each verifies a client can write and read data through its
+mapped port.
 
 Workflows must live at the repository root under `.github/workflows/`.
 

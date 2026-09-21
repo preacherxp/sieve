@@ -100,7 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [Kafka, Redis]
+        service: [Kafka, Redis, MongoDB, PostgreSQL, MySQL, RabbitMQ]
     steps:
       - uses: actions/checkout@v4
         with:
