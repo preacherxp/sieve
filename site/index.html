@@ -189,6 +189,9 @@
       font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+      stroke: #241c15;
+      stroke-width: 5px;
+      paint-order: stroke fill;
     }
     .node .face { fill: #100e0b; stroke: var(--brass-dim); stroke-width: 1.5; transition: fill 0.35s ease, stroke 0.35s ease; }
     .node .halo { fill: none; stroke: transparent; stroke-width: 10; }
@@ -216,8 +219,11 @@
       text-transform: uppercase;
       text-anchor: middle;
     }
-    .node.through { opacity: 0.55; transform: translateY(6px); transition: opacity 0.4s ease, transform 0.4s ease; }
-    .node.caught { opacity: 1; transform: none; transition: opacity 0.4s ease, transform 0.4s ease; }
+    .node.through .face { fill: #16130f; stroke: #6d5a38; }
+    .node.through .idx { fill: #b9a078; }
+    .node.through .name { fill: #d9cbb6; }
+    .node.through .kind { fill: #b9a078; }
+    .node.caught { opacity: 1; }
     @keyframes glow {
       50% { stroke-opacity: 0.15; }
     }
@@ -226,7 +232,7 @@
       position: relative;
       z-index: 3;
       flex: none;
-      margin: 0.15rem 0 0;
+      margin: 0;
       padding: 0.38rem 0.55rem 0.3rem;
       border: 3px solid currentColor;
       color: var(--oxide-ink);
@@ -261,8 +267,14 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 0.75rem;
-      margin-bottom: 0.55rem;
+      flex-wrap: wrap;
+      gap: 0.65rem 0.85rem;
+      margin-bottom: 0.85rem;
+    }
+    .slip-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
     }
     .slip-top p {
       margin: 0;
@@ -289,13 +301,6 @@
       color: var(--paper);
       border-color: var(--ink);
     }
-    .meter-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.75rem;
-    }
-    .meter-copy { flex: 1; min-width: 0; }
     .meter {
       height: 9px;
       background: repeating-linear-gradient(90deg, rgba(141, 112, 64, 0.55) 0 1px, transparent 1px 9px);
@@ -639,8 +644,12 @@
     }
     footer a { color: var(--brass); text-underline-offset: 0.2em; }
 
+    @media (max-width: 860px) {
+      header { flex-wrap: wrap; align-items: flex-start; }
+      nav { flex: 1 1 100%; justify-content: flex-start; }
+    }
     @media (max-width: 980px) {
-      .hero { grid-template-columns: 1fr; gap: 1rem; }
+      .hero { grid-template-columns: 1fr; gap: 1.5rem; }
       .slip { margin-left: 0; }
       .tickets { grid-template-columns: 1fr 1fr; }
       .sheet { margin: 1rem 4vw 3rem; padding: 2.4rem 1.3rem 2rem; }
@@ -655,9 +664,9 @@
     @media (max-width: 640px) {
       .facts, .roster, .tickets { grid-template-columns: 1fr; }
       .steps li { grid-template-columns: 1fr; gap: 0.15rem; }
-      .slip { margin: -1.5rem 0 0; }
-      .stamp { font-size: 0.78rem; letter-spacing: 0.1em; }
-      h1 { font-size: clamp(2.7rem, 12vw, 3.6rem); }
+      .slip { margin: 0.25rem 0 0; }
+      .stamp { font-size: 0.78rem; letter-spacing: 0.08em; }
+      h1 { font-size: 2.35rem; }
       .cmd { flex-direction: column; }
       .cmd button { border-left: 0; border-top: 1px solid rgba(224, 193, 122, 0.3); padding: 0.65rem 0.85rem; text-align: left; }
     }
@@ -756,18 +765,16 @@
           <div class="slip">
             <div class="slip-top">
               <p>Decision · projects/maven</p>
-              <div class="tools" role="radiogroup" aria-label="Build tool">
-                <button type="button" role="radio" data-tool="maven" aria-checked="true">Maven</button>
-                <button type="button" role="radio" data-tool="gradle" aria-checked="false">Gradle</button>
+              <div class="slip-actions">
+                <div class="tools" role="radiogroup" aria-label="Build tool">
+                  <button type="button" role="radio" data-tool="maven" aria-checked="true">Maven</button>
+                  <button type="button" role="radio" data-tool="gradle" aria-checked="false">Gradle</button>
+                </div>
+                <p class="stamp" id="stamp" data-mode="MODULES" aria-hidden="true">Modules</p>
               </div>
             </div>
-            <div class="meter-row">
-              <div class="meter-copy">
-                <div class="meter" aria-hidden="true"><span id="meter-fill" data-mode="MODULES"></span></div>
-                <p id="meter-label">9 of 14 invocations</p>
-              </div>
-              <p class="stamp" id="stamp" data-mode="MODULES" aria-hidden="true">Modules</p>
-            </div>
+            <div class="meter" aria-hidden="true"><span id="meter-fill" data-mode="MODULES"></span></div>
+            <p id="meter-label">9 of 14 invocations</p>
             <pre id="json"></pre>
             <p id="args"></p>
           </div>
@@ -1206,8 +1213,19 @@
       });
     });
 
-    const asked = new URLSearchParams(location.search).get("sample");
+    document.documentElement.dataset.debug =
+      innerWidth + " font=" + getComputedStyle(document.querySelector("h1")).fontSize
+      + " h1=" + Math.round(document.querySelector("h1").getBoundingClientRect().width)
+      + " scroll=" + document.querySelector("h1").scrollWidth
+      + " wrap=" + Math.round(document.querySelector(".wrap").getBoundingClientRect().width);
+    const params = new URLSearchParams(location.search);
+    const asked = params.get("sample");
     apply(CHANGES[asked] ? asked : "tax", false);
+    const at = params.get("at");
+    if (at) {
+      const target = document.getElementById(at);
+      if (target) target.scrollIntoView();
+    }
   </script>
 </body>
 </html>

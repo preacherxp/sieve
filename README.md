@@ -141,9 +141,9 @@ mutation twice: once with the full suite and once with selective execution, incl
 known failure detection. If merges must require both test stages, make the Rust
 check and all four Java/Kotlin job checks required in branch protection.
 
-The weekly/manual `compatibility.yml` workflow runs selected tests and installation
-checks across older and newer JDK, build-tool, and Kotlin releases. Override the
-sample Kotlin version with `-PkotlinVersion=...` for Gradle or
+The `compatibility.yml` workflow runs on pushes to `main`, weekly, and manually.
+Its separate matrix jobs check older and newer JDK, build-tool, and Kotlin releases.
+Override the sample Kotlin version with `-PkotlinVersion=...` for Gradle or
 `-Dkotlin.version=...` for Maven.
 
 Workflows must live at the repository root under `.github/workflows/`.
