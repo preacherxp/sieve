@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+mod fingerprint;
 mod fixtures;
 mod setup;
 use std::{
@@ -15,6 +16,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Config {
     tool: String,
     modules: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    build_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,6 +46,10 @@ impl Config {
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
                 || !workspace.join(module).is_dir()
+                || !workspace
+                    .join(module)
+                    .canonicalize()?
+                    .starts_with(workspace.canonicalize()?)
                 || dependencies.iter().any(|d| !self.modules.contains_key(d))
             {
                 return Err(format!("Invalid module or dependency: {module}").into());
@@ -224,15 +231,15 @@ fn main_result() -> Result<u8> {
     if command == "fixtures" {
         return fixtures::main(args.collect());
     }
-    if command == "init" {
-        return setup::init(args.collect());
+    if command == "init" || command == "refresh" {
+        return setup::init(args.collect(), command == "refresh");
     }
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "sieve <select|run> --workspace PATH [--base REV | --full]\n\
                   [--output FILE] [--executable PATH] [-- BUILD_ARGS...]\n\n\
-                  sieve init [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
-                  sieve fixtures <list|prepare|apply|check-selection|reports|verify>\n\n\
+                  sieve <init|refresh> [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
+                  sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\n\
                   Requires impact.json and the build adapters documented in README.md.\n\
                   No base or unavailable Git history selects ALL. run propagates build failures."
         );
@@ -274,7 +281,19 @@ fn main_result() -> Result<u8> {
     let config = Config::read(&workspace)?;
     let selection = match base {
         Some(base) => match changed_paths(&workspace, &base) {
-            Ok(changed) => config.select(changed),
+            Ok(changed) => match fingerprint::build_inputs(&workspace) {
+                Ok(current) if config.build_fingerprint.as_ref() == Some(&current) => {
+                    config.select(changed)
+                }
+                Ok(_) => {
+                    let mut selection = config.all("Build inputs changed or no fingerprint exists; run sieve refresh and review impact.json");
+                    selection.changed = changed;
+                    selection
+                }
+                Err(error) => config.all(format!(
+                    "Cannot verify build inputs; full fallback: {error}"
+                )),
+            },
             Err(error) => config.all(format!(
                 "Cannot establish changed inputs; full fallback: {error}"
             )),
@@ -325,6 +344,32 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_closure_handles_chains_diamonds_roots_and_duplicates() {
+        // DEP-02/08/09: reverse alphabetical names force more than one traversal.
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "tool":"maven", "modules": {
+                "zcore":[], "yleft":["zcore", "zcore"], "xright":["zcore"],
+                "wjoin":["yleft","xright"], "vapp":["wjoin"], ".":["vapp"], "isolated":[]
+            }
+        }))
+        .unwrap();
+        for (path, expected) in [
+            (
+                "zcore/src/main/java/Provider.java",
+                vec![".", "vapp", "wjoin", "xright", "yleft", "zcore"],
+            ),
+            ("vapp/src/test/java/AppTest.java", vec![".", "vapp"]),
+            ("src/test/java/RootTest.java", vec!["."]),
+            ("isolated/src/main/resources/template", vec!["isolated"]),
+        ] {
+            assert_eq!(
+                config.select(BTreeSet::from([path.into()])).modules,
+                expected.into_iter().map(str::to_owned).collect()
+            );
+        }
+    }
 
     #[test]
     fn conservative_selection_and_build_filters() {

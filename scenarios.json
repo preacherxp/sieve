@@ -107,12 +107,8 @@
           "after": "return 7;"
         }
       ],
-      "required": [
-
-      ],
-      "expected_failures": [
-
-      ],
+      "required": [],
+      "expected_failures": [],
       "policy": "none",
       "notes": ""
     },
@@ -191,9 +187,7 @@
       "required": [
         "pricing:unit:example.NewTaxTest"
       ],
-      "expected_failures": [
-
-      ],
+      "expected_failures": [],
       "policy": "subset",
       "notes": ""
     },
@@ -346,12 +340,8 @@
           "after": "Documentation update. Three modules:"
         }
       ],
-      "required": [
-
-      ],
-      "expected_failures": [
-
-      ],
+      "required": [],
+      "expected_failures": [],
       "policy": "none",
       "notes": ""
     },
@@ -379,9 +369,7 @@
         "runtime:integration:example.AsyncIT",
         "runtime:integration:example.ServiceLoaderIT"
       ],
-      "expected_failures": [
-
-      ],
+      "expected_failures": [],
       "policy": "subset",
       "notes": "Conservative policy: rerun runtime integration suite; unrelated unit suites may remain excluded."
     },
@@ -395,8 +383,12 @@
           "after": "new PriceCalculator().total(net) + 1);"
         }
       ],
-      "required": ["pricing:unit:example.PriceQuoteTest"],
-      "expected_failures": ["pricing:unit:example.PriceQuoteTest"],
+      "required": [
+        "pricing:unit:example.PriceQuoteTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.PriceQuoteTest"
+      ],
       "policy": "subset",
       "notes": "Java record validation and value equality."
     },
@@ -410,8 +402,12 @@
           "after": "\"USD:$total\""
         }
       ],
-      "required": ["pricing:unit:example.PriceOutcomeTest"],
-      "expected_failures": ["pricing:unit:example.PriceOutcomeTest"],
+      "required": [
+        "pricing:unit:example.PriceOutcomeTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.PriceOutcomeTest"
+      ],
       "policy": "subset",
       "notes": "Kotlin sealed interface, data classes, and extension functions."
     },
@@ -433,6 +429,31 @@
       ],
       "policy": "subset",
       "notes": "Kotlin/JVM sources participate in the same module graph as Java."
+    },
+    {
+      "id": "delete-test",
+      "description": "Delete a test without editing production code or another test",
+      "changes": [
+        {
+          "path": "checkout/src/test/java/example/ReceiptTest.java",
+          "delete": true
+        }
+      ],
+      "required": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_failures": [],
+      "removed_tests": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "policy": "subset",
+      "notes": "Post-mutation inventory excludes the deleted test independently of the selection."
     }
-  ]
+  ],
+  "invocations": {
+    "checkout:unit:example.ParameterizedCheckoutTest": 2,
+    "pricing:unit:example.PriceQuoteTest": 2
+  }
 }

@@ -1,57 +1,8 @@
 use serde_json::{json, Value};
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use std::{fs, path::Path};
 
-const BIN: &str = env!("CARGO_BIN_EXE_sieve");
-const ROOT: &str = env!("CARGO_MANIFEST_DIR");
-
-fn cli(args: &[&str]) -> Output {
-    Command::new(BIN)
-        .current_dir(ROOT)
-        .args(args)
-        .output()
-        .unwrap()
-}
-
-fn success(args: &[&str]) -> Value {
-    let output = cli(args);
-    assert!(
-        output.status.success(),
-        "{args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap_or(Value::Null)
-}
-
-fn git(workspace: &str, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args([
-            "-C",
-            workspace,
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-        ])
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap().trim().into()
-}
-
-fn select(workspace: &str, base: &str) -> Value {
-    success(&["select", "--workspace", workspace, "--base", base])
-}
+mod support;
+use support::*;
 
 #[test]
 fn every_mutation_is_safe_for_both_builds() {

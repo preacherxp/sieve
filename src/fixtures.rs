@@ -16,6 +16,8 @@ const MARKER: &str = ".fixture-workspace.json";
 #[derive(Deserialize)]
 struct Catalog {
     baseline_tests: BTreeSet<String>,
+    #[serde(default)]
+    invocations: BTreeMap<String, usize>,
     scenarios: Vec<Scenario>,
 }
 
@@ -26,6 +28,8 @@ struct Scenario {
     changes: Vec<Change>,
     required: BTreeSet<String>,
     expected_failures: BTreeSet<String>,
+    #[serde(default)]
+    removed_tests: BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -62,7 +66,9 @@ impl Catalog {
     fn inventory(&self, name: &str) -> Result<BTreeSet<String>> {
         let mut tests = self.baseline_tests.clone();
         if name != "baseline" {
-            tests.extend(self.scenario(name)?.required.iter().cloned());
+            let scenario = self.scenario(name)?;
+            tests.retain(|test| !scenario.removed_tests.contains(test));
+            tests.extend(scenario.required.iter().cloned());
         }
         Ok(tests)
     }
@@ -114,6 +120,9 @@ fn prepare(root: &Path, tool: &str, destination: &Path, git: bool) -> Result<Pat
     }
     copy_tree(&root.join("projects").join(tool), destination)?;
     let destination = destination.canonicalize()?;
+    let mut config = crate::Config::read(&destination)?;
+    config.build_fingerprint = Some(crate::fingerprint::build_inputs(&destination)?);
+    write_json(&destination.join("impact.json"), &config)?;
     write_json(
         &destination.join(MARKER),
         &Marker {
@@ -296,8 +305,11 @@ fn check_selection(
 struct Reports {
     executed: BTreeSet<String>,
     failed: BTreeSet<String>,
+    errors: BTreeSet<String>,
     skipped: BTreeSet<String>,
     cases: usize,
+    #[serde(skip)]
+    seen: BTreeSet<(String, String)>,
 }
 
 fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> {
@@ -306,11 +318,20 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
     let mut buffer = Vec::new();
     let mut case = None;
     let mut depth = 0usize;
-    let (mut failed, mut skipped) = (false, false);
+    let (mut failed, mut skipped, mut error) = (false, false, false);
+    let mut root_seen = false;
     loop {
         let event = reader.read_event_into(&mut buffer)?;
         match &event {
-            Event::Start(_) => depth += 1,
+            Event::Start(tag) => {
+                if depth == 0 {
+                    if root_seen || !matches!(tag.name().as_ref(), b"testsuite" | b"testsuites") {
+                        return Err("Expected a single testsuite/testsuites XML root".into());
+                    }
+                    root_seen = true;
+                }
+                depth += 1;
+            }
             Event::End(_) => depth = depth.checked_sub(1).ok_or("Unexpected XML closing tag")?,
             Event::Eof if depth != 0 => return Err("Truncated XML report".into()),
             _ => {}
@@ -325,16 +346,32 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
                     .ok_or("Testcase missing classname")?
                     .decode_and_unescape_value(reader.decoder())?
                     .into_owned();
-                case = Some(format!("{prefix}:{class}"));
-                (failed, skipped) = (false, false);
+                let id = format!("{prefix}:{class}");
+                let name = tag
+                    .try_get_attribute(b"name")?
+                    .ok_or("Testcase missing name")?
+                    .decode_and_unescape_value(reader.decoder())?
+                    .into_owned();
+                if class.is_empty() || name.is_empty() || !reports.seen.insert((id.clone(), name)) {
+                    return Err("Empty or duplicate test identity in XML reports".into());
+                }
+                case = Some(id);
+                (failed, skipped, error) = (false, false, false);
             }
             Event::Start(tag) if case.is_some() => match tag.name().as_ref() {
-                b"failure" | b"error" => failed = true,
+                b"failure" => failed = true,
+                b"error" => {
+                    failed = true;
+                    error = true;
+                }
                 b"skipped" => skipped = true,
                 _ => {}
             },
             Event::End(tag) if tag.name().as_ref() == b"testcase" => {
                 let id = case.take().ok_or("Unexpected testcase end")?;
+                if error {
+                    reports.errors.insert(id.clone());
+                }
                 if skipped {
                     reports.skipped.insert(id);
                 } else {
@@ -346,7 +383,7 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
                 }
             }
             Event::Eof => {
-                if case.is_some() {
+                if case.is_some() || !root_seen {
                     return Err("Truncated XML testcase".into());
                 }
                 break;
@@ -361,14 +398,48 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
 fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
     tool_name(tool)?;
     let mut reports = Reports::default();
-    for module in ["pricing", "checkout", "runtime"] {
-        let (base, unit, integration) = if tool == "maven" {
-            ("target", "surefire-reports", "failsafe-reports")
+    let mut modules = vec![".".to_owned()];
+    for entry in fs::read_dir(workspace)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
+            modules.push(
+                entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| "Non-UTF-8 module name")?,
+            );
+        }
+    }
+    for module in modules {
+        let mut folders = Vec::new();
+        if tool == "maven" {
+            for (suite, folder) in [
+                ("unit", "surefire-reports"),
+                ("integration", "failsafe-reports"),
+            ] {
+                folders.push((
+                    suite.to_owned(),
+                    workspace.join(&module).join("target").join(folder),
+                ));
+            }
         } else {
-            ("build/test-results", "test", "integrationTest")
-        };
-        for (suite, folder) in [("unit", unit), ("integration", integration)] {
-            let folder = workspace.join(module).join(base).join(folder);
+            let base = workspace.join(&module).join("build/test-results");
+            if base.is_dir() {
+                for entry in fs::read_dir(base)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        let suite = match name.as_str() {
+                            "test" => "unit",
+                            "integrationTest" => "integration",
+                            _ => &name,
+                        };
+                        folders.push((suite.to_owned(), entry.path()));
+                    }
+                }
+            }
+        }
+        for (suite, folder) in folders {
             if !folder.exists() {
                 continue;
             }
@@ -385,6 +456,14 @@ fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
     Ok(reports)
 }
 
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Execution {
+    Native,
+    Full,
+    Selected,
+}
+
 fn verify(
     root: &Path,
     catalog: &Catalog,
@@ -392,10 +471,15 @@ fn verify(
     scenario: &str,
     executable: &str,
     output: &Path,
-    selected_run: bool,
+    execution: Execution,
 ) -> Result<bool> {
+    let selected_run = execution == Execution::Selected;
     fs::create_dir_all(output)?;
     let output = output.canonicalize()?;
+    let result_path = output.join(format!("{tool}-{scenario}.json"));
+    if result_path.exists() {
+        fs::remove_file(&result_path)?;
+    }
     let temp = tempfile::Builder::new().prefix("impact-").tempdir()?;
     let workspace = prepare(root, tool, &temp.path().join("project"), selected_run)?;
     if scenario != "baseline" {
@@ -410,7 +494,7 @@ fn verify(
     } else {
         "-PfixtureIgnoreFailures=true"
     };
-    let mut command = if selected_run {
+    let mut command = if execution != Execution::Native {
         let mut command = Command::new(env::current_exe()?);
         command
             .arg("run")
@@ -420,7 +504,7 @@ fn verify(
             .arg(executable)
             .arg("--output")
             .arg(&selection_path);
-        if scenario == "baseline" {
+        if scenario == "baseline" || execution == Execution::Full {
             command.arg("--full");
         } else {
             command.args(["--base", "HEAD"]);
@@ -438,6 +522,7 @@ fn verify(
     };
     let log_path = output.join(format!("{tool}-{scenario}.log"));
     let log = fs::File::create(&log_path)?;
+    let started = std::time::Instant::now();
     let status = command
         .current_dir(&workspace)
         .stdout(Stdio::from(log.try_clone()?))
@@ -452,7 +537,7 @@ fn verify(
     let mut selected = catalog.inventory(scenario)?;
     let mut selection_ok = !selected_run;
     if selected_run && selection_path.exists() {
-        let payload: Value = serde_json::from_slice(&fs::read(selection_path)?)?;
+        let payload: Value = serde_json::from_slice(&fs::read(&selection_path)?)?;
         if scenario == "baseline" {
             selection_ok = payload["mode"] == "ALL";
         } else {
@@ -463,12 +548,14 @@ fn verify(
     }
     let missing: BTreeSet<_> = selected.difference(&reports.executed).cloned().collect();
     let unexpected: BTreeSet<_> = reports.executed.difference(&selected).cloned().collect();
-    let expected_cases = selected.len()
-        + usize::from(selected.contains("checkout:unit:example.ParameterizedCheckoutTest"))
-        + usize::from(selected.contains("pricing:unit:example.PriceQuoteTest"));
+    let expected_cases: usize = selected
+        .iter()
+        .map(|test| catalog.invocations.get(test).copied().unwrap_or(1))
+        .sum();
     let ok = status.success()
         && selection_ok
         && reports.failed == expected
+        && reports.errors.is_empty()
         && missing.is_empty()
         && unexpected.is_empty()
         && reports.cases == expected_cases
@@ -478,8 +565,18 @@ fn verify(
         "tool": tool, "scenario": scenario, "ok": ok, "build_exit": status.code(),
         "selection_ok": selection_ok, "expected_failures": expected, "expected_cases": expected_cases,
         "missing_tests": missing, "unexpected_tests": unexpected,
+        "elapsed_seconds": started.elapsed().as_secs_f64(),
+        "execution": execution,
     }).as_object().ok_or("Invalid result object")?.clone());
-    write_json(&output.join(format!("{tool}-{scenario}.json")), &result)?;
+    if selection_path.is_file() {
+        result["selection"] = serde_json::from_slice(&fs::read(&selection_path)?)?;
+    }
+    result["base_revision"] = crate::git(&workspace, &["rev-parse", "HEAD"])
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .map(|s| json!(s.trim()))
+        .unwrap_or(Value::Null);
+    write_json(&result_path, &result)?;
     println!(
         "{tool:6} {scenario:24} {} ({} cases, {} failing classes)",
         if ok { "PASS" } else { "FAIL" },
@@ -490,6 +587,100 @@ fn verify(
         eprintln!("Inspect {}", log_path.display());
     }
     Ok(ok)
+}
+
+fn benchmark(
+    root: &Path,
+    catalog: &Catalog,
+    tool: &str,
+    scenario: &str,
+    executable: &str,
+    output: &Path,
+    runs: usize,
+) -> Result<bool> {
+    if runs < 5 {
+        return Err("Benchmark requires at least five measured runs after warmup".into());
+    }
+    let summary_path = output.join(format!("{tool}-{scenario}-benchmark.json"));
+    if summary_path.exists() {
+        fs::remove_file(&summary_path)?;
+    }
+    let mut samples: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut records = Vec::new();
+    // Sequential alternating order avoids competition between builds and a fixed order advantage.
+    for iteration in 0..=runs {
+        let modes = if iteration % 2 == 0 {
+            [Execution::Native, Execution::Full, Execution::Selected]
+        } else {
+            [Execution::Selected, Execution::Full, Execution::Native]
+        };
+        for execution in modes {
+            let name = serde_json::to_value(execution)?
+                .as_str()
+                .ok_or("Invalid execution")?
+                .to_owned();
+            let folder = output.join(format!("{tool}-{scenario}/{iteration}-{name}"));
+            if !verify(
+                root, catalog, tool, scenario, executable, &folder, execution,
+            )? {
+                return Err(format!(
+                    "Correctness failed; no speedup claim is valid. Inspect {}",
+                    folder.display()
+                )
+                .into());
+            }
+            let mut record: Value =
+                serde_json::from_slice(&fs::read(folder.join(format!("{tool}-{scenario}.json")))?)?;
+            record["warmup"] = json!(iteration == 0);
+            record["iteration"] = json!(iteration);
+            if iteration > 0 {
+                samples.entry(name).or_default().push(
+                    record["elapsed_seconds"]
+                        .as_f64()
+                        .ok_or("Missing duration")?,
+                );
+            }
+            records.push(record);
+        }
+    }
+    let mut summaries = BTreeMap::new();
+    for (name, times) in &samples {
+        let mut sorted = times.clone();
+        sorted.sort_by(f64::total_cmp);
+        let median = (sorted[(runs - 1) / 2] + sorted[runs / 2]) / 2.0;
+        summaries.insert(name.clone(), json!({"median_seconds":median,"min_seconds":sorted[0],"max_seconds":sorted[runs-1],"samples_seconds":times}));
+    }
+    let version = Command::new(executable).arg("--version").output()?;
+    let version_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&version.stdout),
+        String::from_utf8_lossy(&version.stderr)
+    );
+    let source_head = crate::git(root, &["rev-parse", "HEAD"])
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok());
+    let source_changes = crate::git(root, &["status", "--porcelain"])
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok());
+    let baseline = summaries["native"]["median_seconds"]
+        .as_f64()
+        .ok_or("Missing native median")?;
+    let selected = summaries["selected"]["median_seconds"]
+        .as_f64()
+        .ok_or("Missing selected median")?;
+    write_json(
+        &summary_path,
+        &json!({
+            "tool":tool,"scenario":scenario,"source_head":source_head.map(|s| s.trim().to_owned()),"source_changes":source_changes,
+            "executable":executable,"build_version":version_text,"platform":std::env::consts::OS,"arch":std::env::consts::ARCH,
+            "cache_condition":"shared dependency caches after one warmup; clean workspace per sample; no task cache enabled by this harness",
+            "timing_scope":"native child or Sieve child plus report parsing; excludes fixture preparation, checkout, CLI installation and subsequent CI jobs",
+            "runs":runs,"summaries":summaries,"records":records,
+            "median_seconds_saved":baseline-selected,"median_fraction_saved": if baseline>0.0 { (baseline-selected)/baseline } else { 0.0 }
+        }),
+    )?;
+    println!("{tool} {scenario}: native {baseline:.3}s, selected {selected:.3}s; saved {:.3}s (local fixture, excludes CI setup)", baseline-selected);
+    Ok(true)
 }
 
 pub fn main(args: Vec<String>) -> Result<u8> {
@@ -504,7 +695,9 @@ pub fn main(args: Vec<String>) -> Result<u8> {
           check-selection SCENARIO --actual FILE [--exact]\n\
           reports --tool maven|gradle --workspace PATH\n\
           verify [--tool maven|gradle|both] [--scenario baseline|all|SCENARIO]\n\
-                 [--selected] [--maven PATH] [--gradle PATH] [--output PATH]"
+                 [--selected] [--maven PATH] [--gradle PATH] [--output PATH]\n\
+          benchmark [--tool maven|gradle|both] [--scenario baseline|all|SCENARIO]\n\
+                    [--runs 5] [--maven PATH] [--gradle PATH] [--output PATH]"
         );
         return Ok(0);
     }
@@ -518,6 +711,14 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             "--tool",
             "--scenario",
             "--selected",
+            "--maven",
+            "--gradle",
+            "--output",
+        ],
+        "benchmark" => &[
+            "--tool",
+            "--scenario",
+            "--runs",
             "--maven",
             "--gradle",
             "--output",
@@ -592,7 +793,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
                 required("--tool")?
             )?)?
         ),
-        "verify" => {
+        "verify" | "benchmark" => {
             let tool = option("--tool", "both");
             let tools = if tool == "both" {
                 vec!["maven", "gradle"]
@@ -627,6 +828,19 @@ pub fn main(args: Vec<String>) -> Result<u8> {
                     executable
                 };
                 for scenario in &scenarios {
+                    if command == "benchmark" {
+                        fs::create_dir_all(&output)?;
+                        ok &= benchmark(
+                            &root,
+                            &catalog,
+                            tool,
+                            scenario,
+                            &executable,
+                            &output,
+                            option("--runs", "5").parse()?,
+                        )?;
+                        continue;
+                    }
                     ok &= verify(
                         &root,
                         &catalog,
@@ -634,7 +848,11 @@ pub fn main(args: Vec<String>) -> Result<u8> {
                         scenario,
                         &executable,
                         &output,
-                        options.contains_key("--selected"),
+                        if options.contains_key("--selected") {
+                            Execution::Selected
+                        } else {
+                            Execution::Native
+                        },
                     )?;
                 }
             }

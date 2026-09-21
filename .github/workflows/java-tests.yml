@@ -37,36 +37,7 @@ jobs:
           PUSH_BASE: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
         shell: bash
-        run: |
-          mkdir -p validation-results
-          executable=gradle
-          if [[ "$BUILD_TOOL" == maven ]]; then executable=mvn; fi
-          args=(--full)
-          if [[ "$MODE" == selected ]]; then
-            if [[ "$EVENT_NAME" == pull_request ]]; then
-              args=(--base "$PR_BASE")
-            elif [[ "$EVENT_NAME" == push && -n "$PUSH_BASE" && "$PUSH_BASE" != 0000000000000000000000000000000000000000 ]]; then
-              args=(--base "$PUSH_BASE")
-            fi
-          elif [[ "$MODE" != full ]]; then
-            echo "Unknown test mode: $MODE" >&2
-            exit 2
-          fi
-          if [[ "$MODE" == selected ]]; then
-            target/release/sieve select \
-              --workspace "projects/$BUILD_TOOL" \
-              --output "validation-results/$BUILD_TOOL-selection.json" \
-              "${args[@]}"
-            if [[ $(jq -r '.mode' "validation-results/$BUILD_TOOL-selection.json") == ALL ]]; then
-              echo 'Selection is ALL; the full-test stage runs this suite.'
-              exit 0
-            fi
-          fi
-          target/release/sieve run \
-            --workspace "projects/$BUILD_TOOL" \
-            --executable "$executable" \
-            --output "validation-results/$BUILD_TOOL-selection.json" \
-            "${args[@]}"
+        run: bash scripts/ci-test-stage.sh
       - name: Verify full suite across fixture mutations
         if: inputs.mode == 'full'
         env:

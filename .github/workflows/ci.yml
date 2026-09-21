@@ -51,6 +51,14 @@ jobs:
         run: |
           rustup toolchain install 1.92.0 --profile minimal
           cargo +1.92.0 build --locked
+      - name: Verify native dependency graph
+        if: matrix.variant == 'edge'
+        env:
+          IMPACT_TOOL: ${{ matrix.tool }}
+        run: cargo +1.92.0 test --locked --test native native_ -- --ignored --test-threads=1
+      - name: Reject unsupported Gradle layouts
+        if: matrix.variant == 'edge' && matrix.tool == 'gradle'
+        run: cargo +1.92.0 test --locked --test native unsupported_gradle_ -- --ignored
       - name: Verify selected variants
         env:
           BUILD_TOOL: ${{ matrix.tool }}
@@ -61,7 +69,7 @@ jobs:
             java) scenarios=(tax-transitive calculator unrelated gateway-implementation inherited-fixture changed-test new-test java-record) ;;
             kotlin) scenarios=(kotlin-source kotlin-sealed) ;;
             integration) scenarios=(reflection async spring-bean spring-wiring resource service-provider dependency-change) ;;
-            edge) scenarios=(unused delete-class docs-only) ;;
+            edge) scenarios=(unused delete-class delete-test docs-only) ;;
           esac
           for scenario in "${scenarios[@]}"; do
             target/debug/sieve fixtures verify \
@@ -100,7 +108,16 @@ jobs:
       - uses: ./.github/actions/java-build
         with:
           tool: maven
+      - name: Build selector
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked
+      - name: Verify container selection and cleanup
+        env:
+          IMPACT_SERVICE: ${{ matrix.service }}
+        run: cargo +1.92.0 test --locked --test native selected_containers_ -- --ignored
       - name: Run container test
+        if: ${{ !cancelled() }}
         env:
           TEST_CLASS: ${{ matrix.service }}Test
         run: mvn -B -ntp -f projects/containers/pom.xml "-Dtest=$TEST_CLASS" test

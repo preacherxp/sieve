@@ -11,8 +11,9 @@ trigger the full suite.
 ## Install and set up a project
 
 The CLI is now named `sieve` (formerly `java-test-impact`). Update existing command
-invocations after reinstalling; existing `impact.json` files and Maven profiles
-remain compatible.
+invocations after reinstalling. Run `sieve refresh` for existing installations,
+review the graph/POM diff, and commit it. Legacy configurations select the full
+suite until refreshed.
 
 Install from this checkout:
 
@@ -36,8 +37,11 @@ sieve run --workspace . --base origin/main
 Use your comparison branch, such as `origin/master`, in place of `origin/main`.
 Setup detects Maven or Gradle, prefers an existing build wrapper, and discovers the
 declared module dependencies through Maven's effective models or Gradle's project model.
-It writes `impact.json`. Maven also receives small test-skipping profiles in its
-module POMs. Gradle uses a bundled init script, so both `build.gradle` and
+It writes `impact.json`. Maven also receives per-module Surefire/Failsafe
+`skipTests` properties in its POMs; test compilation remains enabled so downstream
+test JARs still work. Existing default profiles remain active. Explicit execution
+skip overrides in local build sections are rejected during setup; external parent
+and profile overrides still require manual review. Gradle uses a bundled init script, so both `build.gradle` and
 `build.gradle.kts` work without build-file edits. Commit the generated configuration
 and POM changes. Setup refuses to overwrite an existing `impact.json`.
 
@@ -54,6 +58,13 @@ Gradle composite builds, Android, and Kotlin Multiplatform are not supported by
 automatic setup. The tool reports unsupported layouts instead of guessing.
 Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
+Run `sieve refresh --workspace PATH` after build changes,
+using the same profiles/properties as CI (for Maven, for example, `-- -Pci`).
+Refresh preserves additional declared edges between surviving modules; review
+obsolete edges manually. A fingerprint of conventional workspace build inputs
+forces `ALL` when the graph may be stale, including after the build edit was
+committed. It cannot detect changes to external models, environment variables,
+or undeclared runtime dependencies.
 Custom dependency substitution and dependencies introduced through external artifacts
 need manual graph review; automatic setup collects declared inter-project edges.
 
@@ -175,7 +186,7 @@ expected failing classes are predefined. The Rust selector never reads it.
 | unused | Unused production code |
 | gateway-implementation | Interface implementation |
 | inherited-fixture | Shared test superclass |
-| changed-test / new-test | Modified tests and tests absent from the baseline |
+| changed-test / new-test / delete-test | Modified, added, and independently deleted tests |
 | reflection / async | Reflective calls and worker threads |
 | spring-bean / spring-wiring | Injection and configuration changes |
 | resource / service-provider | Classpath resources and ServiceLoader |
@@ -202,6 +213,10 @@ target/debug/sieve fixtures verify --tool both --scenario all \
 
 # Installation integration checks require Java 17, Maven, and Gradle on PATH.
 cargo test --locked --test cli installs_ -- --ignored
+cargo test --locked --test native native_ -- --ignored --test-threads=1
+cargo test --locked --test native unsupported_gradle_ -- --ignored
+# Docker is required; repeat for Kafka.
+IMPACT_SERVICE=Redis cargo test --locked --test native selected_containers_ -- --ignored
 ```
 
 `--maven /path/to/mvn` and `--gradle /path/to/gradle` override fixture build tools.
@@ -235,6 +250,33 @@ The oracle expands modules using its own inventory. Default checking permits ext
 tests but requires all affected tests; `--exact` also rejects extras. Module-level
 selection intentionally does not pass every precision check (for example, unused
 code still reruns its module).
+
+## Timing this repository
+
+```bash
+cargo build --release --locked
+target/release/sieve fixtures benchmark --tool both \
+  --scenario gateway-implementation --runs 5 --output validation-results/timing
+# Also compare tax-transitive (shared dependency) and docs-only (NONE).
+GITHUB_REPOSITORY=preacherxp/sieve bash scripts/ci-cost.sh RUN_ID
+```
+
+The benchmark alternates native `clean verify`/`clean check`, Sieve `--full`, and
+Sieve selected execution, warms each condition once, and retains five or more raw
+samples with median/range. Every sample must pass the independent execution oracle
+before a timing summary is emitted. Mutation-only failure-ignore flags are used
+solely to collect the complete expected failure set. Dependencies are shared and
+workspaces are clean; run benchmarks sequentially without competing JVM builds.
+
+This measures local build execution, excluding checkout, CLI installation, fixture
+preparation, and later CI stages. It does not represent cold caches or native task
+cache hits. The CI cost script separately sums completed job durations and measures
+the span between the earliest job start and latest job completion, including failed
+jobs. This repository retains full-suite validation after the selected stage, so
+faster selected feedback does not establish faster final CI completion.
+
+See [coverage and remaining cases](docs/test-coverage.md) and
+[measurements](docs/performance.md) for evidence and limits.
 
 ## Limits
 

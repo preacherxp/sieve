@@ -1,8 +1,11 @@
 {
   "tool": "gradle",
   "modules": {
+    "checkout": [
+      "pricing"
+    ],
     "pricing": [],
-    "checkout": ["pricing"],
     "runtime": []
-  }
+  },
+  "build_fingerprint": "8be6eb4e96cc0a65483b07dcb5804bb213c52441"
 }
