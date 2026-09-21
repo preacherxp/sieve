@@ -1,0 +1,362 @@
+{
+  "schema": 1,
+  "baseline_tests": [
+    "checkout:unit:example.CheckoutTest",
+    "checkout:unit:example.GatewayTest",
+    "checkout:unit:example.ParameterizedCheckoutTest",
+    "checkout:unit:example.ReceiptTest",
+    "pricing:unit:example.CurrencyLabelTest",
+    "pricing:unit:example.PriceCalculatorTest",
+    "pricing:unit:example.TaxRulesTest",
+    "runtime:integration:example.AsyncIT",
+    "runtime:integration:example.ReflectionIT",
+    "runtime:integration:example.ResourceIT",
+    "runtime:integration:example.ServiceLoaderIT",
+    "runtime:integration:example.SpringWiringIT"
+  ],
+  "scenarios": [
+    {
+      "id": "tax-transitive",
+      "description": "Change a leaf used across modules",
+      "changes": [
+        {
+          "path": "pricing/src/main/java/example/TaxRules.java",
+          "before": "return 20;",
+          "after": "return 25;"
+        }
+      ],
+      "required": [
+        "pricing:unit:example.TaxRulesTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.TaxRulesTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "calculator",
+      "description": "Change shared price calculation",
+      "changes": [
+        {
+          "path": "pricing/src/main/java/example/PriceCalculator.java",
+          "before": "return net +",
+          "after": "return 1 + net +"
+        }
+      ],
+      "required": [
+        "pricing:unit:example.PriceCalculatorTest",
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.PriceCalculatorTest",
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "unrelated",
+      "description": "Change independent currency code",
+      "changes": [
+        {
+          "path": "pricing/src/main/java/example/CurrencyLabel.java",
+          "before": "\"EUR\"",
+          "after": "\"USD\""
+        }
+      ],
+      "required": [
+        "pricing:unit:example.CurrencyLabelTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.CurrencyLabelTest"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "unused",
+      "description": "Change code with no test consumers",
+      "changes": [
+        {
+          "path": "pricing/src/main/java/example/UnusedDiscount.java",
+          "before": "return 5;",
+          "after": "return 7;"
+        }
+      ],
+      "required": [],
+      "expected_failures": [],
+      "policy": "none",
+      "notes": ""
+    },
+    {
+      "id": "gateway-implementation",
+      "description": "Change an interface implementation",
+      "changes": [
+        {
+          "path": "checkout/src/main/java/example/CardGateway.java",
+          "before": "\"card:\"",
+          "after": "\"bank:\""
+        }
+      ],
+      "required": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "inherited-fixture",
+      "description": "Change a shared test superclass",
+      "changes": [
+        {
+          "path": "checkout/src/test/java/example/BaseCheckoutFixture.java",
+          "before": "return 100;",
+          "after": "return 200;"
+        }
+      ],
+      "required": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "changed-test",
+      "description": "Change only a test assertion",
+      "changes": [
+        {
+          "path": "pricing/src/test/java/example/TaxRulesTest.java",
+          "before": "assertEquals(20,",
+          "after": "assertEquals(21,"
+        }
+      ],
+      "required": [
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "new-test",
+      "description": "Add a test absent from the baseline",
+      "changes": [
+        {
+          "path": "pricing/src/test/java/example/NewTaxTest.java",
+          "create": "package example;\nimport org.junit.jupiter.api.Test;\nimport static org.junit.jupiter.api.Assertions.*;\npublic class NewTaxTest { @Test void newTest() { assertEquals(20, new TaxRules().percent()); } }\n"
+        }
+      ],
+      "required": [
+        "pricing:unit:example.NewTaxTest"
+      ],
+      "expected_failures": [],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "reflection",
+      "description": "Change code reached only by reflective lookup",
+      "changes": [
+        {
+          "path": "runtime/src/main/java/example/ReflectivePlugin.java",
+          "before": "\"reflective\"",
+          "after": "\"changed\""
+        }
+      ],
+      "required": [
+        "runtime:integration:example.ReflectionIT"
+      ],
+      "expected_failures": [
+        "runtime:integration:example.ReflectionIT"
+      ],
+      "policy": "subset",
+      "notes": "Dynamic dependency or conservative integration-suite fallback required."
+    },
+    {
+      "id": "async",
+      "description": "Change code executed on an executor thread",
+      "changes": [
+        {
+          "path": "runtime/src/main/java/example/AsyncWorker.java",
+          "before": "\"done\"",
+          "after": "\"broken\""
+        }
+      ],
+      "required": [
+        "runtime:integration:example.AsyncIT"
+      ],
+      "expected_failures": [
+        "runtime:integration:example.AsyncIT"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "spring-bean",
+      "description": "Change a Spring-injected implementation also loaded by ServiceLoader",
+      "changes": [
+        {
+          "path": "runtime/src/main/java/example/EnglishGreeting.java",
+          "before": "\"hello\"",
+          "after": "\"changed\""
+        }
+      ],
+      "required": [
+        "runtime:integration:example.SpringWiringIT",
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "expected_failures": [
+        "runtime:integration:example.SpringWiringIT",
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "spring-wiring",
+      "description": "Replace the configured Spring bean",
+      "changes": [
+        {
+          "path": "runtime/src/main/java/example/GreetingConfig.java",
+          "before": "new EnglishGreeting()",
+          "after": "new AlternativeGreeting()"
+        }
+      ],
+      "required": [
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "expected_failures": [
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "resource",
+      "description": "Change a classpath resource",
+      "changes": [
+        {
+          "path": "runtime/src/main/resources/application.properties",
+          "before": "greeting=hello",
+          "after": "greeting=bye"
+        }
+      ],
+      "required": [
+        "runtime:integration:example.ResourceIT"
+      ],
+      "expected_failures": [
+        "runtime:integration:example.ResourceIT"
+      ],
+      "policy": "subset",
+      "notes": "Explicit resource ownership or integration-suite fallback required."
+    },
+    {
+      "id": "service-provider",
+      "description": "Change the ServiceLoader registration",
+      "changes": [
+        {
+          "path": "runtime/src/main/resources/META-INF/services/example.Greeting",
+          "before": "example.EnglishGreeting",
+          "after": "example.AlternativeGreeting"
+        }
+      ],
+      "required": [
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "expected_failures": [
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "policy": "subset",
+      "notes": ""
+    },
+    {
+      "id": "delete-class",
+      "description": "Delete a class and update its consumer so compilation remains valid",
+      "changes": [
+        {
+          "path": "checkout/src/main/java/example/LegacyReceipt.java",
+          "delete": true
+        },
+        {
+          "path": "checkout/src/test/java/example/ReceiptTest.java",
+          "before": "new LegacyReceipt().text()",
+          "after": "\"replacement\""
+        }
+      ],
+      "required": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "expected_failures": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "policy": "subset",
+      "notes": "Exercises removal from the previous graph plus a changed consumer; not an isolated proof of old-graph traversal."
+    },
+    {
+      "id": "docs-only",
+      "description": "Change documentation only",
+      "changes": [
+        {
+          "path": "README.md",
+          "before": "Three modules:",
+          "after": "Documentation update. Three modules:"
+        }
+      ],
+      "required": [],
+      "expected_failures": [],
+      "policy": "none",
+      "notes": ""
+    },
+    {
+      "id": "dependency-change",
+      "description": "Change the resolved Spring dependency version",
+      "changes": [
+        {
+          "tool": "maven",
+          "path": "pom.xml",
+          "before": "<spring.version>6.1.16</spring.version>",
+          "after": "<spring.version>6.1.17</spring.version>"
+        },
+        {
+          "tool": "gradle",
+          "path": "build.gradle",
+          "before": "spring-context:6.1.16",
+          "after": "spring-context:6.1.17"
+        }
+      ],
+      "required": [
+        "runtime:integration:example.SpringWiringIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "expected_failures": [],
+      "policy": "subset",
+      "notes": "Conservative policy: rerun runtime integration suite; unrelated unit suites may remain excluded."
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+name: Validate sample fixtures
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
+permissions:
+  contents: read
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [maven, gradle]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: ${{ matrix.tool }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build Rust selector
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked
+      - run: python3 -m unittest -v test_harness
+      - run: python3 validate.py verify --tool ${{ matrix.tool }} --scenario all
+      - name: Validate actual selective execution against the oracle
+        run: >-
+          python3 validate.py verify --tool ${{ matrix.tool }} --scenario all
+          --selector target/debug/java-test-impact --output validation-results/selected
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.tool }}
+          path: validation-results/

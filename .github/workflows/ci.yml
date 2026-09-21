@@ -1,0 +1,91 @@
+name: Test impact CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: impact-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    name: Rust and selector checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.92.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - run: python3 -m unittest -v test_harness test_selector
+  java:
+    name: Java tests (${{ matrix.tool }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [maven, gradle]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: ${{ matrix.tool }}
+      - name: Build Rust selector
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked --release
+      - name: Select and run tests
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          mkdir -p validation-results
+          args=(--full)
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            args=(--base "$PR_BASE")
+          fi
+          target/release/java-test-impact run \
+            --workspace "projects/$BUILD_TOOL" \
+            --output "validation-results/$BUILD_TOOL-selection.json" \
+            "${args[@]}"
+      - name: Publish selection summary
+        if: always()
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+        shell: bash
+        run: |
+          if [[ -f "validation-results/$BUILD_TOOL-selection.json" ]]; then
+            {
+              echo "### $BUILD_TOOL test selection"
+              echo '```json'
+              cat "validation-results/$BUILD_TOOL-selection.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-impact-${{ matrix.tool }}
+          path: |
+            validation-results/
+            projects/${{ matrix.tool }}/**/target/surefire-reports/
+            projects/${{ matrix.tool }}/**/target/failsafe-reports/
+            projects/${{ matrix.tool }}/**/build/test-results/
+          retention-days: 14

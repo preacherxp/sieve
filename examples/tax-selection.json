@@ -1,0 +1,9 @@
+{
+  "mode": "SUBSET",
+  "tests": [
+    "pricing:unit:example.TaxRulesTest",
+    "pricing:unit:example.PriceCalculatorTest",
+    "checkout:unit:example.CheckoutTest",
+    "checkout:unit:example.ParameterizedCheckoutTest"
+  ]
+}

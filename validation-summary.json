@@ -1,0 +1,1106 @@
+{
+  "build_runs": 36,
+  "mutation_scenarios": 17,
+  "test_invocations": 470,
+  "all_passed": true,
+  "harness_checks_passed": 6,
+  "results": [
+    {
+      "tool": "gradle",
+      "scenario": "async",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.AsyncIT"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.AsyncIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "baseline",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "calculator",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "changed-test",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "delete-class",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "dependency-change",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "docs-only",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "gateway-implementation",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "inherited-fixture",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "new-test",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "expected_cases": 14,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.NewTaxTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 14
+    },
+    {
+      "tool": "gradle",
+      "scenario": "reflection",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ReflectionIT"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ReflectionIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "resource",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ResourceIT"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ResourceIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "service-provider",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "spring-bean",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "spring-wiring",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "tax-transitive",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "unrelated",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "pricing:unit:example.CurrencyLabelTest"
+      ],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "pricing:unit:example.CurrencyLabelTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "gradle",
+      "scenario": "unused",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "async",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.AsyncIT"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.AsyncIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "baseline",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "calculator",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "changed-test",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "delete-class",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.ReceiptTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "dependency-change",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "expected_cases": 13,
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "docs-only",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "gateway-implementation",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "inherited-fixture",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "new-test",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.NewTaxTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 14
+    },
+    {
+      "tool": "maven",
+      "scenario": "reflection",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ReflectionIT"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ReflectionIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "resource",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ResourceIT"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ResourceIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "service-provider",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ServiceLoaderIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "spring-bean",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "spring-wiring",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "tax-transitive",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "unrelated",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [
+        "pricing:unit:example.CurrencyLabelTest"
+      ],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [
+        "pricing:unit:example.CurrencyLabelTest"
+      ],
+      "skipped": [],
+      "cases": 13
+    },
+    {
+      "tool": "maven",
+      "scenario": "unused",
+      "ok": true,
+      "build_exit": 0,
+      "expected_failures": [],
+      "missing_tests": [],
+      "unexpected_tests": [],
+      "executed": [
+        "checkout:unit:example.CheckoutTest",
+        "checkout:unit:example.GatewayTest",
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "checkout:unit:example.ReceiptTest",
+        "pricing:unit:example.CurrencyLabelTest",
+        "pricing:unit:example.PriceCalculatorTest",
+        "pricing:unit:example.TaxRulesTest",
+        "runtime:integration:example.AsyncIT",
+        "runtime:integration:example.ReflectionIT",
+        "runtime:integration:example.ResourceIT",
+        "runtime:integration:example.ServiceLoaderIT",
+        "runtime:integration:example.SpringWiringIT"
+      ],
+      "failed": [],
+      "skipped": [],
+      "cases": 13
+    }
+  ]
+}

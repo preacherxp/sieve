@@ -1,0 +1,6 @@
+**/target/
+**/build/
+**/.gradle/
+**/__pycache__/
+validation-results/
+workspaces/
