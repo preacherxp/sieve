@@ -7,13 +7,15 @@
     "checkout:unit:example.ReceiptTest",
     "pricing:unit:example.CurrencyLabelTest",
     "pricing:unit:example.PriceCalculatorTest",
+    "pricing:unit:example.PriceQuoteTest",
     "pricing:unit:example.TaxRulesTest",
     "runtime:integration:example.AsyncIT",
     "runtime:integration:example.ReflectionIT",
     "runtime:integration:example.ResourceIT",
     "runtime:integration:example.ServiceLoaderIT",
     "runtime:integration:example.SpringWiringIT",
-    "pricing:unit:example.KotlinPriceFormatterTest"
+    "pricing:unit:example.KotlinPriceFormatterTest",
+    "pricing:unit:example.PriceOutcomeTest"
   ],
   "scenarios": [
     {
@@ -31,14 +33,18 @@
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
         "checkout:unit:example.ParameterizedCheckoutTest",
-        "pricing:unit:example.KotlinPriceFormatterTest"
+        "pricing:unit:example.KotlinPriceFormatterTest",
+        "pricing:unit:example.PriceQuoteTest",
+        "pricing:unit:example.PriceOutcomeTest"
       ],
       "expected_failures": [
         "pricing:unit:example.TaxRulesTest",
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
         "checkout:unit:example.ParameterizedCheckoutTest",
-        "pricing:unit:example.KotlinPriceFormatterTest"
+        "pricing:unit:example.KotlinPriceFormatterTest",
+        "pricing:unit:example.PriceQuoteTest",
+        "pricing:unit:example.PriceOutcomeTest"
       ],
       "policy": "subset",
       "notes": ""
@@ -57,13 +63,17 @@
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
         "checkout:unit:example.ParameterizedCheckoutTest",
-        "pricing:unit:example.KotlinPriceFormatterTest"
+        "pricing:unit:example.KotlinPriceFormatterTest",
+        "pricing:unit:example.PriceQuoteTest",
+        "pricing:unit:example.PriceOutcomeTest"
       ],
       "expected_failures": [
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
         "checkout:unit:example.ParameterizedCheckoutTest",
-        "pricing:unit:example.KotlinPriceFormatterTest"
+        "pricing:unit:example.KotlinPriceFormatterTest",
+        "pricing:unit:example.PriceQuoteTest",
+        "pricing:unit:example.PriceOutcomeTest"
       ],
       "policy": "subset",
       "notes": ""
@@ -374,6 +384,36 @@
       ],
       "policy": "subset",
       "notes": "Conservative policy: rerun runtime integration suite; unrelated unit suites may remain excluded."
+    },
+    {
+      "id": "java-record",
+      "description": "Change a Java record factory used by its contract tests",
+      "changes": [
+        {
+          "path": "pricing/src/main/java/example/PriceQuote.java",
+          "before": "new PriceCalculator().total(net));",
+          "after": "new PriceCalculator().total(net) + 1);"
+        }
+      ],
+      "required": ["pricing:unit:example.PriceQuoteTest"],
+      "expected_failures": ["pricing:unit:example.PriceQuoteTest"],
+      "policy": "subset",
+      "notes": "Java record validation and value equality."
+    },
+    {
+      "id": "kotlin-sealed",
+      "description": "Change an exhaustive Kotlin sealed-result formatter",
+      "changes": [
+        {
+          "path": "pricing/src/main/kotlin/example/PriceOutcome.kt",
+          "before": "\"EUR:$total\"",
+          "after": "\"USD:$total\""
+        }
+      ],
+      "required": ["pricing:unit:example.PriceOutcomeTest"],
+      "expected_failures": ["pricing:unit:example.PriceOutcomeTest"],
+      "policy": "subset",
+      "notes": "Kotlin sealed interface, data classes, and extension functions."
     },
     {
       "id": "kotlin-source",

@@ -1,4 +1,4 @@
-# Validation record
+# Validation record for the original fixtures
 
 Validated locally on 2026-09-21 with Rust 1.92.0, Java 17.0.20.1,
 Maven 3.9.9, and Gradle 8.13. GitHub Actions pins Gradle 8.12.1.
@@ -34,3 +34,12 @@ behavior for these fixtures; it is not a proof of soundness for arbitrary JVM bu
 The local tests used Gradle 8.13; the checked-in CI configuration tests 8.12.1.
 Installation tests require a JDK and native build tools and are explicitly marked
 ignored in the fast Rust test run; the scheduled fixture workflow runs them.
+
+## Expanded fixture checks (2026-09-21)
+
+The current fixtures have 20 mutation scenarios and 15 baseline test classes with
+17 invocations. Rust formatting, Clippy, and unit/integration checks passed. All
+20 mutations plus the baseline passed selective verification on Maven 4.0.0-rc-6
+and Gradle 8.13: 42 benchmark runs. The Kafka and Redis Testcontainers tests compile
+with Maven 4; Docker is unavailable locally, so their execution awaits CI. The older
+76-run summary above belongs to the original 18-scenario fixture set.

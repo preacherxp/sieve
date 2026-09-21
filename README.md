@@ -61,7 +61,7 @@ Prerequisites: Rust 1.92+ to install/build the CLI, Git for change detection, an
 JDK/build tool required by your project. The Gradle adapter requires **Gradle 7.6.3+**.
 The default samples use JDK 17, Maven 3.9.9, Gradle 8.12.1 in CI (the existing
 wrapper is 8.13), Kotlin 2.2.21, JUnit 5.11.4, and Spring 6.1.16. Initial builds
-need access to the normal dependency repositories. The weekly/manual compatibility
+need access to the normal dependency repositories. The compatibility
 workflow checks Java 8, 11, 17, 21, and 25 with representative Maven 3.9/4.0 RC,
 Gradle 7.6/8/9, and Kotlin 1.9/2.2/2.3 combinations. Build tool and Kotlin plugin
 versions must be compatible with the chosen JDK; see the upstream compatibility
@@ -91,7 +91,7 @@ A single-module package uses `".": []`. The conventional source layout is
 3. Select changed source/resource modules and follow reverse dependency edges.
 4. Run every unit/integration test in those modules through the native build tool.
 
-For the samples, pricing changes select pricing and checkout: **8 classes / 9 test
+For the samples, pricing changes select pricing and checkout: **10 classes / 12 test
 invocations**. Checkout changes select **4 classes / 5 invocations**. Runtime changes
 select **5 integration classes**. Kotlin code participates in the same graph as Java.
 
@@ -141,10 +141,15 @@ mutation twice: once with the full suite and once with selective execution, incl
 known failure detection. If merges must require both test stages, make the Rust
 check and all four Java/Kotlin job checks required in branch protection.
 
-The `compatibility.yml` workflow runs on pushes to `main`, weekly, and manually.
-Its separate matrix jobs check older and newer JDK, build-tool, and Kotlin releases.
+The primary CI runs the compatibility matrix as separate jobs on pushes to the
+default branch (`master` here; `main` is also accepted). The matrix can also run
+weekly or manually. Its jobs check older and newer JDK, build-tool, and Kotlin releases.
 Override the sample Kotlin version with `-PkotlinVersion=...` for Gradle or
 `-Dkotlin.version=...` for Maven.
+
+The same default-branch run has separate Kafka and Redis Testcontainers jobs. They
+require Docker and run the tests in `projects/containers`; Kafka verifies a produced
+record can be consumed, and Redis verifies SET/GET through its mapped port.
 
 Workflows must live at the repository root under `.github/workflows/`.
 
@@ -152,8 +157,8 @@ Workflows must live at the repository root under `.github/workflows/`.
 
 `projects/maven` and `projects/gradle` are equivalent three-module Java/Kotlin builds.
 Their sources and resources are checked for byte-for-byte parity. Each baseline has
-**13 test classes / 14 invocations**, including one parameterized Java test and one
-Kotlin test that calls Java production code.
+**15 test classes / 17 invocations**, including a parameterized Java test, a
+validated Java record, and Kotlin sealed results and extensions that call Java code.
 
 `scenarios.json` is the independent oracle: mutations, minimum required tests, and
 expected failing classes are predefined. The Rust selector never reads it.
@@ -174,6 +179,8 @@ expected failing classes are predefined. The Rust selector never reads it.
 | docs-only | Documentation-only changes |
 | dependency-change | Conservative dependency invalidation |
 | kotlin-source | Kotlin/JVM production code |
+| java-record | Java record value and validation behavior |
+| kotlin-sealed | Sealed Kotlin result and exhaustive formatting |
 
 Build and validate from the checkout:
 

@@ -37,3 +37,33 @@ jobs:
     uses: ./.github/workflows/java-tests.yml
     with:
       mode: full
+  compatibility:
+    name: Version compatibility
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+    uses: ./.github/workflows/compatibility.yml
+  container-tests:
+    name: ${{ matrix.service }} container
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [Kafka, Redis]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: maven
+      - name: Run container test
+        env:
+          TEST_CLASS: ${{ matrix.service }}Test
+        run: mvn -B -ntp -f projects/containers/pom.xml "-Dtest=$TEST_CLASS" test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-${{ matrix.service }}-reports
+          path: projects/containers/target/surefire-reports/
+          retention-days: 14

@@ -464,7 +464,8 @@ fn verify(
     let missing: BTreeSet<_> = selected.difference(&reports.executed).cloned().collect();
     let unexpected: BTreeSet<_> = reports.executed.difference(&selected).cloned().collect();
     let expected_cases = selected.len()
-        + usize::from(selected.contains("checkout:unit:example.ParameterizedCheckoutTest"));
+        + usize::from(selected.contains("checkout:unit:example.ParameterizedCheckoutTest"))
+        + usize::from(selected.contains("pricing:unit:example.PriceQuoteTest"));
     let ok = status.success()
         && selection_ok
         && reports.failed == expected

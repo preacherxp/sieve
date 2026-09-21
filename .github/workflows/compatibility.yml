@@ -1,7 +1,6 @@
 name: JVM compatibility
 on:
-  push:
-    branches: [main]
+  workflow_call:
   workflow_dispatch:
   schedule:
     - cron: '41 4 * * 2'
