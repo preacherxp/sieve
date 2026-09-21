@@ -31,7 +31,7 @@ java-test-impact run --workspace . --base origin/main
 
 Use your comparison branch, such as `origin/master`, in place of `origin/main`.
 Setup detects Maven or Gradle, prefers an existing build wrapper, and discovers the
-module dependency graph through Maven's effective models or Gradle's project model.
+declared module dependencies through Maven's effective models or Gradle's project model.
 It writes `impact.json`. Maven also receives small test-skipping profiles in its
 module POMs. Gradle uses a bundled init script, so both `build.gradle` and
 `build.gradle.kts` work without build-file edits. Commit the generated configuration
@@ -50,9 +50,12 @@ Gradle composite builds, Android, and Kotlin Multiplatform are not supported by
 automatic setup. The tool reports unsupported layouts instead of guessing.
 Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
+Custom dependency substitution and dependencies introduced through external artifacts
+need manual graph review; automatic setup collects declared inter-project edges.
 
 Prerequisites: Rust 1.92+ to install/build the CLI, Git for change detection, and the
-JDK/build tool required by your project. The samples use JDK 17, Maven 3.9.9,
+JDK/build tool required by your project. The Gradle adapter requires **Gradle 8.11+**.
+The samples use JDK 17, Maven 3.9.9,
 Gradle 8.12.1 in CI (the existing wrapper is 8.13), Kotlin 2.2.21, JUnit 5.11.4,
 and Spring 6.1.16. Initial builds need access to the normal dependency repositories.
 
