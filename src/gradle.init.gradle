@@ -38,7 +38,8 @@ gradle.projectsEvaluated {
                     // Include empty aggregator modules too, so all project dependency edges have an owner.
                     def dependencies = p.configurations.collectMany { c ->
                         c.allDependencies.withType(ProjectDependency).collect { d ->
-                            moduleId(root.project(d.path))
+                            moduleId(GradleVersion.current() >= GradleVersion.version('8.11')
+                                ? root.project(d.path) : d.dependencyProject)
                         }
                     }.unique().sort()
                     modules[key] = dependencies

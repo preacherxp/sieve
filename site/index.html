@@ -5,211 +5,349 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sieve — shorter CI for Java and Kotlin</title>
   <meta name="description" content="Sieve cuts Java and Kotlin CI time. It runs tests only in the modules a change can affect, and the modules that depend on them. Maven and Gradle. Anything unsafe still runs the full suite.">
-  <meta name="theme-color" content="#10110f">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%2310110f' width='32' height='32'/%3E%3Crect x='4' y='14' width='16' height='6' fill='%233dba8b'/%3E%3Crect x='22' y='14' width='6' height='6' fill='%2334322c'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#08090a">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%2308090a' width='32' height='32'/%3E%3Crect x='4' y='14' width='16' height='6' rx='1' fill='%233dd68c'/%3E%3Crect x='22' y='14' width='6' height='6' rx='1' fill='%2322262e'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
+    @property --border-angle {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0deg;
+    }
     :root {
-      --bg: #10110f;
-      --ink: #f3f0e8;
-      --muted: #b7b1a4;
-      --line: #34322c;
-      --card: #191b18;
-      --green: #3dba8b;
-      --green-ink: #8ee0b8;
-      --amber: #e39a55;
-      --track: #2e2c28;
+      --bg: #08090a;
+      --ink: #f7f8f8;
+      --muted: #8a8f98;
+      --line: rgba(255, 255, 255, 0.08);
+      --line-strong: rgba(255, 255, 255, 0.16);
+      --card: #0f1011;
+      --green: #3dd68c;
+      --green-ink: #7dffa8;
+      --amber: #f5a524;
+      --track: #22262e;
+      --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     *, *::before, *::after { box-sizing: border-box; }
     html { scroll-behavior: smooth; color-scheme: dark; background: var(--bg); }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        radial-gradient(ellipse 70% 45% at 50% -12%, rgba(94, 106, 210, 0.22), transparent 60%),
+        radial-gradient(ellipse 40% 30% at 85% 8%, rgba(61, 214, 140, 0.08), transparent 55%),
+        var(--bg);
       color: var(--ink);
-      font-family: "Public Sans", "Avenir Next", "Segoe UI", sans-serif;
-      font-size: 1.0625rem;
-      line-height: 1.5;
+      font-family: Inter, "Segoe UI", sans-serif;
+      font-size: 1rem;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
     }
     a { color: inherit; }
-    button, input { font: inherit; color: inherit; }
+    button { font: inherit; color: inherit; }
     code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.86em; }
     :focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
     .skip {
-      position: absolute; left: 1rem; top: -4rem;
-      background: var(--ink); color: var(--bg); padding: 0.4rem 0.7rem;
+      position: absolute; left: 1rem; top: -4rem; z-index: 20;
+      background: var(--ink); color: var(--bg); padding: 0.4rem 0.7rem; border-radius: 8px;
     }
     .skip:focus { top: 0.6rem; }
     .wrap { width: min(1120px, calc(100% - 2.5rem)); margin-inline: auto; }
-    header {
-      display: flex; justify-content: space-between; align-items: baseline;
-      gap: 1rem; padding: 1.15rem 0 0.2rem;
+    .nav {
+      position: sticky; top: 0; z-index: 10;
+      backdrop-filter: blur(16px);
+      background: rgba(8, 9, 10, 0.72);
+      border-bottom: 1px solid var(--line);
+    }
+    .nav-inner {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 1rem; min-height: 60px;
     }
     .mark {
-      font-weight: 600; letter-spacing: -0.04em; font-size: 1.35rem;
+      font-weight: 600; letter-spacing: -0.04em; font-size: 1.05rem;
       text-decoration: none;
     }
-    nav { display: flex; flex-wrap: wrap; gap: 0.35rem 1.1rem; }
-    nav a { color: var(--muted); text-decoration: none; font-size: 0.95rem; }
-    nav a:hover { color: var(--ink); }
+    .nav nav { display: flex; flex-wrap: wrap; gap: 0.25rem 0.15rem; }
+    .nav a {
+      color: var(--muted); text-decoration: none; font-size: 0.875rem;
+      padding: 0.35rem 0.7rem; border-radius: 8px;
+      transition: color 0.2s var(--ease), background 0.2s var(--ease);
+    }
+    .nav a:hover { color: var(--ink); background: rgba(255, 255, 255, 0.04); }
+
     .hero {
       display: grid;
-      grid-template-columns: minmax(0, 1.05fr) minmax(280px, 0.95fr);
-      gap: 2.5rem 3rem;
-      align-items: start;
-      padding: 2.2rem 0 3rem;
+      grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
+      gap: 3rem;
+      align-items: center;
+      padding: 4.5rem 0 4rem;
     }
-    .hero > * { min-width: 0; }
-    .kicker {
-      margin: 0 0 0.8rem;
-      font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.75rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--green-ink);
+    .hero > * { min-width: 0; animation: enter 0.7s var(--ease) both; }
+    .hero > :last-child { animation-delay: 0.08s; }
+    @keyframes enter {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: none; }
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      margin: 0 0 1.1rem; padding: 0.28rem 0.65rem 0.28rem 0.45rem;
+      border: 1px solid var(--line); border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muted);
+      font-size: 0.78rem; letter-spacing: 0.01em;
+    }
+    .pill i {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+      box-shadow: 0 0 10px var(--green);
     }
     h1 {
       margin: 0;
-      font-size: clamp(2.6rem, 4.6vw, 4.5rem);
+      max-width: 11em;
+      font-size: clamp(2.7rem, 5vw, 4.6rem);
       font-weight: 600;
-      letter-spacing: -0.045em;
-      line-height: 0.98;
-      max-width: 12em;
+      letter-spacing: -0.055em;
+      line-height: 0.96;
+      background: linear-gradient(180deg, #fff 20%, rgba(255, 255, 255, 0.62));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
-    .lede { margin: 1.1rem 0 0; max-width: 38rem; font-size: 1.2rem; color: var(--ink); }
-    .lede strong { font-weight: 600; }
-    .setup { list-style: none; margin: 1.5rem 0 0; padding: 0; }
+    .lede { margin: 1.15rem 0 0; max-width: 38rem; font-size: 1.125rem; color: var(--muted); }
+    .lede strong { color: var(--ink); font-weight: 500; }
+    .setup {
+      list-style: none; margin: 1.6rem 0 0; padding: 0.35rem;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--line);
+    }
     .setup li {
-      display: flex; align-items: stretch; gap: 0.5rem;
-      border-top: 1px solid var(--line);
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 10px;
+      transition: background 0.25s var(--ease);
     }
+    .setup li + li { border-top: 1px solid var(--line); }
+    .setup li:hover { background: rgba(255, 255, 255, 0.035); }
     .setup code {
-      flex: 1; padding: 0.7rem 0; font-size: 0.78rem; line-height: 1.45;
-      overflow-wrap: anywhere;
+      flex: 1; min-width: 0; padding: 0.65rem 0; font-size: 0.78rem; line-height: 1.45;
+      color: #d0d6e0; overflow-wrap: break-word;
     }
-    .setup button, .copy {
-      flex: none; align-self: center;
-      background: transparent; border: 1px solid var(--line);
-      padding: 0.28rem 0.5rem; cursor: pointer;
+    .setup button {
+      flex: none;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.28rem 0.65rem;
+      cursor: pointer;
+      color: var(--muted);
       font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
+      font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase;
+      transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease), transform 0.2s var(--ease);
     }
-    .setup button:hover, .copy:hover,
-    .setup button[data-state="copied"], .copy[data-state="copied"] {
+    .setup button:hover,
+    .setup button[data-state="copied"] {
       background: var(--ink); color: var(--bg); border-color: var(--ink);
     }
-    .fine { margin: 0.8rem 0 0; color: var(--muted); font-size: 0.95rem; max-width: 38rem; }
-
-    .panel {
-      background: var(--card);
+    .fine { margin: 0.9rem 0 0; color: var(--muted); font-size: 0.92rem; max-width: 40rem; }
+    .fine code, .steps code, .limits code {
+      color: #d0d6e0;
+      background: rgba(255, 255, 255, 0.05);
       border: 1px solid var(--line);
-      padding: 1rem 1rem 1.05rem;
-      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+      border-radius: 6px;
+      padding: 0.05em 0.35em;
+      white-space: nowrap;
     }
+
+    .shine {
+      position: relative;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      background:
+        linear-gradient(var(--card), var(--card)) padding-box,
+        conic-gradient(from var(--border-angle),
+          rgba(255, 255, 255, 0.14) 0%,
+          rgba(255, 255, 255, 0.05) 22%,
+          #5e6ad2 38%,
+          #ffffff 48%,
+          #3dd68c 58%,
+          rgba(255, 255, 255, 0.05) 74%,
+          rgba(255, 255, 255, 0.14) 100%) border-box;
+      background-origin: border-box;
+      background-clip: padding-box, border-box;
+      animation: spin 9s linear infinite;
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    @keyframes spin { to { --border-angle: 360deg; } }
+    .panel { padding: 1.15rem 1.15rem 1.05rem; }
     .panel-kicker {
       margin: 0;
       font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+      font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
       color: var(--muted);
     }
-    .choices { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0 1rem; }
-    .choices button {
-      background: transparent; border: 1px solid var(--line);
-      padding: 0.32rem 0.55rem; cursor: pointer; font-size: 0.92rem;
+    .choices { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.85rem 0 1.05rem; }
+    .choices button, .tools button {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.32rem 0.7rem;
+      cursor: pointer;
+      color: var(--muted);
+      transition: background 0.22s var(--ease), color 0.22s var(--ease), border-color 0.22s var(--ease), transform 0.22s var(--ease);
     }
-    .choices button[aria-checked="true"] {
-      background: var(--ink); color: var(--bg); border-color: var(--ink);
+    .choices button:hover, .tools button:hover {
+      color: var(--ink); border-color: var(--line-strong); background: rgba(255, 255, 255, 0.06);
     }
-    .result { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; }
+    .choices button[aria-checked="true"],
+    .tools button[aria-checked="true"] {
+      background: var(--ink); color: #08090a; border-color: var(--ink);
+    }
+    .result {
+      display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem;
+    }
     .result p { margin: 0; }
     .eyebrow {
       font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;
+      font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase;
       color: var(--green-ink);
+      transition: color 0.3s var(--ease);
     }
     .result[data-mode="ALL"] .eyebrow { color: var(--amber); }
     #saved {
-      font-size: clamp(3.2rem, 6vw, 4.4rem);
-      font-weight: 600; letter-spacing: -0.05em; line-height: 0.9;
+      font-size: clamp(3.4rem, 6vw, 4.6rem);
+      font-weight: 600; letter-spacing: -0.06em; line-height: 0.9;
       font-variant-numeric: tabular-nums;
     }
-    .of { color: var(--muted); font-size: 0.95rem; margin-top: 0.25rem; }
+    #saved.tick { animation: rise 0.45s var(--ease); }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: none; }
+    }
+    .of { color: var(--muted); font-size: 0.92rem; transition: opacity 0.25s var(--ease); }
     .bar {
       display: grid; grid-template-columns: repeat(14, 1fr);
-      gap: 4px; margin: 0.9rem 0 0.75rem;
+      gap: 5px; margin: 1rem 0 0.85rem;
     }
-    .bar span { height: 22px; background: var(--track); }
-    .bar span.ran { background: var(--green); }
-    .bar span.full { background: var(--amber); }
-    .summary { margin: 0; font-size: 1.05rem; }
-    .mods { margin: 0.85rem 0 0; }
-    .mods p { margin: 0.2rem 0; font-size: 1rem; }
+    .bar span {
+      height: 10px; border-radius: 99px; background: var(--track);
+      transform: scaleX(0.86); transform-origin: left center;
+      transition: background 0.4s var(--ease), transform 0.4s var(--ease), box-shadow 0.4s var(--ease);
+    }
+    .bar span.ran {
+      background: var(--green); transform: scaleX(1);
+      box-shadow: 0 0 14px rgba(61, 214, 140, 0.35);
+    }
+    .bar span.full {
+      background: var(--amber); transform: scaleX(1);
+      box-shadow: 0 0 14px rgba(245, 165, 36, 0.28);
+    }
+    .summary { margin: 0; color: #d0d6e0; min-height: 3.1em; transition: opacity 0.25s var(--ease); }
+    .mods { margin: 0.9rem 0 0; display: grid; gap: 0.35rem; }
+    .mods p { margin: 0; transition: opacity 0.25s var(--ease); }
     .mods b { font-weight: 500; }
     .mods span {
-      display: inline-block; min-width: 3.4rem;
+      display: inline-block; min-width: 3.2rem; margin-right: 0.35rem;
       font-family: "IBM Plex Mono", ui-monospace, monospace;
       font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase;
       color: var(--muted);
     }
     #flags {
-      margin: 0.9rem 0 0; padding-top: 0.75rem; border-top: 1px solid var(--line);
+      margin: 0.95rem 0 0; padding-top: 0.8rem; border-top: 1px solid var(--line);
       font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.72rem; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere;
+      font-size: 0.72rem; line-height: 1.5; color: #9aa3b2; overflow-wrap: anywhere;
+      transition: opacity 0.25s var(--ease);
     }
-    .tools { display: flex; gap: 0.35rem; margin-top: 0.7rem; }
+    .tools { display: flex; gap: 0.4rem; margin-top: 0.8rem; }
     .tools button {
-      background: transparent; border: 1px solid var(--line);
       font-family: "IBM Plex Mono", ui-monospace, monospace;
       font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase;
-      padding: 0.25rem 0.45rem; cursor: pointer;
+      padding: 0.28rem 0.6rem;
     }
-    .tools button[aria-checked="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 
-    .band { padding: 0 0 3.2rem; }
+    .band { padding: 0 0 4rem; }
     h2 {
-      margin: 0;
-      font-size: clamp(1.8rem, 3vw, 2.4rem);
-      font-weight: 600; letter-spacing: -0.035em; line-height: 1.05;
+      margin: 0 0 1rem;
+      font-size: clamp(1.7rem, 3vw, 2.25rem);
+      font-weight: 600; letter-spacing: -0.04em; line-height: 1.1;
     }
-    .steps { list-style: none; margin: 1.2rem 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.25rem; }
-    .steps li { border-top: 2px solid var(--ink); padding-top: 0.8rem; }
-    .steps h3 { margin: 0 0 0.35rem; font-size: 1.15rem; letter-spacing: -0.02em; }
-    .steps p { margin: 0; color: var(--muted); }
-    .limits { margin-top: 2.6rem; }
-    .limits ul { margin: 0.8rem 0 0; padding: 0; list-style: none; }
-    .limits li { padding: 0.75rem 0; border-top: 1px solid var(--line); max-width: 46rem; }
-    .limits strong { font-weight: 600; }
+    .steps {
+      list-style: none; margin: 0; padding: 0;
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem;
+    }
+    .card {
+      position: relative;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background:
+        radial-gradient(420px circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.07), transparent 42%),
+        rgba(255, 255, 255, 0.02);
+      padding: 1.05rem 1.05rem 1.15rem;
+      transition: transform 0.35s var(--ease), border-color 0.35s var(--ease), background 0.35s var(--ease);
+    }
+    .card::before {
+      content: "";
+      position: absolute; inset: 0; border-radius: inherit; padding: 1px;
+      background: radial-gradient(280px circle at var(--mx, 50%) var(--my, 0%), rgba(255, 255, 255, 0.75), transparent 42%);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      mask-composite: exclude;
+      opacity: 0;
+      transition: opacity 0.4s var(--ease);
+      pointer-events: none;
+    }
+    .card:hover { transform: translateY(-3px); border-color: transparent; }
+    .card:hover::before { opacity: 1; }
+    .steps h3 { margin: 0 0 0.4rem; font-size: 1.02rem; letter-spacing: -0.02em; font-weight: 600; }
+    .steps p, .limits p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    .index {
+      display: block; margin-bottom: 0.7rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.72rem; letter-spacing: 0.08em; color: var(--muted);
+    }
+    .limits { margin-top: 3rem; }
+    .limits ul {
+      list-style: none; margin: 0; padding: 0;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;
+    }
+    .limits li { padding: 1.05rem 1.1rem 1.15rem; }
+    .limits strong { display: block; margin-bottom: 0.35rem; font-weight: 600; color: var(--ink); }
     footer {
       display: flex; flex-wrap: wrap; gap: 0.4rem 1.4rem; justify-content: space-between;
-      padding: 0 0 2rem;
+      padding: 0.4rem 0 2rem; border-top: 1px solid var(--line);
       color: var(--muted);
       font-family: "IBM Plex Mono", ui-monospace, monospace;
-      font-size: 0.72rem; letter-spacing: 0.04em;
+      font-size: 0.72rem;
     }
-    footer a { color: var(--green-ink); }
+    footer a { color: var(--ink); text-underline-offset: 0.2em; transition: color 0.2s var(--ease); }
+    footer a:hover { color: var(--green-ink); }
     .sr {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0, 0, 0, 0); border: 0;
     }
     @media (max-width: 860px) {
-      .hero, .steps { grid-template-columns: 1fr; }
-      header { flex-wrap: wrap; }
+      .hero, .steps, .limits ul { grid-template-columns: 1fr; }
+      .hero { padding-top: 2.6rem; align-items: start; }
+      .nav-inner { flex-wrap: wrap; padding: 0.7rem 0; }
     }
     @media (max-width: 640px) {
-      h1 { font-size: 2.35rem; }
-      .setup li { flex-wrap: wrap; padding: 0.35rem 0; }
-      .lede { font-size: 1.05rem; }
+      h1 { font-size: 2.4rem; }
+      .lede { font-size: 1.02rem; }
+      .setup li { flex-wrap: wrap; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
     }
   </style>
 </head>
 <body>
   <a class="skip" href="#proof">Skip to the savings</a>
-  <div class="wrap">
-    <header>
+  <header class="nav">
+    <div class="wrap nav-inner">
       <a class="mark" href="#top">Sieve</a>
       <nav aria-label="Page">
         <a href="#proof">What CI skips</a>
@@ -217,32 +355,34 @@
         <a href="#install">Install</a>
         <a href="https://github.com/preacherxp/sieve">GitHub</a>
       </nav>
-    </header>
+    </div>
+  </header>
 
+  <div class="wrap">
     <main id="top">
       <section class="hero">
         <div>
-          <p class="kicker">java-test-impact · Maven · Gradle</p>
+          <p class="pill"><i></i> sieve · Maven · Gradle</p>
           <h1>Reduce CI time on Java and Kotlin changes.</h1>
           <p class="lede">Sieve runs tests only in the modules a diff can affect, and in every module that depends on them. The rest of the suite is not started. A build file, or a base Git cannot see, still runs <strong>everything</strong>.</p>
           <ol class="setup" id="install">
             <li>
-              <code>cargo install --git https://github.com/preacherxp/sieve --locked</code>
+              <code>cargo install --git https://github.com/<wbr>preacherxp/<wbr>sieve --locked</code>
               <button type="button" data-copy="cargo install --git https://github.com/preacherxp/sieve --locked">Copy</button>
             </li>
             <li>
-              <code>java-test-impact init</code>
-              <button type="button" data-copy="java-test-impact init">Copy</button>
+              <code>sieve init</code>
+              <button type="button" data-copy="sieve init">Copy</button>
             </li>
             <li>
-              <code>java-test-impact run --workspace . --base origin/main</code>
-              <button type="button" data-copy="java-test-impact run --workspace . --base origin/main">Copy</button>
+              <code>sieve run --workspace . --base origin/main</code>
+              <button type="button" data-copy="sieve run --workspace . --base origin/main">Copy</button>
             </li>
           </ol>
-          <p class="fine">From this checkout, <code>cargo install --path . --locked</code>. Preview a job with <code>select</code> instead of <code>run</code>. Use your real base branch. Rust 1.92+, Git, and the JDK the build already needs.</p>
+          <p class="fine">From this checkout, <code>cargo install --path . --locked</code>. Preview a job with <code>sieve select</code> instead of <code>sieve run</code>. Use your real base branch. Rust 1.92+, Git, and the JDK the build already needs.</p>
         </div>
 
-        <aside class="panel" id="proof" aria-labelledby="proof-title">
+        <aside class="panel shine" id="proof" aria-labelledby="proof-title">
           <p class="panel-kicker" id="proof-title">Sample suite · 14 test runs</p>
           <div class="choices" role="radiogroup" aria-label="Example change">
             <button type="button" role="radio" data-id="pricing" aria-checked="true">Pricing</button>
@@ -276,33 +416,36 @@
       <section class="band" id="how" aria-labelledby="how-title">
         <h2 id="how-title">A shorter job, not a guessed one.</h2>
         <ol class="steps">
-          <li>
+          <li class="card">
+            <span class="index">01</span>
             <h3>Read the real graph.</h3>
             <p><code>init</code> asks Maven or Gradle for the module graph and writes <code>impact.json</code>. It will not overwrite one. Checkout depending on pricing is an edge the selector can walk.</p>
           </li>
-          <li>
+          <li class="card">
+            <span class="index">02</span>
             <h3>Diff against the base.</h3>
             <p>Committed, staged, unstaged, deleted, renamed, and untracked paths. A file under <code>module/src/</code> selects that module and every transitive dependent.</p>
           </li>
-          <li>
+          <li class="card">
+            <span class="index">03</span>
             <h3>Let the build tool run them.</h3>
             <p>Maven gets <code>clean verify</code> and skip flags. Gradle gets <code>clean check</code> and <code>-Pimpact.modules</code>. No base, or a build-file change, and the flags stay off so the full suite runs.</p>
           </li>
         </ol>
-        <div class="limits" id="limits">
+        <div class="limits">
           <h2>Where it will not save time.</h2>
           <ul>
-            <li><strong>The grain is the module.</strong> TaxRules.java also runs CurrencyLabelTest, because they share pricing. You skip modules, not individual classes. There is no recording agent.</li>
-            <li><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</li>
-            <li><strong>Docs are the free case.</strong> <code>README.md</code>, <code>VALIDATION.md</code>, and <code>docs/</code> do not compile or test. The job cleans and stops.</li>
-            <li><strong>Setup is for a simple layout.</strong> One package, or direct child modules whose directory names match. Nested trees, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</li>
+            <li class="card"><p><strong>The grain is the module.</strong> TaxRules.java also runs CurrencyLabelTest, because they share pricing. You skip modules, not individual classes. There is no recording agent.</p></li>
+            <li class="card"><p><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</p></li>
+            <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>VALIDATION.md</code>, and <code>docs/</code> do not compile or test. The job cleans and stops.</p></li>
+            <li class="card"><p><strong>Setup is for a simple layout.</strong> One package, or direct child modules whose directory names match. Nested trees, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</p></li>
           </ul>
         </div>
       </section>
     </main>
 
     <footer>
-      <span>Sieve · java-test-impact 0.1.0</span>
+      <span>sieve 0.1.0</span>
       <span>Java · Kotlin · Maven · Gradle</span>
       <a href="https://github.com/preacherxp/sieve">github.com/preacherxp/sieve</a>
     </footer>
@@ -312,31 +455,26 @@
     const ORDER = ["checkout", "pricing", "runtime"];
     const EXAMPLES = {
       pricing: {
-        path: "pricing/src/main/java/example/TaxRules.java",
         modules: ["pricing", "checkout"],
         runs: 9,
         summary: "Checkout depends on pricing, so both run. Runtime is not started."
       },
       checkout: {
-        path: "checkout/src/test/java/example/CheckoutTest.java",
         modules: ["checkout"],
         runs: 5,
         summary: "Dependents are included. Dependencies are not. Pricing is upstream, so it stays out of CI."
       },
       runtime: {
-        path: "runtime/src/main/resources/application.properties",
         modules: ["runtime"],
         runs: 5,
         summary: "Nothing depends on runtime. Pricing and checkout are not started."
       },
       docs: {
-        path: "README.md",
         modules: [],
         runs: 0,
         summary: "A docs-only push does not compile and does not test. CI cleans and stops."
       },
       build: {
-        path: "pom.xml",
         modules: ["checkout", "pricing", "runtime"],
         runs: 14,
         mode: "ALL",
@@ -346,6 +484,7 @@
 
     let tool = "maven";
     let current = "pricing";
+    let primed = false;
 
     function modeOf(example) {
       if (example.mode) return example.mode;
@@ -369,6 +508,12 @@
         }
       }
       return (tool === "maven" ? "mvn " : "gradle ") + args.join(" ");
+    }
+
+    function fade(el) {
+      if (!primed) return;
+      el.style.opacity = "0.35";
+      requestAnimationFrame(() => { el.style.opacity = "1"; });
     }
 
     function paint(id) {
@@ -398,24 +543,35 @@
         saved.textContent = String(skipped);
         of.textContent = example.runs + " of 14 still run";
       }
+      if (primed) {
+        saved.classList.remove("tick");
+        void saved.offsetWidth;
+        saved.classList.add("tick");
+      }
       const bar = document.getElementById("bar");
       bar.replaceChildren();
       for (let i = 0; i < 14; i++) {
         const cell = document.createElement("span");
         if (i < example.runs) cell.className = mode === "ALL" ? "full" : "ran";
+        cell.style.transitionDelay = (i * 28) + "ms";
         bar.appendChild(cell);
       }
-      document.getElementById("summary").textContent = example.summary;
+      const summary = document.getElementById("summary");
+      fade(summary);
+      summary.textContent = example.summary;
       const display = ["pricing", "checkout", "runtime"];
       const runs = display.filter((module) => example.modules.includes(module));
       const skips = display.filter((module) => !example.modules.includes(module));
       document.getElementById("runs-mods").textContent = runs.length ? runs.join(", ") : "nothing";
       document.getElementById("skips-mods").textContent = skips.length ? skips.join(", ") : "nothing";
-      document.getElementById("flags").textContent = flagsFor(example);
+      const flags = document.getElementById("flags");
+      fade(flags);
+      flags.textContent = flagsFor(example);
       const spoken = mode === "ALL"
         ? "Full suite. 14 of 14 test runs. " + example.summary
         : skipped + " skipped. " + example.runs + " still run. " + example.summary;
       document.getElementById("live").textContent = spoken;
+      primed = true;
     }
 
     document.querySelector(".choices").addEventListener("click", (event) => {
@@ -440,7 +596,9 @@
       for (const peer of document.querySelectorAll(".tools button")) {
         peer.setAttribute("aria-checked", peer === button ? "true" : "false");
       }
-      document.getElementById("flags").textContent = flagsFor(EXAMPLES[current]);
+      const flags = document.getElementById("flags");
+      fade(flags);
+      flags.textContent = flagsFor(EXAMPLES[current]);
     });
     document.querySelectorAll("[data-copy]").forEach((button) => {
       button.addEventListener("click", async () => {
@@ -467,6 +625,13 @@
           button.textContent = previous;
           delete button.dataset.state;
         }, 1400);
+      });
+    });
+    document.querySelectorAll(".card").forEach((card) => {
+      card.addEventListener("pointermove", (event) => {
+        const rect = card.getBoundingClientRect();
+        card.style.setProperty("--mx", event.clientX - rect.left + "px");
+        card.style.setProperty("--my", event.clientY - rect.top + "px");
       });
     });
 

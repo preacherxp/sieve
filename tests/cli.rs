@@ -295,8 +295,8 @@ fn installs_build_adapters() {
             "--workspace",
             workspace,
         ]);
-        assert_eq!(reports["cases"], 9, "{tool}: {reports}");
-        assert_eq!(reports["failed"].as_array().unwrap().len(), 5);
+        assert_eq!(reports["cases"], 12, "{tool}: {reports}");
+        assert_eq!(reports["failed"].as_array().unwrap().len(), 7);
         assert!(reports["executed"]
             .as_array()
             .unwrap()
