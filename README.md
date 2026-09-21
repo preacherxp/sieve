@@ -122,24 +122,28 @@ needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
 ## GitHub CI
 
-The repository has explicit, sequential stages on pushes, pull requests, and manual runs:
+The repository runs these checks on pushes, pull requests, and manual runs:
 
 1. **Rust and selector checks:** formatting, Clippy, unit checks, and all scenario
    selections for both build tools.
 2. **Selected tests:** Maven and Gradle jobs use the PR base or previous push SHA.
    Missing history or shared build/selector changes select ALL; the selected job
-   records that decision and the full-test stage executes the suite once.
+   records that decision and the full-test stage executes the suite once. Eight
+   additional jobs verify selected execution for Java, Kotlin, integration, and
+   edge-case fixture mutations on both build tools.
 3. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
-   revision. This stage still runs if the selective stage fails, unless cancelled.
+   revision and across every fixture mutation. Kafka and Redis container tests also
+   run on every CI event. The full stage still runs if the selective stage fails,
+   unless cancelled.
 
-Each stage uploads its own selection and JUnit reports and adds its decision to the
-job summary. CI uses full Git history, read-only repository permissions, no persisted
-checkout credentials, and no secrets for pull requests.
+Selected and full Java jobs upload selection and JUnit reports and add decisions to
+the job summary. Scenario and container jobs upload their own results. CI uses full
+Git history, read-only repository permissions, no persisted checkout credentials,
+and no secrets for pull requests.
 
-The weekly/manual `fixtures.yml` workflow validates installation and runs every
-mutation twice: once with the full suite and once with selective execution, including
-known failure detection. If merges must require both test stages, make the Rust
-check and all four Java/Kotlin job checks required in branch protection.
+The weekly/manual `fixtures.yml` workflow also validates installation and runs every
+mutation twice, including known failure detection. If merges must require all test
+stages, make the Rust check and Java/Kotlin jobs required in branch protection.
 
 The primary CI runs the compatibility matrix as separate jobs on pushes to the
 default branch (`master` here; `main` is also accepted). The matrix can also run
@@ -147,7 +151,7 @@ weekly or manually. Its jobs check older and newer JDK, build-tool, and Kotlin r
 Override the sample Kotlin version with `-PkotlinVersion=...` for Gradle or
 `-Dkotlin.version=...` for Maven.
 
-The same default-branch run has separate Kafka and Redis Testcontainers jobs. They
+Kafka and Redis Testcontainers jobs run for pushes and pull requests. They
 require Docker and run the tests in `projects/containers`; Kafka verifies a produced
 record can be consumed, and Redis verifies SET/GET through its mapped port.
 

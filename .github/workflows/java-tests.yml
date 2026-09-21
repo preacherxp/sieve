@@ -12,7 +12,7 @@ jobs:
   tests:
     name: ${{ inputs.mode }} (${{ matrix.tool }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +67,14 @@ jobs:
             --executable "$executable" \
             --output "validation-results/$BUILD_TOOL-selection.json" \
             "${args[@]}"
+      - name: Verify full suite across fixture mutations
+        if: inputs.mode == 'full'
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+        run: >-
+          target/release/sieve fixtures verify
+          --tool "$BUILD_TOOL" --scenario all
+          --output validation-results/full-fixtures
       - name: Publish selection summary
         if: always()
         env:

@@ -30,6 +30,50 @@ jobs:
     uses: ./.github/workflows/java-tests.yml
     with:
       mode: selected
+  selected-variants:
+    name: Selected ${{ matrix.variant }} (${{ matrix.tool }})
+    needs: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [maven, gradle]
+        variant: [java, kotlin, integration, edge]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: ${{ matrix.tool }}
+      - name: Build selector
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked
+      - name: Verify selected variants
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+          VARIANT: ${{ matrix.variant }}
+        shell: bash
+        run: |
+          case "$VARIANT" in
+            java) scenarios=(tax-transitive calculator unrelated gateway-implementation inherited-fixture changed-test new-test java-record) ;;
+            kotlin) scenarios=(kotlin-source kotlin-sealed) ;;
+            integration) scenarios=(reflection async spring-bean spring-wiring resource service-provider dependency-change) ;;
+            edge) scenarios=(unused delete-class docs-only) ;;
+          esac
+          for scenario in "${scenarios[@]}"; do
+            target/debug/sieve fixtures verify \
+              --tool "$BUILD_TOOL" --scenario "$scenario" --selected \
+              --output validation-results/selected
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selected-${{ matrix.tool }}-${{ matrix.variant }}
+          path: validation-results/selected/
+          retention-days: 14
   full-tests:
     name: All tests
     needs: selected-tests
@@ -43,7 +87,6 @@ jobs:
     uses: ./.github/workflows/compatibility.yml
   container-tests:
     name: ${{ matrix.service }} container
-    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
