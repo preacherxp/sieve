@@ -1,217 +1,222 @@
-# Java test-impact validation samples
+# Sieve: Java and Kotlin test impact
 
-Two independent, equivalent Java 17 projects: **Maven + Surefire/Failsafe** and
-**Gradle + separate unit/integration test tasks**. Use them as a correctness and
-precision benchmark while building a test selection engine.
+A Rust CLI that runs tests in changed JVM modules and their transitive dependents.
+It supports Java, Kotlin/JVM, and mixed projects using Maven or Gradle. The selector,
+fixture manager, validation oracle, and tests are all Rust.
 
-This bundle contains fixtures and a validation harness. It does **not** implement
-the selection engine or claim that the proposed `impact` plugins already exist.
+Selection is conservative and module-level. There is no class-level analysis or
+runtime recording agent yet. Build configuration changes or uncertain Git history
+trigger the full suite.
 
-## Contents
+## Install and set up a project
 
-- `projects/maven/`: three-module Maven reactor.
-- `projects/gradle/`: equivalent three-project Gradle build.
-- `scenarios.json`: 17 reproducible mutations, required selections, and expected failures.
-- `validate.py`: prepare workspaces, apply mutations, check selections, parse reports, verify full runs.
-- `test_harness.py`: tests for mutation application, parity, selection checks and report parsing.
-- `.github/workflows/fixtures.yml`: Maven and Gradle validation jobs in parallel.
-- `VALIDATION.md`: results and environment used when creating this bundle.
-
-## Prerequisites
-
-JDK **17** (a full JDK, not just a JRE), Python **3.10+**, Maven **3.9.9** and
-Gradle **8.12.1**. Use installations on PATH or pass `--maven` / `--gradle` executable
-paths. Git is optional unless using `prepare --git`. First builds need access to
-Maven Central. Dependencies are pinned to JUnit 5.11.4 and Spring Framework 6.1.16;
-these are reproducible fixture versions, not recommendations for production.
-
-No database, Docker, credentials, remote service, or IDE is required. Standard build
-tool installations are used; wrapper binaries are not included.
-
-## Run the baselines
-
-From the bundle root:
+Install from this checkout:
 
 ```bash
-python3 validate.py verify --tool both
+cargo install --path . --locked
 ```
 
-Or use the build tools directly:
+Or install directly from GitHub:
 
 ```bash
-cd projects/maven
-mvn clean verify
+cargo install --git https://github.com/preacherxp/sieve --locked
 ```
+
+From an existing Java or Kotlin project:
 
 ```bash
-cd projects/gradle
-gradle clean check
+java-test-impact init
+java-test-impact run --workspace . --base origin/main
 ```
 
-Use Maven **verify**, not just test, to include Failsafe integration tests. Gradle
-**check** includes the separate integrationTest tasks. Each baseline has **12 test
-classes / 13 test invocations**; the parameterized test has two invocations.
+Use your comparison branch, such as `origin/master`, in place of `origin/main`.
+Setup detects Maven or Gradle, prefers an existing build wrapper, and discovers the
+module dependency graph through Maven's effective models or Gradle's project model.
+It writes `impact.json`. Maven also receives small test-skipping profiles in its
+module POMs. Gradle uses a bundled init script, so both `build.gradle` and
+`build.gradle.kts` work without build-file edits. Commit the generated configuration
+and POM changes. Setup refuses to overwrite an existing `impact.json`.
 
-## Validate all fixture mutations
+Optional overrides:
 
 ```bash
-python3 -m unittest -v test_harness
-python3 validate.py list
-python3 validate.py verify --tool both --scenario all
+java-test-impact init --workspace /path/to/project --tool gradle --executable /path/to/gradle
+java-test-impact run --workspace /path/to/project --base origin/main --executable /path/to/gradle
 ```
 
-The harness creates isolated temporary projects and runs the **full suite** for each
-mutation. It checks that every expected test class actually ran and that the failing
-classes exactly match the manifest. Build/compilation errors fail validation. Reports
-and build logs are written under `validation-results/`.
+Automatic setup currently supports a single JVM package or direct child modules
+whose directory names match their module names. Nested/custom module layouts,
+Gradle composite builds, Android, and Kotlin Multiplatform are not supported by
+automatic setup. The tool reports unsupported layouts instead of guessing.
+Run setup with the same Maven profiles and build environment used by CI. Keep
+`impact.json` complete when adding dependencies, including runtime/resource edges.
 
-Mutations deliberately break behavior. A PASS in this harness means the expected
-failures were observed; it does not mean the mutated application is correct. Test
-failure ignoring is enabled only by the harness to let all modules finish. Ordinary
-`mvn verify` / `gradle check` still fail normally on test failures.
+Prerequisites: Rust 1.92+ to install/build the CLI, Git for change detection, and the
+JDK/build tool required by your project. The samples use JDK 17, Maven 3.9.9,
+Gradle 8.12.1 in CI (the existing wrapper is 8.13), Kotlin 2.2.21, JUnit 5.11.4,
+and Spring 6.1.16. Initial builds need access to the normal dependency repositories.
 
-## Validate your selector
+## How selection works
 
-The important sequence is **baseline run → mutation in the same workspace → selection**.
-This preserves the baseline metadata your plugin creates.
-
-```bash
-python3 validate.py prepare --tool maven --dest /tmp/impact-maven-tax --git
-```
-
-1. Add/configure your Maven adapter in that workspace, then commit those setup changes.
-2. Run your tool's full baseline/recording mode from that workspace.
-3. Apply the mutation from the bundle root:
-
-```bash
-python3 validate.py apply tax-transitive --workspace /tmp/impact-maven-tax
-```
-
-4. Run your tool's selection mode in the workspace and export its selected class IDs
-   to `actual-selection.json` using the format below.
-5. Check that selection:
-
-```bash
-python3 validate.py check-selection tax-transitive --actual actual-selection.json
-python3 validate.py check-selection tax-transitive --actual actual-selection.json --exact
-```
-
-Repeat with `--tool gradle` and a separate destination to compare adapters. The
-`prepare` command refuses to overwrite an existing directory; `apply` refuses to
-stack scenarios. Prepared mutations remain uncommitted, deliberately exercising
-working-tree change detection. Commit after mutation to test committed-change handling.
-
-### Selection interchange format
+`impact.json` describes the build tool and direct dependencies:
 
 ```json
 {
-  "mode": "SUBSET",
-  "tests": [
-    "pricing:unit:example.TaxRulesTest",
-    "pricing:unit:example.PriceCalculatorTest",
-    "checkout:unit:example.CheckoutTest",
-    "checkout:unit:example.ParameterizedCheckoutTest"
-  ]
+  "tool": "maven",
+  "modules": {
+    "pricing": [],
+    "checkout": ["pricing"],
+    "runtime": []
+  }
 }
 ```
 
-IDs are `module:suite:fully.qualified.ClassName`. Suites are `unit` or `integration`.
-`{"mode":"ALL","tests":[]}` selects the entire currently eligible inventory;
-`{"mode":"NONE","tests":[]}` selects none. SUBSET requires unique known IDs.
-Selection is class-level, so parameterized invocations share one class ID.
+A single-module package uses `".": []`. The conventional source layout is
+`<module>/src/...`, including `src/main/java`, `src/main/kotlin`, tests, and resources.
 
-The default check is **safety-oriented**: all `required` IDs must be present, while
-additional tests are reported as `extra`. A conservative full-suite fallback can pass.
-`--exact` additionally rejects extras and measures precision. The minimum required
-sets are behavioral requirements, not promises about the output of every static
-analysis strategy. For dependency upgrades the required set intentionally encodes a
-conservative suite-level invalidation policy.
+1. Find the merge base between `--base` and HEAD.
+2. Collect committed, staged, unstaged, deleted, renamed, and untracked changed paths.
+3. Select changed source/resource modules and follow reverse dependency edges.
+4. Run every unit/integration test in those modules through the native build tool.
 
-Compare actual execution too:
+For the samples, pricing changes select pricing and checkout: **8 classes / 9 test
+invocations**. Checkout changes select **4 classes / 5 invocations**. Runtime changes
+select **5 integration classes**. Kotlin code participates in the same graph as Java.
+
+Root `README.md`, `VALIDATION.md`, and `docs/` changes select NONE. Other changes
+outside recognized source directories, including build scripts, dependency versions,
+configuration, and shared repository inputs, select ALL. An unavailable base or Git
+history also selects ALL. Invalid configuration fails explicitly.
 
 ```bash
-python3 validate.py reports --workspace /tmp/impact-maven-tax --tool maven
+# Preview a selection without executing tests.
+java-test-impact select --workspace projects/maven --base origin/master
+
+# Execute selected tests and save the decision before the build starts.
+mkdir -p validation-results
+java-test-impact run --workspace projects/maven --base origin/master \
+  --output validation-results/maven-selection.json
+
+# Always run the full suite.
+java-test-impact run --workspace projects/gradle --full
 ```
 
-The report command prints executed/failed/skipped IDs and invocation count. Clear
-previous XML reports before the selection run without deleting your selector baseline;
-otherwise stale reports can falsely suggest a skipped test ran. The `verify` command
-avoids this problem by using fresh workspaces and clean builds. A selection JSON alone
-does not prove that your adapter actually applied its filters.
+Omitting `--base` also requests a full run. Put selection output in an ignored
+folder or outside the project so it does not become an untracked build input.
+The runner propagates build/test failures and accepts additional build arguments
+after `--`. It starts with `clean` to prevent stale XML reports; NONE runs only
+`clean`, without compilation or tests. No baseline metadata or selection cache is
+needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
-## Fixture modules
+## GitHub CI
 
-| Module | Production behavior | Tests |
-|---|---|---|
-| pricing | Tax rules, pricing, independent currency label, unused discount | 3 unit classes |
-| checkout | Depends on pricing; interface-based payment gateway; receipt | 4 unit classes, including inherited fixture and parameterization |
-| runtime | Spring bean configuration, reflection, properties, executor, ServiceLoader | 5 integration classes |
+The repository has explicit, sequential stages on pushes, pull requests, and manual runs:
 
-Maven and Gradle contain byte-for-byte identical Java/resources. Each can be copied
-out and built independently; neither references source directories in the other.
+1. **Rust and selector checks:** formatting, Clippy, unit checks, and all scenario
+   selections for both build tools.
+2. **Selected tests:** Maven and Gradle jobs use the PR base or previous push SHA.
+   Missing history falls back to ALL. A controlled mutation also proves that each
+   adapter executes the expected subset and catches its known failures.
+3. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
+   revision. This stage still runs if the selective stage fails, unless cancelled.
 
-## Scenarios
+Each stage uploads its own selection and JUnit reports and adds its decision to the
+job summary. CI uses full Git history, read-only repository permissions, no persisted
+checkout credentials, and no secrets for pull requests.
 
-| ID | What it validates | Minimum selected classes |
-|---|---|---|
-| tax-transitive | Leaf change propagates across module boundaries | TaxRulesTest, PriceCalculatorTest, CheckoutTest, ParameterizedCheckoutTest |
-| calculator | Shared calculation propagates downstream | PriceCalculatorTest, CheckoutTest, ParameterizedCheckoutTest |
-| unrelated | Independent feature isolation | CurrencyLabelTest |
-| unused | Unused production class | None |
-| gateway-implementation | Interface implementation change | GatewayTest, CheckoutTest, ParameterizedCheckoutTest |
-| inherited-fixture | Test superclass dependencies | CheckoutTest, ParameterizedCheckoutTest |
-| changed-test | Modified test must run | TaxRulesTest |
-| new-test | Test absent from baseline must run | NewTaxTest |
-| reflection | Class name lookup with no normal type reference | ReflectionIT |
-| async | Method executes on a worker thread | AsyncIT |
-| spring-bean | Bean implementation also used through ServiceLoader | SpringWiringIT, ServiceLoaderIT |
-| spring-wiring | Configuration selects a different implementation | SpringWiringIT |
-| resource | Properties file affects behavior | ResourceIT |
-| service-provider | Provider registration is a resource dependency | ServiceLoaderIT |
-| delete-class | Removed class with compilable consumer replacement | ReceiptTest |
-| docs-only | Documentation does not invalidate Java tests | None |
-| dependency-change | Changed resolved Spring dependency | All runtime integration classes |
+The weekly/manual `fixtures.yml` workflow validates installation and runs every
+mutation twice: once with the full suite and once with selective execution. Set the
+Rust check and all four Java/Kotlin job checks as required in branch protection if
+you want merges to require both test stages.
 
-The delete-class case also changes its consumer; it catches broken deletion handling
-but cannot by itself prove that the engine traverses the previous graph. Reflection
-and resource cases may correctly trigger a broader integration-suite fallback in v0.1.
+Workflows must live at the repository root under `.github/workflows/`.
 
-## Next validation layers
+## Fixture benchmark
 
-These small projects establish a first benchmark, not a complete soundness proof.
-Add the following when those capabilities enter the tool's supported contract:
+`projects/maven` and `projects/gradle` are equivalent three-module Java/Kotlin builds.
+Their sources and resources are checked for byte-for-byte parity. Each baseline has
+**13 test classes / 14 invocations**, including one parameterized Java test and one
+Kotlin test that calls Java production code.
 
-- Missing/corrupt/version-incompatible baseline: explicit full-suite fallback.
-- A → B → A checkout and interrupted runs: no stale success state.
-- Parallel tests and pre-existing executors: attribution without ThreadLocal assumptions.
-- Shared Spring contexts, dynamic tests, JUnit extensions and custom engines.
-- Annotation processors, generated classes, constant inlining and incremental compilation.
-- Renames and deletion that change classpath discovery without editing test source.
-- Duplicate class names across suites and classloaders; partial reactor builds.
-- Cached subset versus full-suite execution; fail-on-no-tests versus intentional NONE.
+`scenarios.json` is the independent oracle: mutations, minimum required tests, and
+expected failing classes are predefined. The Rust selector never reads it.
 
-Never replace `required` with your engine's output just to make the benchmark pass.
-When changing a fixture, update the manifest only after independently checking its
-behavior with a full-suite run.
+| Scenario | Behavior exercised |
+|---|---|
+| tax-transitive | Leaf change propagates across modules and into Kotlin |
+| calculator | Shared Java calculation affects downstream Java/Kotlin tests |
+| unrelated | Independent currency behavior |
+| unused | Unused production code |
+| gateway-implementation | Interface implementation |
+| inherited-fixture | Shared test superclass |
+| changed-test / new-test | Modified tests and tests absent from the baseline |
+| reflection / async | Reflective calls and worker threads |
+| spring-bean / spring-wiring | Injection and configuration changes |
+| resource / service-provider | Classpath resources and ServiceLoader |
+| delete-class | Class deletion with a compilable consumer replacement |
+| docs-only | Documentation-only changes |
+| dependency-change | Conservative dependency invalidation |
+| kotlin-source | Kotlin/JVM production code |
 
-## Can an import graph drive selection?
+Build and validate from the checkout:
 
-An import graph can be a cheap preliminary approximation, but it is not a complete
-Java dependency graph. Imports resolve names; they do not enumerate every dependency.
-This fixture deliberately puts many related classes in the same package, so an
-import-only selector fails the `tax-transitive` case even though the calls are ordinary
-Java calls.
+```bash
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked
 
-| Mechanism | What it can tell you | Limitation |
-|---|---|---|
-| Parsed import statements | Explicit imported names and packages | Same-package and fully qualified references need no import; unused imports add noise |
-| Source AST with symbol resolution | Actual statically resolved references | Needs correct classpath/source roots; framework and reflection edges remain |
-| Compiled bytecode graph | References after compilation, including generated code | Inlined constants and dynamic discovery still require additional handling |
-| Runtime dependency recording | Dependencies exercised by observed runs | Previously unexecuted paths and attribution across threads/processes remain |
+target/debug/java-test-impact fixtures list
+target/debug/java-test-impact fixtures verify --tool both
+target/debug/java-test-impact fixtures verify --tool both --scenario all
+target/debug/java-test-impact fixtures verify --tool both --scenario all \
+  --selected --output validation-results/selected
 
-Recommended validation order: use `tax-transitive` to prove same-package dependency
-handling, `gateway-implementation` for implementation dispatch,
-`reflection` / `spring-wiring` / `service-provider` for dynamic behavior, and
-`resource` for non-Java inputs. Use an import graph for hints; use semantic references
-and conservative fallback rules before deciding that a test can be skipped.
-# sieve
+# Installation integration checks require Java 17, Maven, and Gradle on PATH.
+cargo test --locked --test cli installs_ -- --ignored
+```
+
+`--maven /path/to/mvn` and `--gradle /path/to/gradle` override fixture build tools.
+Installer tests also accept `IMPACT_MAVEN`, `IMPACT_GRADLE`, and `IMPACT_TOOL`.
+The fixture verifier creates isolated workspaces, checks actual XML execution against
+the selected inventory, verifies invocation counts, and rejects compilation errors,
+missing tests, extra executed tests, or unexpected failures. It ignores test failures
+only inside mutation runs so every module can finish. A mutation PASS means its
+expected failures were observed. Logs and JSON results go to `validation-results/`.
+
+To exercise a selector manually:
+
+```bash
+java-test-impact fixtures prepare --tool maven --dest /tmp/impact-tax --git
+java-test-impact fixtures apply tax-transitive --workspace /tmp/impact-tax
+java-test-impact select --workspace /tmp/impact-tax --base HEAD --output /tmp/selection.json
+java-test-impact fixtures check-selection tax-transitive --actual /tmp/selection.json
+java-test-impact run --workspace /tmp/impact-tax --base HEAD
+java-test-impact fixtures reports --tool maven --workspace /tmp/impact-tax
+```
+
+The deliberate tax mutation makes the run fail. `prepare` never overwrites an
+existing destination; `apply` refuses to stack scenarios. `fixtures --root PATH`
+points the fixture commands at a different checkout containing the manifest/projects.
+
+External selectors can export `{"mode":"SUBSET","tests":["pricing:unit:example.TaxRulesTest"]}`,
+`{"mode":"ALL","tests":[]}`, or `{"mode":"NONE","tests":[]}`. IDs are
+`module:suite:fully.qualified.ClassName`. The included selector exports
+`{"mode":"MODULES","modules":["checkout","pricing"]}` with diagnostic fields.
+The oracle expands modules using its own inventory. Default checking permits extra
+tests but requires all affected tests; `--exact` also rejects extras. Module-level
+selection intentionally does not pass every precision check (for example, unused
+code still reruns its module).
+
+## Limits
+
+This is a conservative module selector, not a soundness proof for arbitrary JVM
+builds. Explicit dependency graphs must include runtime/resource dependencies;
+unsupported custom layouts need further adapter work. The deletion fixture also
+edits its consumer, so it is not an isolated proof of previous-graph traversal.
+Class-level analysis, parallel runtime attribution, generated-code discovery, and
+selection-cache invalidation are outside the current implementation.
+
+Build integration follows the native [Maven Kotlin configuration](https://kotlinlang.org/docs/maven-configure-project.html),
+[Gradle Kotlin/JVM support](https://kotlinlang.org/docs/gradle-configure-project.html),
+and [GitHub PR checkout semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).

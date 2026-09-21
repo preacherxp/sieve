@@ -1,0 +1,49 @@
+// Shared adapter for Groovy and Kotlin DSL builds, loaded by the Rust CLI.
+import groovy.json.JsonOutput
+import org.gradle.api.artifacts.ProjectDependency
+import org.gradle.api.tasks.testing.Test
+
+def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1) }
+
+gradle.beforeProject { p ->
+    p.tasks.withType(Test).configureEach {
+        def selected = p.providers.gradleProperty('impact.modules')
+        onlyIf { !selected.isPresent() || moduleId(p) in selected.get().split(',') }
+    }
+}
+
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    if (root.findProperty('impact.output') != null) {
+        root.tasks.register('impactInit') {
+            doLast {
+                if (root.gradle.includedBuilds) {
+                    throw new GradleException('Composite builds require an explicit impact configuration.')
+                }
+                def modules = [:]
+                root.allprojects.each { p ->
+                    def key = moduleId(p)
+                    if (key != '.' && (key.contains(':') || p.projectDir != new File(root.projectDir, key))) {
+                        throw new GradleException('Automatic setup supports a single JVM project or direct child modules in matching directories.')
+                    }
+                    if (p.plugins.hasPlugin('com.android.application') || p.plugins.hasPlugin('com.android.library') ||
+                        p.plugins.hasPlugin('org.jetbrains.kotlin.multiplatform')) {
+                        throw new GradleException('Automatic setup currently supports Java and Kotlin/JVM, not Android or multiplatform builds.')
+                    }
+                    // Include empty aggregator modules too, so all project dependency edges have an owner.
+                    def dependencies = p.configurations.collectMany { c ->
+                        c.allDependencies.withType(ProjectDependency).collect { d ->
+                            moduleId(root.project(d.path))
+                        }
+                    }.unique().sort()
+                    modules[key] = dependencies
+                }
+                if (!root.allprojects.any { p -> p.plugins.hasPlugin('java') || p.plugins.hasPlugin('org.jetbrains.kotlin.jvm') }) {
+                    throw new GradleException('No Java or Kotlin/JVM projects found.')
+                }
+                new File(root.property('impact.output').toString()).text = JsonOutput.prettyPrint(
+                    JsonOutput.toJson([tool: 'gradle', modules: modules])) + '\n'
+            }
+        }
+    }
+}

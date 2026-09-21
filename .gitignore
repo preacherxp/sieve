@@ -1,6 +1,6 @@
 **/target/
 **/build/
 **/.gradle/
-**/__pycache__/
+**/.kotlin/
 validation-results/
 workspaces/

@@ -12,7 +12,8 @@
     "runtime:integration:example.ReflectionIT",
     "runtime:integration:example.ResourceIT",
     "runtime:integration:example.ServiceLoaderIT",
-    "runtime:integration:example.SpringWiringIT"
+    "runtime:integration:example.SpringWiringIT",
+    "pricing:unit:example.KotlinPriceFormatterTest"
   ],
   "scenarios": [
     {
@@ -29,13 +30,15 @@
         "pricing:unit:example.TaxRulesTest",
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
-        "checkout:unit:example.ParameterizedCheckoutTest"
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.KotlinPriceFormatterTest"
       ],
       "expected_failures": [
         "pricing:unit:example.TaxRulesTest",
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
-        "checkout:unit:example.ParameterizedCheckoutTest"
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.KotlinPriceFormatterTest"
       ],
       "policy": "subset",
       "notes": ""
@@ -53,12 +56,14 @@
       "required": [
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
-        "checkout:unit:example.ParameterizedCheckoutTest"
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.KotlinPriceFormatterTest"
       ],
       "expected_failures": [
         "pricing:unit:example.PriceCalculatorTest",
         "checkout:unit:example.CheckoutTest",
-        "checkout:unit:example.ParameterizedCheckoutTest"
+        "checkout:unit:example.ParameterizedCheckoutTest",
+        "pricing:unit:example.KotlinPriceFormatterTest"
       ],
       "policy": "subset",
       "notes": ""
@@ -92,8 +97,12 @@
           "after": "return 7;"
         }
       ],
-      "required": [],
-      "expected_failures": [],
+      "required": [
+
+      ],
+      "expected_failures": [
+
+      ],
       "policy": "none",
       "notes": ""
     },
@@ -172,7 +181,9 @@
       "required": [
         "pricing:unit:example.NewTaxTest"
       ],
-      "expected_failures": [],
+      "expected_failures": [
+
+      ],
       "policy": "subset",
       "notes": ""
     },
@@ -325,8 +336,12 @@
           "after": "Documentation update. Three modules:"
         }
       ],
-      "required": [],
-      "expected_failures": [],
+      "required": [
+
+      ],
+      "expected_failures": [
+
+      ],
       "policy": "none",
       "notes": ""
     },
@@ -354,9 +369,30 @@
         "runtime:integration:example.AsyncIT",
         "runtime:integration:example.ServiceLoaderIT"
       ],
-      "expected_failures": [],
+      "expected_failures": [
+
+      ],
       "policy": "subset",
       "notes": "Conservative policy: rerun runtime integration suite; unrelated unit suites may remain excluded."
+    },
+    {
+      "id": "kotlin-source",
+      "description": "Change Kotlin code calling a Java calculator",
+      "changes": [
+        {
+          "path": "pricing/src/main/kotlin/example/KotlinPriceFormatter.kt",
+          "before": "\"EUR:\"",
+          "after": "\"USD:\""
+        }
+      ],
+      "required": [
+        "pricing:unit:example.KotlinPriceFormatterTest"
+      ],
+      "expected_failures": [
+        "pricing:unit:example.KotlinPriceFormatterTest"
+      ],
+      "policy": "subset",
+      "notes": "Kotlin/JVM sources participate in the same module graph as Java."
     }
   ]
 }

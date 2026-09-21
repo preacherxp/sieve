@@ -4,6 +4,7 @@
     "pricing:unit:example.TaxRulesTest",
     "pricing:unit:example.PriceCalculatorTest",
     "checkout:unit:example.CheckoutTest",
-    "checkout:unit:example.ParameterizedCheckoutTest"
+    "checkout:unit:example.ParameterizedCheckoutTest",
+    "pricing:unit:example.KotlinPriceFormatterTest"
   ]
 }

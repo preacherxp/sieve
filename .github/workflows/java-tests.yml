@@ -1,0 +1,92 @@
+name: Java and Kotlin test stage
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: selected or full
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  tests:
+    name: ${{ inputs.mode }} (${{ matrix.tool }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [maven, gradle]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: ${{ matrix.tool }}
+      - name: Build Rust tooling
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked --release
+      - name: Run test stage
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+          MODE: ${{ inputs.mode }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          mkdir -p validation-results
+          executable=gradle
+          if [[ "$BUILD_TOOL" == maven ]]; then executable=mvn; fi
+          args=(--full)
+          if [[ "$MODE" == selected ]]; then
+            if [[ "$EVENT_NAME" == pull_request ]]; then
+              args=(--base "$PR_BASE")
+            elif [[ "$EVENT_NAME" == push && -n "$PUSH_BASE" && "$PUSH_BASE" != 0000000000000000000000000000000000000000 ]]; then
+              args=(--base "$PUSH_BASE")
+            fi
+          elif [[ "$MODE" != full ]]; then
+            echo "Unknown test mode: $MODE" >&2
+            exit 2
+          fi
+          target/release/java-test-impact run \
+            --workspace "projects/$BUILD_TOOL" \
+            --executable "$executable" \
+            --output "validation-results/$BUILD_TOOL-selection.json" \
+            "${args[@]}"
+      - name: Verify selective execution against known failures
+        if: inputs.mode == 'selected' && !cancelled()
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+        run: >-
+          target/release/java-test-impact fixtures verify
+          --tool "$BUILD_TOOL" --scenario tax-transitive --selected
+          --output validation-results/regression
+      - name: Publish selection summary
+        if: always()
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+          MODE: ${{ inputs.mode }}
+        shell: bash
+        run: |
+          if [[ -f "validation-results/$BUILD_TOOL-selection.json" ]]; then
+            {
+              echo "### $MODE / $BUILD_TOOL"
+              echo '```json'
+              cat "validation-results/$BUILD_TOOL-selection.json"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-impact-${{ inputs.mode }}-${{ matrix.tool }}
+          path: |
+            validation-results/
+            projects/${{ matrix.tool }}/**/target/surefire-reports/
+            projects/${{ matrix.tool }}/**/target/failsafe-reports/
+            projects/${{ matrix.tool }}/**/build/test-results/
+          retention-days: 14

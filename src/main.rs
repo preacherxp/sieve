@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+mod fixtures;
+mod setup;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -8,7 +10,7 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     tool: String,
@@ -26,21 +28,27 @@ struct Selection {
 impl Config {
     fn read(workspace: &Path) -> Result<Self> {
         let config: Self = serde_json::from_slice(&fs::read(workspace.join("impact.json"))?)?;
-        if !matches!(config.tool.as_str(), "maven" | "gradle") || config.modules.is_empty() {
+        config.validate(workspace)?;
+        Ok(config)
+    }
+
+    fn validate(&self, workspace: &Path) -> Result<()> {
+        if !matches!(self.tool.as_str(), "maven" | "gradle") || self.modules.is_empty() {
             return Err("impact.json requires tool maven/gradle and a nonempty module map".into());
         }
-        for (module, dependencies) in &config.modules {
+        for (module, dependencies) in &self.modules {
             if module.is_empty()
+                || module == ".."
                 || !module
                     .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
                 || !workspace.join(module).is_dir()
-                || dependencies.iter().any(|d| !config.modules.contains_key(d))
+                || dependencies.iter().any(|d| !self.modules.contains_key(d))
             {
                 return Err(format!("Invalid module or dependency: {module}").into());
             }
         }
-        Ok(config)
+        Ok(())
     }
 
     fn all(&self, reason: impl Into<String>) -> Selection {
@@ -55,6 +63,10 @@ impl Config {
     fn select(&self, changed: BTreeSet<String>) -> Selection {
         let mut selected = BTreeSet::new();
         for path in &changed {
+            if self.modules.contains_key(".") && path.starts_with("src/") {
+                selected.insert(".".into());
+                continue;
+            }
             // Build/configuration changes may alter the module graph or test discovery.
             if let Some((module, rest)) = path.split_once('/') {
                 if self.modules.contains_key(module) && rest.starts_with("src/") {
@@ -185,7 +197,8 @@ fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
             if config.tool == "maven" {
                 for module in config.modules.keys() {
                     args.push(format!(
-                        "-Dimpact.skip.{module}={}",
+                        "-Dimpact.skip.{}={}",
+                        if module == "." { "root" } else { module },
                         !selection.modules.contains(module)
                     ));
                 }
@@ -208,10 +221,18 @@ fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
 fn main_result() -> Result<u8> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_default();
+    if command == "fixtures" {
+        return fixtures::main(args.collect());
+    }
+    if command == "init" {
+        return setup::init(args.collect());
+    }
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "java-test-impact <select|run> --workspace PATH [--base REV | --full]\n\
                   [--output FILE] [--executable PATH] [-- BUILD_ARGS...]\n\n\
+                  java-test-impact init [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
+                  java-test-impact fixtures <list|prepare|apply|check-selection|reports|verify>\n\n\
                   Requires impact.json and the build adapters documented in README.md.\n\
                   No base or unavailable Git history selects ALL. run propagates build failures."
         );
@@ -269,17 +290,23 @@ fn main_result() -> Result<u8> {
         return Ok(0);
     }
     eprintln!("{json}");
-    let executable = executable.unwrap_or_else(|| {
-        if config.tool == "maven" {
-            "mvn"
-        } else {
-            "gradle"
-        }
-        .into()
-    });
+    let executable =
+        executable.unwrap_or_else(|| setup::default_executable(&workspace, &config.tool));
+    let init_script = if config.tool == "gradle" {
+        Some(setup::gradle_script()?)
+    } else {
+        None
+    };
+    let mut build_args = build_args(&config, &selection);
+    if let Some(script) = &init_script {
+        build_args.extend([
+            "--init-script".into(),
+            script.path().to_string_lossy().into_owned(),
+        ]);
+    }
     let status = Command::new(executable)
         .current_dir(workspace)
-        .args(build_args(&config, &selection))
+        .args(build_args)
         .args(extra)
         .status()?;
     Ok(if status.success() { 0 } else { 1 })

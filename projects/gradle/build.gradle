@@ -1,4 +1,7 @@
-plugins { id 'base' }
+plugins {
+    id 'base'
+    id 'org.jetbrains.kotlin.jvm' version '2.2.21' apply false
+}
 subprojects {
     apply plugin: 'java'
     group = 'example'
@@ -11,8 +14,6 @@ subprojects {
     }
     tasks.withType(Test).configureEach {
         useJUnitPlatform()
-        def impactModules = providers.gradleProperty('impact.modules')
-        onlyIf { !impactModules.isPresent() || project.name in impactModules.get().split(',') }
         ignoreFailures = providers.gradleProperty('fixtureIgnoreFailures').map { it.toBoolean() }.getOrElse(false)
     }
     tasks.named('test') { exclude '**/*IT.class' }
@@ -26,5 +27,6 @@ subprojects {
     tasks.named('check') { dependsOn tasks.named('integrationTest') }
 }
 project(':checkout') { dependencies { implementation project(':pricing') } }
+project(':pricing') { apply plugin: 'org.jetbrains.kotlin.jvm' }
 project(':runtime') { dependencies { implementation 'org.springframework:spring-context:6.1.16' } }
 tasks.named('check') { dependsOn subprojects.collect { it.tasks.named('check') } }
