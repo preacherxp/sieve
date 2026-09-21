@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sieve — catch the modules a change can reach</title>
+  <meta name="description" content="Sieve is a Rust command that selects Java and Kotlin tests by module for Maven and Gradle. Changed modules stay in the mesh. Their dependents are caught with them. Everything else falls through.">
+  <meta name="theme-color" content="#14110d">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%2314110d' width='32' height='32'/%3E%3Cellipse cx='16' cy='16' rx='11' ry='8' fill='none' stroke='%23e0c17a' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='2' fill='%23e24b2a'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,620;1,9..144,560&family=Martian+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,560;1,8..60,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #14110d;
+      --bowl: #241c15;
+      --paper: #f3ead9;
+      --paper-2: #e7dcc6;
+      --brass: #e0c17a;
+      --brass-dim: #8d7040;
+      --oxide: #e24b2a;
+      --oxide-hot: #ff6a45;
+      --oxide-ink: #8d2a16;
+      --moss: #b7c7a4;
+      --moss-ink: #2c4634;
+      --mute: #cbbba4;
+      --ink-soft: #3a3126;
+      --line: rgba(224, 193, 122, 0.32);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background-color: var(--ink);
+      background-image:
+        radial-gradient(ellipse at 78% 0%, rgba(224, 193, 122, 0.09), transparent 42%),
+        linear-gradient(rgba(224, 193, 122, 0.045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(224, 193, 122, 0.045) 1px, transparent 1px);
+      background-size: auto, 28px 28px, 28px 28px;
+      color: var(--paper);
+      font-family: "Source Serif 4", Palatino, "Palatino Linotype", serif;
+      font-size: 1.125rem;
+      line-height: 1.55;
+      font-optical-sizing: auto;
+    }
+    img, svg { max-width: 100%; }
+    button, input { font: inherit; color: inherit; }
+    a { color: inherit; }
+    code { font-family: "Martian Mono", ui-monospace, monospace; font-size: 0.86em; }
+    .cmd code { font-size: 0.78rem; }
+    :focus-visible {
+      outline: 2px solid var(--brass);
+      outline-offset: 3px;
+    }
+    .skip {
+      position: absolute;
+      left: 1rem;
+      top: -4rem;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 0.4rem 0.7rem;
+      z-index: 20;
+    }
+    .skip:focus { top: 0.6rem; }
+
+    .grain {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0.18;
+      mix-blend-mode: overlay;
+      z-index: 40;
+    }
+
+    .wrap {
+      width: min(1180px, calc(100% - 8vw));
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1.5rem;
+      padding: 1.35rem 0 0.4rem;
+    }
+    .mark {
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 620;
+      font-size: 1.35rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      text-decoration: none;
+      font-variation-settings: "opsz" 72, "SOFT" 40;
+    }
+    nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 1.15rem;
+      justify-content: flex-end;
+    }
+    nav a {
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      text-decoration: none;
+      color: var(--mute);
+    }
+    nav a:hover { color: var(--paper); }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
+      gap: 2.5rem 3rem;
+      align-items: center;
+      padding: 2.2rem 0 1rem;
+    }
+    .kicker {
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--brass);
+      margin: 0 0 1rem;
+    }
+    h1 {
+      margin: 0;
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 560;
+      font-size: clamp(3.3rem, 5.6vw, 5.35rem);
+      line-height: 0.9;
+      letter-spacing: -0.035em;
+      font-variation-settings: "opsz" 144, "SOFT" 30;
+    }
+    h1 em {
+      font-style: italic;
+      font-weight: 560;
+      color: var(--brass);
+    }
+    .lede {
+      max-width: 38rem;
+      margin: 1.35rem 0 0;
+      font-size: 1.22rem;
+      color: var(--paper);
+    }
+    .lede strong { font-weight: 560; }
+    .down {
+      display: inline-block;
+      margin-top: 1.5rem;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      text-decoration: none;
+      color: var(--brass);
+      border-bottom: 1px solid var(--brass-dim);
+      padding-bottom: 0.18rem;
+    }
+    .down:hover { color: var(--paper); border-color: var(--paper); }
+
+    .stage {
+      position: relative;
+      isolation: isolate;
+    }
+    .stage svg { display: block; width: 100%; height: auto; overflow: visible; }
+    .bowl { fill: var(--bowl); }
+    .rim {
+      fill: none;
+      stroke: var(--brass);
+      stroke-width: 3;
+    }
+    .wires { fill: none; stroke: rgba(224, 193, 122, 0.28); stroke-width: 1; }
+    .hole { fill: #0c0a08; transition: fill 0.35s ease; }
+    .hole.hot { fill: var(--oxide); }
+    .edge {
+      fill: none;
+      stroke: var(--brass-dim);
+      stroke-width: 1.5;
+      stroke-dasharray: 4 6;
+    }
+    .edge.hot { stroke: var(--oxide-hot); stroke-dasharray: none; stroke-width: 2; }
+    .edge-label {
+      fill: var(--mute);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .node .face { fill: #100e0b; stroke: var(--brass-dim); stroke-width: 1.5; transition: fill 0.35s ease, stroke 0.35s ease; }
+    .node .halo { fill: none; stroke: transparent; stroke-width: 10; }
+    .node.caught .face { fill: var(--oxide); stroke: #ffc7b8; }
+    .node.caught .halo { stroke: rgba(226, 75, 42, 0.4); animation: glow 3.8s ease-in-out infinite; }
+    .node .idx {
+      fill: var(--brass);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 11px;
+      text-anchor: middle;
+    }
+    .node.caught .idx { fill: var(--paper); }
+    .node .name {
+      fill: var(--paper);
+      font-family: Fraunces, Palatino, serif;
+      font-size: 22px;
+      font-weight: 560;
+      text-anchor: middle;
+    }
+    .node .kind {
+      fill: var(--mute);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      text-anchor: middle;
+    }
+    .node.through { opacity: 0.55; transform: translateY(6px); transition: opacity 0.4s ease, transform 0.4s ease; }
+    .node.caught { opacity: 1; transform: none; transition: opacity 0.4s ease, transform 0.4s ease; }
+    @keyframes glow {
+      50% { stroke-opacity: 0.15; }
+    }
+
+    .stamp {
+      position: relative;
+      z-index: 3;
+      flex: none;
+      margin: 0.15rem 0 0;
+      padding: 0.38rem 0.55rem 0.3rem;
+      border: 3px solid currentColor;
+      color: var(--oxide-ink);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.95rem;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      line-height: 1;
+      text-transform: uppercase;
+      transform: rotate(-8deg);
+      background: rgba(243, 234, 217, 0.92);
+      pointer-events: none;
+    }
+    .stamp[data-mode="MODULES"] { color: var(--oxide-ink); }
+    .stamp[data-mode="NONE"] { color: var(--moss-ink); }
+    .stamp[data-mode="ALL"] { color: #6a501f; }
+    .stamp.slam { animation: slam 0.42s cubic-bezier(0.2, 1.35, 0.36, 1); }
+    @keyframes slam {
+      from { transform: rotate(-18deg) scale(1.28); opacity: 0.2; }
+    }
+
+    .slip {
+      position: relative;
+      z-index: 2;
+      margin: -2.4rem 0 0 7%;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 0.95rem 1rem 1rem;
+      box-shadow: 0 22px 50px rgba(0, 0, 0, 0.38);
+    }
+    .slip-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.55rem;
+    }
+    .slip-top p {
+      margin: 0;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.64rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--brass-dim);
+    }
+    .tools { display: flex; gap: 0.35rem; }
+    .tools button {
+      background: transparent;
+      border: 1px solid rgba(141, 112, 64, 0.55);
+      color: var(--ink-soft);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.64rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.4rem;
+      cursor: pointer;
+    }
+    .tools button[aria-checked="true"] {
+      background: var(--ink);
+      color: var(--paper);
+      border-color: var(--ink);
+    }
+    .meter-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+    .meter-copy { flex: 1; min-width: 0; }
+    .meter {
+      height: 9px;
+      background: repeating-linear-gradient(90deg, rgba(141, 112, 64, 0.55) 0 1px, transparent 1px 9px);
+      margin-bottom: 0.4rem;
+    }
+    .meter span {
+      display: block;
+      height: 100%;
+      width: 64.28%;
+      background: var(--oxide);
+      transform-origin: left center;
+    }
+    .meter span[data-mode="ALL"] { background: var(--brass-dim); }
+    .meter span[data-mode="NONE"] { background: var(--moss-ink); }
+    #meter-label {
+      margin: 0 0 0.65rem;
+      font-family: Fraunces, Palatino, serif;
+      font-size: 1.35rem;
+      font-weight: 560;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+    }
+    #json {
+      margin: 0;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.74rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--ink-soft);
+    }
+    #json .key { color: var(--oxide-ink); }
+    #json .str { color: var(--ink); }
+    #args {
+      margin: 0.7rem 0 0;
+      padding-top: 0.55rem;
+      border-top: 1px solid rgba(141, 112, 64, 0.35);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.66rem;
+      line-height: 1.45;
+      color: var(--ink-soft);
+      word-break: break-word;
+    }
+
+    .bench {
+      padding: 2.8rem 0 3.2rem;
+      scroll-margin-top: 1rem;
+    }
+    .bench h2, .limits h2, .sheet h2 {
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 560;
+      letter-spacing: -0.03em;
+      line-height: 1.02;
+      font-variation-settings: "opsz" 72, "SOFT" 40;
+    }
+    .bench h2 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3rem);
+    }
+    .bench-lead {
+      max-width: 40rem;
+      margin: 0.7rem 0 1.2rem;
+      color: var(--mute);
+    }
+    .tickets {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.55rem;
+    }
+    .ticket {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 1px solid var(--line);
+      padding: 0.7rem 0.75rem 0.75rem;
+      cursor: pointer;
+      color: var(--paper);
+    }
+    .ticket:hover { border-color: var(--brass); }
+    .ticket[aria-checked="true"] {
+      background: var(--paper);
+      color: var(--ink);
+      border-color: var(--paper);
+    }
+    .ticket .idx {
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--brass);
+    }
+    .ticket[aria-checked="true"] .idx { color: var(--oxide-ink); }
+    .ticket strong {
+      display: block;
+      margin: 0.15rem 0 0.2rem;
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 560;
+      font-size: 1.28rem;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+    .ticket .path {
+      display: block;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.62rem;
+      color: var(--mute);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ticket[aria-checked="true"] .path { color: var(--ink-soft); }
+
+    .note {
+      margin: 1rem 0 0;
+      max-width: 46rem;
+      font-size: 1.2rem;
+    }
+    .roster {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1.25rem;
+      margin-top: 1.4rem;
+      padding-top: 1.2rem;
+      border-top: 1px solid var(--line);
+    }
+    .roster h3 {
+      margin: 0 0 0.45rem;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--brass);
+    }
+    .roster ul { list-style: none; margin: 0; padding: 0; }
+    .roster li {
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.72rem;
+      line-height: 1.55;
+      color: var(--paper);
+    }
+    .roster li.off { color: rgba(203, 187, 164, 0.38); }
+    .roster li.grain::after { content: " †"; color: var(--brass); }
+    .legend {
+      margin: 0.9rem 0 0;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.02em;
+      color: var(--mute);
+    }
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+
+    .sheet {
+      scroll-margin-top: 1rem;
+      max-width: 1100px;
+      margin: 1rem auto 4.5rem;
+      padding: 3.2rem 3.4rem 3rem;
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim)),
+        linear-gradient(var(--brass-dim), var(--brass-dim));
+      background-size: 16px 1px, 1px 16px, 16px 1px, 1px 16px, 16px 1px, 1px 16px, 16px 1px, 1px 16px;
+      background-position:
+        left 14px top 14px, left 14px top 14px,
+        right 14px top 14px, right 14px top 14px,
+        left 14px bottom 14px, left 14px bottom 14px,
+        right 14px bottom 14px, right 14px bottom 14px;
+      background-repeat: no-repeat;
+      color: var(--ink);
+      box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+    }
+    .running {
+      margin: 0 0 1.2rem;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.66rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--brass-dim);
+    }
+    .sheet h2 {
+      margin: 0;
+      font-size: clamp(2.3rem, 4.5vw, 3.6rem);
+      max-width: 16ch;
+    }
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1.2rem;
+      margin: 1.8rem 0 0.4rem;
+      padding: 0 0 0.4rem;
+    }
+    .facts div { border-top: 1px solid rgba(141, 112, 64, 0.45); padding-top: 0.7rem; }
+    .facts dt {
+      font-family: Fraunces, Palatino, serif;
+      font-size: clamp(1.8rem, 3vw, 2.4rem);
+      font-weight: 560;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+    .facts dd { margin: 0.4rem 0 0; color: var(--ink-soft); font-size: 1rem; }
+
+    .steps {
+      list-style: none;
+      margin: 1.6rem 0 0;
+      padding: 0;
+      counter-reset: step;
+    }
+    .steps li {
+      display: grid;
+      grid-template-columns: 4.5rem minmax(0, 1fr);
+      gap: 0.4rem 1rem;
+      padding: 1.25rem 0;
+      border-top: 1px solid rgba(141, 112, 64, 0.4);
+    }
+    .steps li::before {
+      content: counter(step, decimal-leading-zero);
+      counter-increment: step;
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 560;
+      font-size: 1.8rem;
+      letter-spacing: -0.04em;
+      color: var(--oxide-ink);
+      line-height: 1.1;
+    }
+    .steps h3 {
+      margin: 0;
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 560;
+      font-size: 1.55rem;
+      letter-spacing: -0.02em;
+    }
+    .steps p { margin: 0.3rem 0 0; color: var(--ink-soft); }
+    pre.snippet {
+      margin: 0.8rem 0 0;
+      padding: 0.8rem 0.9rem;
+      background: var(--ink);
+      color: var(--paper);
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.75rem;
+      line-height: 1.5;
+      overflow-x: auto;
+    }
+    pre.snippet .key { color: var(--oxide-hot); }
+
+    .install { margin-top: 0.6rem; padding-top: 1.4rem; border-top: 1px solid rgba(141, 112, 64, 0.4); scroll-margin-top: 1.2rem; }
+    .install h2 { max-width: none; font-size: clamp(2rem, 3.5vw, 2.8rem); }
+    .install > p { max-width: 40rem; color: var(--ink-soft); }
+    .cmd {
+      display: flex;
+      align-items: stretch;
+      gap: 0.6rem;
+      margin: 0.7rem 0;
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .cmd code {
+      flex: 1;
+      padding: 0.75rem 0.85rem;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.78rem;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .cmd button {
+      flex: none;
+      align-self: stretch;
+      background: transparent;
+      color: var(--brass);
+      border: 0;
+      border-left: 1px solid rgba(224, 193, 122, 0.3);
+      padding: 0 0.9rem;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.66rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .cmd button:hover, .cmd button[data-state="copied"] { color: var(--paper); }
+    .fine { font-size: 0.98rem; color: var(--ink-soft); }
+
+    .limits {
+      padding: 0.5rem 0 4.5rem;
+      scroll-margin-top: 1rem;
+    }
+    .limits h2 {
+      margin: 0 0 0.4rem;
+      font-size: clamp(2.4rem, 5vw, 4rem);
+      max-width: 16ch;
+    }
+    .limits h2 em { font-style: italic; color: var(--brass); }
+    .limit-list {
+      list-style: none;
+      margin: 1.5rem 0 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+    }
+    .limit-list li {
+      padding: 1.15rem 1.3rem 1.25rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .limit-list li:nth-child(odd) { padding-right: 1.6rem; }
+    .limit-list li:nth-child(even) { padding-left: 1.4rem; border-left: 1px solid var(--line); }
+    .limit-list h3 {
+      margin: 0;
+      font-family: Fraunces, Palatino, serif;
+      font-weight: 560;
+      font-size: 1.45rem;
+      letter-spacing: -0.02em;
+    }
+    .limit-list p { margin: 0.35rem 0 0; color: var(--mute); }
+
+    footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem 1.4rem;
+      justify-content: space-between;
+      padding: 0 0 2rem;
+      font-family: "Martian Mono", ui-monospace, monospace;
+      font-size: 0.66rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--mute);
+    }
+    footer a { color: var(--brass); text-underline-offset: 0.2em; }
+
+    @media (max-width: 980px) {
+      .hero { grid-template-columns: 1fr; gap: 1rem; }
+      .slip { margin-left: 0; }
+      .tickets { grid-template-columns: 1fr 1fr; }
+      .sheet { margin: 1rem 4vw 3rem; padding: 2.4rem 1.3rem 2rem; }
+      .limit-list { grid-template-columns: 1fr; }
+      .limit-list li:nth-child(odd),
+      .limit-list li:nth-child(even) {
+        padding-left: 0;
+        padding-right: 0;
+        border-left: 0;
+      }
+    }
+    @media (max-width: 640px) {
+      .facts, .roster, .tickets { grid-template-columns: 1fr; }
+      .steps li { grid-template-columns: 1fr; gap: 0.15rem; }
+      .slip { margin: -1.5rem 0 0; }
+      .stamp { font-size: 0.78rem; letter-spacing: 0.1em; }
+      h1 { font-size: clamp(2.7rem, 12vw, 3.6rem); }
+      .cmd { flex-direction: column; }
+      .cmd button { border-left: 0; border-top: 1px solid rgba(224, 193, 122, 0.3); padding: 0.65rem 0.85rem; text-align: left; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#bench">Skip to the bench</a>
+  <svg class="grain" aria-hidden="true">
+    <filter id="grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="4" stitchTiles="stitch"/>
+    </filter>
+    <rect width="100%" height="100%" filter="url(#grain)"/>
+  </svg>
+
+  <div class="wrap">
+    <header>
+      <a class="mark" href="#top">Sieve</a>
+      <nav aria-label="Page">
+        <a href="#bench">Bench</a>
+        <a href="#method">Method</a>
+        <a href="#install">Install</a>
+        <a href="#limits">Limits</a>
+        <a href="https://github.com/preacherxp/sieve">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div>
+          <p class="kicker">java-test-impact · Maven · Gradle</p>
+          <h1 id="hero-title">Catch the modules. Let the rest <em>fall through.</em></h1>
+          <p class="lede">A Rust command for Java and Kotlin tests. It keeps the module you edited, then every module that depends on it. A readme falls through. A build file closes the mesh and runs <strong>everything</strong>.</p>
+          <a class="down" href="#bench">Drop a change on the mesh</a>
+        </div>
+
+        <div class="stage">
+          <svg viewBox="0 0 640 520" role="img" aria-labelledby="sieve-title sieve-desc">
+            <title id="sieve-title">Sample module sieve</title>
+            <desc id="sieve-desc">Pricing and checkout are caught. Runtime fell through. Checkout depends on pricing.</desc>
+            <defs>
+              <clipPath id="bowlClip">
+                <ellipse cx="320" cy="268" rx="268" ry="186"/>
+              </clipPath>
+            </defs>
+            <ellipse class="bowl" cx="320" cy="268" rx="268" ry="186"/>
+            <g id="holes" clip-path="url(#bowlClip)"></g>
+            <g class="wires" clip-path="url(#bowlClip)">
+              <ellipse cx="320" cy="268" rx="198" ry="138"/>
+              <ellipse cx="320" cy="268" rx="128" ry="90"/>
+              <ellipse cx="320" cy="268" rx="58" ry="42"/>
+              <line x1="320" y1="70" x2="320" y2="466"/>
+              <line x1="40" y1="268" x2="600" y2="268"/>
+              <line x1="120" y1="110" x2="520" y2="426"/>
+              <line x1="120" y1="426" x2="520" y2="110"/>
+              <line x1="70" y1="168" x2="570" y2="368"/>
+              <line x1="70" y1="368" x2="570" y2="168"/>
+            </g>
+            <ellipse class="rim" cx="320" cy="268" rx="268" ry="186"/>
+            <line class="edge hot" id="edge" x1="210" y1="274" x2="444" y2="180"/>
+            <text class="edge-label" id="edge-label" x="318" y="214" text-anchor="middle">depends on</text>
+            <g transform="translate(196,286)">
+              <g class="node caught" data-module="pricing">
+                <circle class="halo" r="34"/>
+                <circle class="face" r="24"/>
+                <text class="idx" y="4">01</text>
+                <text class="name" y="48">pricing</text>
+                <text class="kind" y="64">leaf</text>
+              </g>
+            </g>
+            <g transform="translate(462,168)">
+              <g class="node caught" data-module="checkout">
+                <circle class="halo" r="34"/>
+                <circle class="face" r="24"/>
+                <text class="idx" y="4">02</text>
+                <text class="name" y="48">checkout</text>
+                <text class="kind" y="64">downstream</text>
+              </g>
+            </g>
+            <g transform="translate(430,352)">
+              <g class="node through" data-module="runtime">
+                <circle class="halo" r="34"/>
+                <circle class="face" r="24"/>
+                <text class="idx" y="4">03</text>
+                <text class="name" y="48">runtime</text>
+                <text class="kind" y="64">independent</text>
+              </g>
+            </g>
+          </svg>
+          <div class="slip">
+            <div class="slip-top">
+              <p>Decision · projects/maven</p>
+              <div class="tools" role="radiogroup" aria-label="Build tool">
+                <button type="button" role="radio" data-tool="maven" aria-checked="true">Maven</button>
+                <button type="button" role="radio" data-tool="gradle" aria-checked="false">Gradle</button>
+              </div>
+            </div>
+            <div class="meter-row">
+              <div class="meter-copy">
+                <div class="meter" aria-hidden="true"><span id="meter-fill" data-mode="MODULES"></span></div>
+                <p id="meter-label">9 of 14 invocations</p>
+              </div>
+              <p class="stamp" id="stamp" data-mode="MODULES" aria-hidden="true">Modules</p>
+            </div>
+            <pre id="json"></pre>
+            <p id="args"></p>
+          </div>
+        </div>
+      </section>
+
+      <section class="bench" id="bench" aria-labelledby="bench-title">
+        <p class="kicker">The bench</p>
+        <h2 id="bench-title">Drop a change on the mesh.</h2>
+        <p class="bench-lead">The sample graph is the one in <code>impact.json</code>. Checkout depends on pricing. Runtime depends on nothing. Selection walks that edge backwards.</p>
+        <div class="tickets" role="radiogroup" aria-label="Sample changes" id="tickets">
+          <button type="button" class="ticket" role="radio" data-id="tax" aria-checked="true">
+            <span class="idx">01 · source</span>
+            <strong>Tax rule</strong>
+            <span class="path">pricing/src/main/java/example/TaxRules.java</span>
+          </button>
+          <button type="button" class="ticket" role="radio" data-id="checkout" aria-checked="false">
+            <span class="idx">02 · test</span>
+            <strong>Checkout test</strong>
+            <span class="path">checkout/src/test/java/example/CheckoutTest.java</span>
+          </button>
+          <button type="button" class="ticket" role="radio" data-id="runtime" aria-checked="false">
+            <span class="idx">03 · resource</span>
+            <strong>Runtime</strong>
+            <span class="path">runtime/src/main/resources/application.properties</span>
+          </button>
+          <button type="button" class="ticket" role="radio" data-id="kotlin" aria-checked="false">
+            <span class="idx">04 · kotlin</span>
+            <strong>Kotlin source</strong>
+            <span class="path">pricing/src/main/kotlin/example/KotlinPriceFormatter.kt</span>
+          </button>
+          <button type="button" class="ticket" role="radio" data-id="docs" aria-checked="false">
+            <span class="idx">05 · docs</span>
+            <strong>Readme</strong>
+            <span class="path">README.md</span>
+          </button>
+          <button type="button" class="ticket" role="radio" data-id="pom" aria-checked="false">
+            <span class="idx">06 · build</span>
+            <strong>Dependency</strong>
+            <span class="path">pom.xml</span>
+          </button>
+        </div>
+        <p class="note" id="note">A leaf changed. Pricing is caught, and so is checkout, because checkout depends on it.</p>
+        <div class="roster" id="roster">
+          <div>
+            <h3>pricing · 4 classes</h3>
+            <ul>
+              <li data-module="pricing" data-test="TaxRulesTest">TaxRulesTest</li>
+              <li data-module="pricing" data-test="PriceCalculatorTest">PriceCalculatorTest</li>
+              <li data-module="pricing" data-test="CurrencyLabelTest">CurrencyLabelTest</li>
+              <li data-module="pricing" data-test="KotlinPriceFormatterTest">KotlinPriceFormatterTest</li>
+            </ul>
+          </div>
+          <div>
+            <h3>checkout · 4 classes</h3>
+            <ul>
+              <li data-module="checkout" data-test="CheckoutTest">CheckoutTest</li>
+              <li data-module="checkout" data-test="GatewayTest">GatewayTest</li>
+              <li data-module="checkout" data-test="ParameterizedCheckoutTest">ParameterizedCheckoutTest</li>
+              <li data-module="checkout" data-test="ReceiptTest">ReceiptTest</li>
+            </ul>
+          </div>
+          <div>
+            <h3>runtime · 5 classes</h3>
+            <ul>
+              <li data-module="runtime" data-test="AsyncIT">AsyncIT</li>
+              <li data-module="runtime" data-test="ReflectionIT">ReflectionIT</li>
+              <li data-module="runtime" data-test="ResourceIT">ResourceIT</li>
+              <li data-module="runtime" data-test="ServiceLoaderIT">ServiceLoaderIT</li>
+              <li data-module="runtime" data-test="SpringWiringIT">SpringWiringIT</li>
+            </ul>
+          </div>
+        </div>
+        <p class="legend" id="legend">† Runs with its module. This diff does not name it. Checkout’s parameterized test is the ninth invocation.</p>
+        <p class="sr" id="live" aria-live="polite"></p>
+      </section>
+    </main>
+  </div>
+
+  <article class="sheet" id="method">
+    <p class="running">Assay / sieve / module graph / no selection cache</p>
+    <h2>How a change becomes a decision.</h2>
+    <dl class="facts">
+      <div>
+        <dt>13 / 14</dt>
+        <dd>Test classes and invocations in the full sample suite.</dd>
+      </div>
+      <div>
+        <dt>18</dt>
+        <dd>Fixture scenarios. The selector never reads the oracle.</dd>
+      </div>
+      <div>
+        <dt>0</dt>
+        <dd>Class-level guesses. The grain is the module.</dd>
+      </div>
+    </dl>
+    <ol class="steps">
+      <li>
+        <div>
+          <h3>Find the merge base.</h3>
+          <p>Compare <code>--base</code> with HEAD. No base, or Git that cannot answer, and the decision is ALL. <code>--full</code> asks for that outright.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Take every path.</h3>
+          <p>Committed, staged, unstaged, deleted, renamed, and untracked. Paths outside the workspace that are not README.md, VALIDATION.md, or docs/ also force ALL.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Walk the edges backwards.</h3>
+          <p>A file under <code>module/src/</code> selects that module, then every transitive dependent. Pricing pulls checkout in. Checkout does not pull pricing back. Docs are ignored. Anything else — a POM, a build script, <code>impact.json</code> — selects ALL.</p>
+          <pre class="snippet">{
+  <span class="key">"tool"</span>: "maven",
+  <span class="key">"modules"</span>: {
+    <span class="key">"pricing"</span>: [],
+    <span class="key">"checkout"</span>: ["pricing"],
+    <span class="key">"runtime"</span>: []
+  }
+}</pre>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Hand the decision to the build.</h3>
+          <p>Maven runs <code>clean verify</code>. Gradle runs <code>clean check</code>, with a bundled init script so neither <code>build.gradle</code> nor <code>build.gradle.kts</code> has to change. NONE stops after clean. The run starts with clean so stale reports cannot linger.</p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="install" id="install">
+      <h2>Put it on a project.</h2>
+      <p>Setup detects Maven or Gradle, prefers a wrapper you already have, and writes <code>impact.json</code>. It will not overwrite one. Commit the config. Maven also gets small skip profiles in the module POMs.</p>
+      <div class="cmd">
+        <code>cargo install --git https://github.com/preacherxp/sieve --locked</code>
+        <button type="button" data-copy="cargo install --git https://github.com/preacherxp/sieve --locked">Copy</button>
+      </div>
+      <div class="cmd">
+        <code>java-test-impact init</code>
+        <button type="button" data-copy="java-test-impact init">Copy</button>
+      </div>
+      <div class="cmd">
+        <code>java-test-impact run --workspace . --base origin/main</code>
+        <button type="button" data-copy="java-test-impact run --workspace . --base origin/main">Copy</button>
+      </div>
+      <p class="fine">From this checkout: <code>cargo install --path . --locked</code>. Preview without running tests: <code>java-test-impact select --workspace . --base origin/main</code>. Use your real comparison branch. Rust 1.92 or newer, Git, and the JDK your build already needs.</p>
+    </div>
+  </article>
+
+  <div class="wrap">
+    <section class="limits" id="limits" aria-labelledby="limits-title">
+      <p class="kicker">Limits</p>
+      <h2 id="limits-title">It would rather run everything than <em>guess.</em></h2>
+      <ul class="limit-list">
+        <li>
+          <h3>Module grain, on purpose.</h3>
+          <p>No class graph and no recording agent. CurrencyLabelTest runs when TaxRules.java changes, because they share a module. That is the conservative policy, not a miss.</p>
+        </li>
+        <li>
+          <h3>Unknown input closes the sieve.</h3>
+          <p>Build scripts, dependency versions, impact.json, a deleted module path, or a base Git cannot resolve: mode ALL. Invalid configuration fails instead of improvising.</p>
+        </li>
+        <li>
+          <h3>Setup only knows a simple layout.</h3>
+          <p>One package, or direct child modules whose directory names match. Nested trees, Gradle composite builds, Android, and Kotlin Multiplatform are reported, not guessed.</p>
+        </li>
+        <li>
+          <h3>The graph has to be true.</h3>
+          <p>Keep impact.json complete when you add dependencies, including runtime and resource edges. Init refuses to overwrite it. Ordinary Maven and Gradle commands still run the full suite.</p>
+        </li>
+      </ul>
+    </section>
+
+    <footer>
+      <span>Sieve · java-test-impact 0.1.0</span>
+      <span>Rust 1.92 · JDK 17 · Maven 3.9.9 · Gradle 8.12.1</span>
+      <a href="https://github.com/preacherxp/sieve">github.com/preacherxp/sieve</a>
+    </footer>
+  </div>
+
+  <script>
+    const POS = { pricing: [196, 286], checkout: [462, 168], runtime: [430, 352] };
+    const ORDER = ["checkout", "pricing", "runtime"];
+    const COUNTS = { pricing: [4, 4], checkout: [4, 5], runtime: [5, 5] };
+    const REASON = "Changed source/resource modules and their transitive dependents";
+    const CHANGES = {
+      tax: {
+        path: "pricing/src/main/java/example/TaxRules.java",
+        modules: ["pricing", "checkout"],
+        direct: ["TaxRulesTest", "PriceCalculatorTest", "CheckoutTest", "ParameterizedCheckoutTest", "KotlinPriceFormatterTest"],
+        note: "A leaf changed. Pricing is caught, and so is checkout, because checkout depends on it.",
+        legend: "† Runs with its module. This diff does not name it. Checkout’s parameterized test is the ninth invocation."
+      },
+      checkout: {
+        path: "checkout/src/test/java/example/CheckoutTest.java",
+        modules: ["checkout"],
+        direct: ["CheckoutTest"],
+        note: "A downstream test changed. Dependents are pulled in. Dependencies are not, so pricing stays dark.",
+        legend: "† The other checkout tests run because the module runs. Pricing is upstream and falls through."
+      },
+      runtime: {
+        path: "runtime/src/main/resources/application.properties",
+        modules: ["runtime"],
+        direct: null,
+        note: "A runtime resource is still a runtime change. Nothing depends on runtime, so the other modules fall through.",
+        legend: "Five integration classes. One invocation each. Pricing and checkout are not on this edge."
+      },
+      kotlin: {
+        path: "pricing/src/main/kotlin/example/KotlinPriceFormatter.kt",
+        modules: ["pricing", "checkout"],
+        direct: ["KotlinPriceFormatterTest"],
+        note: "The file is Kotlin. The graph does not care. Pricing and checkout are caught together, same as a Java change.",
+        legend: "† Everything else in those two modules runs with it. Kotlin is not a separate pass."
+      },
+      docs: {
+        path: "README.md",
+        modules: [],
+        direct: null,
+        note: "README.md, VALIDATION.md, and docs/ are the paths that fall through. NONE runs clean and then stops.",
+        legend: "No compile. No tests. The class list stays on the bench."
+      },
+      pom: {
+        path: "pom.xml",
+        modules: ["checkout", "pricing", "runtime"],
+        mode: "ALL",
+        reason: "Unclassified or build input changed: pom.xml",
+        direct: null,
+        note: "A version bump is not source. The same decision hits build.gradle, impact.json, and any path the sieve cannot classify.",
+        legend: "ALL is the whole sample suite: 13 classes, 14 invocations."
+      }
+    };
+
+    const holes = document.getElementById("holes");
+    const NS = "http://www.w3.org/2000/svg";
+    (function mesh() {
+      const cx = 320, cy = 268, rx = 246, ry = 168;
+      for (let row = 0, y = cy - ry + 14; y < cy + ry; y += 24, row++) {
+        const shift = row % 2 ? 12 : 0;
+        for (let x = cx - rx + shift; x < cx + rx; x += 24) {
+          const nx = (x - cx) / rx;
+          const ny = (y - cy) / ry;
+          if (nx * nx + ny * ny > 0.84) continue;
+          const c = document.createElementNS(NS, "circle");
+          c.setAttribute("cx", x.toFixed(1));
+          c.setAttribute("cy", y.toFixed(1));
+          c.setAttribute("r", "6.2");
+          c.setAttribute("class", "hole");
+          holes.appendChild(c);
+        }
+      }
+    })();
+
+    let tool = "maven";
+    let current = "tax";
+
+    function modeOf(change) {
+      if (change.mode) return change.mode;
+      return change.modules.length ? "MODULES" : "NONE";
+    }
+
+    function tally(modules) {
+      let classes = 0;
+      let invocations = 0;
+      for (const name of modules) {
+        classes += COUNTS[name][0];
+        invocations += COUNTS[name][1];
+      }
+      return { classes, invocations };
+    }
+
+    function decision(change) {
+      const mode = modeOf(change);
+      const modules = [...change.modules].sort();
+      return {
+        mode,
+        modules,
+        changed: [change.path],
+        reason: change.reason || REASON
+      };
+    }
+
+    function argsFor(change) {
+      const mode = modeOf(change);
+      const args = tool === "maven"
+        ? ["-B", "-ntp", "clean"]
+        : ["--no-daemon", "--console=plain", "clean"];
+      if (mode !== "NONE") {
+        args.push(tool === "maven" ? "verify" : "check");
+        if (mode === "MODULES") {
+          const selected = new Set(change.modules);
+          if (tool === "maven") {
+            for (const module of ORDER) args.push("-Dimpact.skip." + module + "=" + (!selected.has(module)));
+          } else {
+            args.push("-Pimpact.modules=" + [...selected].sort().join(","));
+          }
+        }
+      }
+      return args.join(" ");
+    }
+
+    function highlight(obj) {
+      return JSON.stringify(obj, null, 2)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:')
+        .replace(/: "([^"]*)"/g, ': <span class="str">"$1"</span>');
+    }
+
+    function lightHoles(modules) {
+      const points = modules.map((name) => POS[name]);
+      for (const hole of holes.children) {
+        const x = +hole.getAttribute("cx");
+        const y = +hole.getAttribute("cy");
+        const hot = points.some(([px, py]) => Math.hypot(x - px, y - py) < 78);
+        hole.classList.toggle("hot", hot);
+      }
+    }
+
+    function apply(id, slam) {
+      const change = CHANGES[id];
+      if (!change) return;
+      current = id;
+      const mode = modeOf(change);
+      const count = tally(change.modules);
+      for (const button of document.querySelectorAll(".ticket")) {
+        button.setAttribute("aria-checked", button.dataset.id === id ? "true" : "false");
+      }
+      for (const node of document.querySelectorAll(".node")) {
+        const on = change.modules.includes(node.dataset.module);
+        node.classList.toggle("caught", on);
+        node.classList.toggle("through", !on);
+      }
+      const edgeOn = change.modules.includes("pricing") && change.modules.includes("checkout");
+      document.getElementById("edge").classList.toggle("hot", edgeOn);
+      document.getElementById("edge-label").setAttribute("fill", edgeOn ? "#ffb199" : "#cbbba4");
+      lightHoles(change.modules);
+
+      const stamp = document.getElementById("stamp");
+      stamp.dataset.mode = mode;
+      stamp.textContent = mode === "MODULES" ? "Modules" : mode === "NONE" ? "None" : "All";
+      if (slam) {
+        stamp.classList.remove("slam");
+        void stamp.offsetWidth;
+        stamp.classList.add("slam");
+      }
+
+      const fill = document.getElementById("meter-fill");
+      fill.dataset.mode = mode;
+      fill.style.width = (count.invocations / 14 * 100) + "%";
+      const label = count.invocations === 0
+        ? "Clean only — nothing runs"
+        : count.invocations + " of 14 invocations";
+      document.getElementById("meter-label").textContent = label;
+      document.getElementById("json").innerHTML = highlight(decision(change));
+      document.getElementById("args").textContent = argsFor(change);
+      document.getElementById("note").textContent = change.note;
+      document.getElementById("legend").textContent = change.legend;
+
+      for (const item of document.querySelectorAll(".roster li")) {
+        const on = change.modules.includes(item.dataset.module);
+        item.classList.toggle("on", on);
+        item.classList.toggle("off", !on);
+        const grain = on && change.direct && !change.direct.includes(item.dataset.test);
+        item.classList.toggle("grain", grain);
+      }
+
+      const names = change.modules.length ? [...change.modules].sort().join(", ") : "no modules";
+      document.getElementById("sieve-desc").textContent = mode + ". " + names + ". " + change.note;
+      document.getElementById("live").textContent = mode + ". " + label + ". " + names + ".";
+    }
+
+    document.getElementById("tickets").addEventListener("click", (event) => {
+      const button = event.target.closest(".ticket");
+      if (!button) return;
+      apply(button.dataset.id, true);
+    });
+
+    document.getElementById("tickets").addEventListener("keydown", (event) => {
+      const buttons = [...document.querySelectorAll(".ticket")];
+      const index = buttons.findIndex((button) => button.dataset.id === current);
+      let next = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % buttons.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + buttons.length) % buttons.length;
+      else return;
+      event.preventDefault();
+      buttons[next].focus();
+      apply(buttons[next].dataset.id, true);
+    });
+
+    document.querySelector(".tools").addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      tool = button.dataset.tool;
+      for (const peer of document.querySelectorAll(".tools button")) {
+        peer.setAttribute("aria-checked", peer === button ? "true" : "false");
+      }
+      document.getElementById("args").textContent = argsFor(CHANGES[current]);
+    });
+
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const text = button.dataset.copy;
+        const code = button.parentElement.querySelector("code");
+        let ok = false;
+        try {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } catch {
+          try {
+            const area = document.createElement("textarea");
+            area.value = text;
+            area.setAttribute("readonly", "");
+            area.style.position = "fixed";
+            area.style.left = "-9999px";
+            document.body.appendChild(area);
+            area.select();
+            ok = document.execCommand("copy");
+            area.remove();
+          } catch { ok = false; }
+        }
+        if (!ok && code) {
+          const range = document.createRange();
+          range.selectNodeContents(code);
+          const selection = getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        const previous = button.textContent;
+        button.dataset.state = ok ? "copied" : "failed";
+        button.textContent = ok ? "Copied" : "Select";
+        setTimeout(() => {
+          button.textContent = previous;
+          delete button.dataset.state;
+        }, 1600);
+      });
+    });
+
+    const asked = new URLSearchParams(location.search).get("sample");
+    apply(CHANGES[asked] ? asked : "tax", false);
+  </script>
+</body>
+</html>

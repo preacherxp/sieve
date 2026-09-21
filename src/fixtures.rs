@@ -496,7 +496,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
     let command = args.next().unwrap_or_default();
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
-            "java-test-impact fixtures <command> [--root FIXTURE_REPO]\n\
+            "sieve fixtures <command> [--root FIXTURE_REPO]\n\
           list\n\
           prepare --tool maven|gradle --dest PATH [--git]\n\
           apply SCENARIO --workspace PATH\n\

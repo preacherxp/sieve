@@ -52,19 +52,21 @@ jobs:
             echo "Unknown test mode: $MODE" >&2
             exit 2
           fi
-          target/release/java-test-impact run \
+          if [[ "$MODE" == selected ]]; then
+            target/release/sieve select \
+              --workspace "projects/$BUILD_TOOL" \
+              --output "validation-results/$BUILD_TOOL-selection.json" \
+              "${args[@]}"
+            if [[ $(jq -r '.mode' "validation-results/$BUILD_TOOL-selection.json") == ALL ]]; then
+              echo 'Selection is ALL; the full-test stage runs this suite.'
+              exit 0
+            fi
+          fi
+          target/release/sieve run \
             --workspace "projects/$BUILD_TOOL" \
             --executable "$executable" \
             --output "validation-results/$BUILD_TOOL-selection.json" \
             "${args[@]}"
-      - name: Verify selective execution against known failures
-        if: inputs.mode == 'selected' && !cancelled()
-        env:
-          BUILD_TOOL: ${{ matrix.tool }}
-        run: >-
-          target/release/java-test-impact fixtures verify
-          --tool "$BUILD_TOOL" --scenario tax-transitive --selected
-          --output validation-results/regression
       - name: Publish selection summary
         if: always()
         env:
@@ -75,6 +77,7 @@ jobs:
           if [[ -f "validation-results/$BUILD_TOOL-selection.json" ]]; then
             {
               echo "### $MODE / $BUILD_TOOL"
+              echo "Selection: $(jq -r '.mode' "validation-results/$BUILD_TOOL-selection.json")"
               echo '```json'
               cat "validation-results/$BUILD_TOOL-selection.json"
               echo '```'

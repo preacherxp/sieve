@@ -229,10 +229,10 @@ fn main_result() -> Result<u8> {
     }
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
-            "java-test-impact <select|run> --workspace PATH [--base REV | --full]\n\
+            "sieve <select|run> --workspace PATH [--base REV | --full]\n\
                   [--output FILE] [--executable PATH] [-- BUILD_ARGS...]\n\n\
-                  java-test-impact init [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
-                  java-test-impact fixtures <list|prepare|apply|check-selection|reports|verify>\n\n\
+                  sieve init [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
+                  sieve fixtures <list|prepare|apply|check-selection|reports|verify>\n\n\
                   Requires impact.json and the build adapters documented in README.md.\n\
                   No base or unavailable Git history selects ALL. run propagates build failures."
         );

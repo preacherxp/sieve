@@ -230,9 +230,11 @@ pub fn init(args: Vec<String>) -> Result<u8> {
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if matches!(arg.as_str(), "--help" | "-h") {
-            println!("java-test-impact init [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
+            println!(
+                "sieve init [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
                 Discovers JVM modules, writes impact.json, and installs Maven skip profiles.\n\
-                Existing impact.json is never overwritten. Gradle uses a bundled init script.");
+                Existing impact.json is never overwritten. Gradle uses a bundled init script."
+            );
             return Ok(0);
         }
         let value = args
@@ -300,7 +302,7 @@ pub fn init(args: Vec<String>) -> Result<u8> {
         fs::write(path, text)?;
     }
     fs::write(config_path, serde_json::to_string_pretty(&config)? + "\n")?;
-    println!("Configured {tool} test selection in {}. Commit impact.json and any POM changes.\nRun: java-test-impact run --workspace {} --base origin/main", workspace.display(), workspace.display());
+    println!("Configured {tool} test selection in {}. Commit impact.json and any POM changes.\nRun: sieve run --workspace {} --base origin/main", workspace.display(), workspace.display());
     Ok(0)
 }
 

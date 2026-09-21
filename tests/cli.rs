@@ -5,7 +5,7 @@ use std::{
     process::{Command, Output},
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_java-test-impact");
+const BIN: &str = env!("CARGO_BIN_EXE_sieve");
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 fn cli(args: &[&str]) -> Output {

@@ -10,6 +10,10 @@ trigger the full suite.
 
 ## Install and set up a project
 
+The CLI is now named `sieve` (formerly `java-test-impact`). Update existing command
+invocations after reinstalling; existing `impact.json` files and Maven profiles
+remain compatible.
+
 Install from this checkout:
 
 ```bash
@@ -25,8 +29,8 @@ cargo install --git https://github.com/preacherxp/sieve --locked
 From an existing Java or Kotlin project:
 
 ```bash
-java-test-impact init
-java-test-impact run --workspace . --base origin/main
+sieve init
+sieve run --workspace . --base origin/main
 ```
 
 Use your comparison branch, such as `origin/master`, in place of `origin/main`.
@@ -40,8 +44,8 @@ and POM changes. Setup refuses to overwrite an existing `impact.json`.
 Optional overrides:
 
 ```bash
-java-test-impact init --workspace /path/to/project --tool gradle --executable /path/to/gradle
-java-test-impact run --workspace /path/to/project --base origin/main --executable /path/to/gradle
+sieve init --workspace /path/to/project --tool gradle --executable /path/to/gradle
+sieve run --workspace /path/to/project --base origin/main --executable /path/to/gradle
 ```
 
 Automatic setup currently supports a single JVM package or direct child modules
@@ -54,10 +58,15 @@ Custom dependency substitution and dependencies introduced through external arti
 need manual graph review; automatic setup collects declared inter-project edges.
 
 Prerequisites: Rust 1.92+ to install/build the CLI, Git for change detection, and the
-JDK/build tool required by your project. The Gradle adapter requires **Gradle 8.11+**.
-The samples use JDK 17, Maven 3.9.9,
-Gradle 8.12.1 in CI (the existing wrapper is 8.13), Kotlin 2.2.21, JUnit 5.11.4,
-and Spring 6.1.16. Initial builds need access to the normal dependency repositories.
+JDK/build tool required by your project. The Gradle adapter requires **Gradle 7.6.3+**.
+The default samples use JDK 17, Maven 3.9.9, Gradle 8.12.1 in CI (the existing
+wrapper is 8.13), Kotlin 2.2.21, JUnit 5.11.4, and Spring 6.1.16. Initial builds
+need access to the normal dependency repositories. The weekly/manual compatibility
+workflow checks Java 8, 11, 17, 21, and 25 with representative Maven 3.9/4.0 RC,
+Gradle 7.6/8/9, and Kotlin 1.9/2.2/2.3 combinations. Build tool and Kotlin plugin
+versions must be compatible with the chosen JDK; see the upstream compatibility
+tables linked below. Java 8/11 checks use a small Java-only project because the
+main sample's Spring 6 dependency requires Java 17.
 
 ## How selection works
 
@@ -93,15 +102,15 @@ history also selects ALL. Invalid configuration fails explicitly.
 
 ```bash
 # Preview a selection without executing tests.
-java-test-impact select --workspace projects/maven --base origin/master
+sieve select --workspace projects/maven --base origin/master
 
 # Execute selected tests and save the decision before the build starts.
 mkdir -p validation-results
-java-test-impact run --workspace projects/maven --base origin/master \
+sieve run --workspace projects/maven --base origin/master \
   --output validation-results/maven-selection.json
 
 # Always run the full suite.
-java-test-impact run --workspace projects/gradle --full
+sieve run --workspace projects/gradle --full
 ```
 
 Omitting `--base` also requests a full run. Put selection output in an ignored
@@ -118,8 +127,8 @@ The repository has explicit, sequential stages on pushes, pull requests, and man
 1. **Rust and selector checks:** formatting, Clippy, unit checks, and all scenario
    selections for both build tools.
 2. **Selected tests:** Maven and Gradle jobs use the PR base or previous push SHA.
-   Missing history falls back to ALL. A controlled mutation also proves that each
-   adapter executes the expected subset and catches its known failures.
+   Missing history or shared build/selector changes select ALL; the selected job
+   records that decision and the full-test stage executes the suite once.
 3. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
    revision. This stage still runs if the selective stage fails, unless cancelled.
 
@@ -128,9 +137,14 @@ job summary. CI uses full Git history, read-only repository permissions, no pers
 checkout credentials, and no secrets for pull requests.
 
 The weekly/manual `fixtures.yml` workflow validates installation and runs every
-mutation twice: once with the full suite and once with selective execution. Set the
-Rust check and all four Java/Kotlin job checks as required in branch protection if
-you want merges to require both test stages.
+mutation twice: once with the full suite and once with selective execution, including
+known failure detection. If merges must require both test stages, make the Rust
+check and all four Java/Kotlin job checks required in branch protection.
+
+The weekly/manual `compatibility.yml` workflow runs selected tests and installation
+checks across older and newer JDK, build-tool, and Kotlin releases. Override the
+sample Kotlin version with `-PkotlinVersion=...` for Gradle or
+`-Dkotlin.version=...` for Maven.
 
 Workflows must live at the repository root under `.github/workflows/`.
 
@@ -169,10 +183,10 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked
 
-target/debug/java-test-impact fixtures list
-target/debug/java-test-impact fixtures verify --tool both
-target/debug/java-test-impact fixtures verify --tool both --scenario all
-target/debug/java-test-impact fixtures verify --tool both --scenario all \
+target/debug/sieve fixtures list
+target/debug/sieve fixtures verify --tool both
+target/debug/sieve fixtures verify --tool both --scenario all
+target/debug/sieve fixtures verify --tool both --scenario all \
   --selected --output validation-results/selected
 
 # Installation integration checks require Java 17, Maven, and Gradle on PATH.
@@ -190,12 +204,12 @@ expected failures were observed. Logs and JSON results go to `validation-results
 To exercise a selector manually:
 
 ```bash
-java-test-impact fixtures prepare --tool maven --dest /tmp/impact-tax --git
-java-test-impact fixtures apply tax-transitive --workspace /tmp/impact-tax
-java-test-impact select --workspace /tmp/impact-tax --base HEAD --output /tmp/selection.json
-java-test-impact fixtures check-selection tax-transitive --actual /tmp/selection.json
-java-test-impact run --workspace /tmp/impact-tax --base HEAD
-java-test-impact fixtures reports --tool maven --workspace /tmp/impact-tax
+sieve fixtures prepare --tool maven --dest /tmp/impact-tax --git
+sieve fixtures apply tax-transitive --workspace /tmp/impact-tax
+sieve select --workspace /tmp/impact-tax --base HEAD --output /tmp/selection.json
+sieve fixtures check-selection tax-transitive --actual /tmp/selection.json
+sieve run --workspace /tmp/impact-tax --base HEAD
+sieve fixtures reports --tool maven --workspace /tmp/impact-tax
 ```
 
 The deliberate tax mutation makes the run fail. `prepare` never overwrites an
@@ -222,4 +236,6 @@ selection-cache invalidation are outside the current implementation.
 
 Build integration follows the native [Maven Kotlin configuration](https://kotlinlang.org/docs/maven-configure-project.html),
 [Gradle Kotlin/JVM support](https://kotlinlang.org/docs/gradle-configure-project.html),
+[Gradle Java compatibility](https://docs.gradle.org/current/userguide/compatibility.html),
+[Maven release requirements](https://maven.apache.org/docs/history.html),
 and [GitHub PR checkout semantics](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).

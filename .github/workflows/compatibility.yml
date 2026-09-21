@@ -1,0 +1,57 @@
+name: JVM compatibility
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 2'
+permissions:
+  contents: read
+jobs:
+  compatibility:
+    name: ${{ matrix.tool }} ${{ matrix.tool-version }} / Java ${{ matrix.java-version }} / Kotlin ${{ matrix.kotlin-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {tool: gradle, tool-version: '7.6.4', java-version: '17', kotlin-version: '1.9.25'}
+          - {tool: gradle, tool-version: '8.13', java-version: '21', kotlin-version: '2.2.21'}
+          - {tool: gradle, tool-version: '9.3.0', java-version: '25', kotlin-version: '2.3.21'}
+          - {tool: maven, tool-version: '3.9.9', java-version: '17', kotlin-version: '1.9.25'}
+          - {tool: maven, tool-version: '3.9.16', java-version: '21', kotlin-version: '2.3.21'}
+          - {tool: maven, tool-version: '4.0.0-rc-6', java-version: '25', kotlin-version: '2.3.21'}
+          - {tool: maven, tool-version: '3.9.9', java-version: '8', kotlin-version: ''}
+          - {tool: gradle, tool-version: '7.6.4', java-version: '11', kotlin-version: ''}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: ${{ matrix.tool }}
+          java-version: ${{ matrix.java-version }}
+          tool-version: ${{ matrix.tool-version }}
+      - name: Set fixture Kotlin version
+        if: matrix.kotlin-version != ''
+        env:
+          KOTLIN_VERSION: ${{ matrix.kotlin-version }}
+        shell: bash
+        run: |
+          sed -i "s/^kotlinVersion=.*/kotlinVersion=$KOTLIN_VERSION/" projects/gradle/gradle.properties
+          sed -i "s#<kotlin.version>[^<]*</kotlin.version>#<kotlin.version>$KOTLIN_VERSION</kotlin.version>#" projects/maven/pom.xml
+      - name: Build selector
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked
+      - name: Verify installation and selected Kotlin/Java tests
+        if: matrix.kotlin-version != ''
+        env:
+          IMPACT_TOOL: ${{ matrix.tool }}
+        run: |
+          cargo +1.92.0 test --locked --test cli installs_build_adapters -- --ignored
+          target/debug/sieve fixtures verify --tool "${{ matrix.tool }}" --scenario kotlin-source --selected
+      - name: Verify Java 8/11 project
+        if: matrix.kotlin-version == ''
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+        run: bash scripts/compat-smoke.sh "$BUILD_TOOL"

@@ -31,10 +31,10 @@ jobs:
       - name: Verify single-module Kotlin DSL installation
         if: matrix.tool == 'gradle'
         run: cargo +1.92.0 test --locked --test cli installs_kotlin_dsl_package -- --ignored
-      - run: target/debug/java-test-impact fixtures verify --tool ${{ matrix.tool }} --scenario all
+      - run: target/debug/sieve fixtures verify --tool ${{ matrix.tool }} --scenario all
       - name: Validate actual selective execution against the oracle
         run: >-
-          target/debug/java-test-impact fixtures verify
+          target/debug/sieve fixtures verify
           --tool ${{ matrix.tool }} --scenario all --selected
           --output validation-results/selected
       - uses: actions/upload-artifact@v4
