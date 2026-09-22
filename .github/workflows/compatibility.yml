@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - {tool: gradle, tool-version: '7.6.4', java-version: '17', kotlin-version: '1.9.25'}

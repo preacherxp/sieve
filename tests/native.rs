@@ -415,7 +415,15 @@ fn native_graph_runtime_resources_test_artifacts_and_failures() {
 #[ignore = "requires Docker, Java 17 and Maven; run by container CI"]
 fn selected_containers_start_only_for_affected_modules() {
     let service = std::env::var("IMPACT_SERVICE").unwrap_or_else(|_| "Redis".into());
-    assert!(["Kafka", "Redis"].contains(&service.as_str()));
+    let (variable, image) = match service.as_str() {
+        "Kafka" => ("kafka", "apache/kafka:3.9.2"),
+        "Redis" => ("redis", "redis:7.2.16-alpine"),
+        "MongoDB" => ("mongo", "mongo:7.0.43"),
+        "PostgreSQL" => ("postgres", "postgres:17-alpine"),
+        "MySQL" => ("mysql", "mysql:8.4"),
+        "RabbitMQ" => ("rabbit", "rabbitmq:4.1-alpine"),
+        _ => panic!("Unsupported container service: {service}"),
+    };
     let executable = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
@@ -438,16 +446,15 @@ fn selected_containers_start_only_for_affected_modules() {
         "projects/containers/src/test/java/example/{service}Test.java"
     )))
     .unwrap();
-    let variable = service.to_lowercase();
     // Record an attempt before startup, plus the real container ID after startup.
     // Both observation files are ignored so they cannot affect selection.
     let marker = temp.path().join("starts");
     let ids = temp.path().join("ids");
     let java_path = |p: &Path| serde_json::to_string(p.to_str().unwrap()).unwrap();
     let instrumented = original.replace(&format!("{variable}.start();"), &format!(r#"
-java.nio.file.Files.writeString(java.nio.file.Path.of({}), "start\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> java.nio.file.Files.writeString(java.nio.file.Path.of({}), "start\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND));
 {variable}.start();
-java.nio.file.Files.writeString(java.nio.file.Path.of({}), {variable}.getContainerId() + "\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> java.nio.file.Files.writeString(java.nio.file.Path.of({}), {variable}.getContainerId() + "\n", java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND));
 org.junit.jupiter.api.Assertions.assertEquals(1, Provider.value());
 "#, java_path(&marker), java_path(&ids)));
     assert_ne!(instrumented, original);
@@ -518,18 +525,53 @@ org.junit.jupiter.api.Assertions.assertEquals(1, Provider.value());
     fs::remove_file(root.join("service/src/test/resources/service.properties")).unwrap();
     let service_test = format!("service/src/test/java/example/{service}Test.java");
     let label = format!("sieve-{}", root.file_name().unwrap().to_string_lossy());
-    for broken in [
-        instrumented.replace(if service == "Kafka" { "apache/kafka:3.9.2" } else { "redis:7.2.16-alpine" }, if service == "Kafka" { "apache/kafka:sieve-nonexistent-fixture-tag" } else { "redis:sieve-nonexistent-fixture-tag" }),
-        instrumented.replace(&format!("{variable}.start();"), &format!("{variable}.withLabel(\"sieve.fixture\", \"{label}\").waitingFor(org.testcontainers.containers.wait.strategy.Wait.forLogMessage(\"sieve-never-ready\\n\", 1)).withStartupTimeout(java.time.Duration.ofSeconds(2)); {variable}.start();")),
-    ] {
+    let missing_image = format!(
+        "{}:sieve-nonexistent-fixture-tag",
+        image.split_once(':').unwrap().0
+    );
+    let missing_image_test = instrumented.replace(image, &missing_image);
+    assert_ne!(missing_image_test, instrumented);
+    let mut broken = vec![("missing image", missing_image_test)];
+    // MySQLContainer replaces custom wait strategies during startup.
+    if service != "MySQL" {
+        broken.push(("startup timeout", instrumented.replace(&format!("{variable}.start();"), &format!("{variable}.withLabel(\"sieve.fixture\", \"{label}\").waitingFor(org.testcontainers.containers.wait.strategy.Wait.forLogMessage(\"sieve-never-ready\\n\", 1)).withStartupTimeout(java.time.Duration.ofSeconds(2)); {variable}.start();"))));
+    }
+    for (failure, broken) in broken {
         write(root, &service_test, broken);
-        let output = run(root, &executable, false, &["-Dpull.timeout=10", "-Dpull.pause.timeout=5"]);
-        assert!(!output.status.success(), "infrastructure failure returned success");
+        let output = run(
+            root,
+            &executable,
+            false,
+            &["-Dpull.timeout=10", "-Dpull.pause.timeout=5"],
+        );
+        assert!(
+            !output.status.success(),
+            "{failure} returned success: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         let actual = reports(root, "maven");
-        assert_eq!(actual["errors"], json!([format!("service:unit:example.{service}Test")]), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        let containers = Command::new("docker").args(["ps", "-q", "--filter", &format!("label=sieve.fixture={label}")]).output().unwrap();
+        assert_eq!(
+            actual["errors"],
+            json!([format!("service:unit:example.{service}Test")]),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let containers = Command::new("docker")
+            .args([
+                "ps",
+                "-q",
+                "--filter",
+                &format!("label=sieve.fixture={label}"),
+            ])
+            .output()
+            .unwrap();
         assert!(containers.status.success());
-        assert!(containers.stdout.is_empty(), "failed startup left a running container");
+        assert!(
+            containers.stdout.is_empty(),
+            "failed startup left a running container"
+        );
     }
     for id in fs::read_to_string(ids).unwrap().lines() {
         let inspected = Command::new("docker")
