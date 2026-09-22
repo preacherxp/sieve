@@ -18,6 +18,32 @@ struct Config {
     modules: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     build_fingerprint: Option<String>,
+    /// Globs for changes that select nothing. Relative to the workspace; a leading `/`
+    /// anchors the pattern at the repository root. Absent means `DEFAULT_IGNORE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ignore: Option<Vec<String>>,
+}
+
+const DEFAULT_IGNORE: &[&str] = &["README.md", "docs/**", "/README.md", "/docs/**"];
+
+const REPOSITORY: &str = "@repository/";
+
+/// `*` and `?` stay within one path segment; `**` crosses segments, and `**/` also
+/// matches zero segments.
+fn glob(pattern: &[u8], path: &[u8]) -> bool {
+    match pattern {
+        [] => path.is_empty(),
+        [b'*', b'*', b'/', rest @ ..] => {
+            glob(rest, path)
+                || (0..path.len()).any(|i| path[i] == b'/' && glob(rest, &path[i + 1..]))
+        }
+        [b'*', b'*', rest @ ..] => (0..=path.len()).any(|i| glob(rest, &path[i..])),
+        [b'*', rest @ ..] => (0..=path.len())
+            .take_while(|&i| i == 0 || path[i - 1] != b'/')
+            .any(|i| glob(rest, &path[i..])),
+        [b'?', rest @ ..] => matches!(path, [c, tail @ ..] if *c != b'/' && glob(rest, tail)),
+        [c, rest @ ..] => matches!(path, [d, tail @ ..] if d == c && glob(rest, tail)),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -55,7 +81,33 @@ impl Config {
                 return Err(format!("Invalid module or dependency: {module}").into());
             }
         }
+        if let Some(pattern) = self
+            .ignore
+            .iter()
+            .flatten()
+            .find(|p| p.trim_start_matches('/').is_empty())
+        {
+            return Err(format!("Invalid ignore pattern: {pattern:?}").into());
+        }
         Ok(())
+    }
+
+    /// `prefix` is the workspace path below the repository root, used by `/` patterns.
+    fn ignored(&self, path: &str, prefix: &str) -> bool {
+        let repository = match path.strip_prefix(REPOSITORY) {
+            Some(outside) => outside.to_owned(),
+            None if prefix.is_empty() => path.to_owned(),
+            None => format!("{prefix}/{path}"),
+        };
+        let workspace = (!path.starts_with(REPOSITORY)).then_some(path);
+        let matches = |pattern: &str| match pattern.strip_prefix('/') {
+            Some(anchored) => glob(anchored.as_bytes(), repository.as_bytes()),
+            None => workspace.is_some_and(|p| glob(pattern.as_bytes(), p.as_bytes())),
+        };
+        match &self.ignore {
+            Some(patterns) => patterns.iter().any(|p| matches(p)),
+            None => DEFAULT_IGNORE.iter().any(|p| matches(p)),
+        }
     }
 
     fn all(&self, reason: impl Into<String>) -> Selection {
@@ -67,7 +119,7 @@ impl Config {
         }
     }
 
-    fn select(&self, changed: BTreeSet<String>) -> Selection {
+    fn select(&self, changed: BTreeSet<String>, prefix: &str) -> Selection {
         let mut selected = BTreeSet::new();
         for path in &changed {
             if self.modules.contains_key(".") && path.starts_with("src/") {
@@ -81,7 +133,7 @@ impl Config {
                     continue;
                 }
             }
-            if path == "README.md" || path == "VALIDATION.md" || path.starts_with("docs/") {
+            if self.ignored(path, prefix) {
                 continue;
             }
             let mut result = self.all(format!("Unclassified or build input changed: {path}"));
@@ -133,7 +185,8 @@ fn git(workspace: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn changed_paths(workspace: &Path, base: &str) -> Result<BTreeSet<String>> {
+/// Returns changed paths and the workspace prefix below the repository root.
+fn changed_paths(workspace: &Path, base: &str) -> Result<(BTreeSet<String>, String)> {
     // Resolve revisions separately, so user input cannot become a Git option/pathspec.
     let revision = format!("{base}^{{commit}}");
     let base = String::from_utf8(git(
@@ -160,27 +213,21 @@ fn changed_paths(workspace: &Path, base: &str) -> Result<BTreeSet<String>> {
         &root,
         &["ls-files", "--others", "--exclude-standard", "-z"],
     )?);
-    paths
+    let changed = paths
         .split(|b| *b == 0)
         .filter(|p| !p.is_empty())
         .map(|p| {
             let path = std::str::from_utf8(p)?;
-            let relative = Path::new(path).strip_prefix(prefix);
-            Ok(match relative {
+            Ok(match Path::new(path).strip_prefix(prefix) {
                 Ok(relative) => relative.to_str().ok_or("Non-UTF-8 path")?.to_owned(),
-                // These docs are explicitly outside the build contract; other external changes
-                // cause a full run, including changes to the selector and shared CI scripts.
-                Err(_)
-                    if path == "README.md"
-                        || path == "VALIDATION.md"
-                        || path.starts_with("docs/") =>
-                {
-                    path.to_owned()
-                }
-                Err(_) => format!("@repository/{path}"),
+                // External changes cause a full run unless ignored, including changes to the
+                // selector and shared CI scripts.
+                Err(_) => format!("{REPOSITORY}{path}"),
             })
         })
-        .collect()
+        .collect::<Result<_>>()?;
+    let prefix = prefix.to_str().ok_or("Non-UTF-8 path")?.replace('\\', "/");
+    Ok((changed, prefix))
 }
 
 fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
@@ -281,9 +328,9 @@ fn main_result() -> Result<u8> {
     let config = Config::read(&workspace)?;
     let selection = match base {
         Some(base) => match changed_paths(&workspace, &base) {
-            Ok(changed) => match fingerprint::build_inputs(&workspace) {
+            Ok((changed, prefix)) => match fingerprint::build_inputs(&workspace) {
                 Ok(current) if config.build_fingerprint.as_ref() == Some(&current) => {
-                    config.select(changed)
+                    config.select(changed, &prefix)
                 }
                 Ok(_) => {
                     let mut selection = config.all("Build inputs changed or no fingerprint exists; run sieve refresh and review impact.json");
@@ -365,17 +412,70 @@ mod tests {
             ("isolated/src/main/resources/template", vec!["isolated"]),
         ] {
             assert_eq!(
-                config.select(BTreeSet::from([path.into()])).modules,
+                config.select(BTreeSet::from([path.into()]), "").modules,
                 expected.into_iter().map(str::to_owned).collect()
             );
         }
     }
 
     #[test]
+    fn glob_segments() {
+        for (pattern, path, expected) in [
+            ("README.md", "README.md", true),
+            ("README.md", "api/README.md", false),
+            ("docs/**", "docs/a/b.md", true),
+            ("docs/**", "docsx/a.md", false),
+            ("**/*.md", "README.md", true),
+            ("**/*.md", "a/b/c.md", true),
+            ("*.md", "a/c.md", false),
+            ("?.txt", "a.txt", true),
+            ("?.txt", "/.txt", false),
+            ("a/**/z", "a/z", true),
+            ("a/**/z", "a/b/c/z", true),
+        ] {
+            assert_eq!(
+                glob(pattern.as_bytes(), path.as_bytes()),
+                expected,
+                "{pattern} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignore_patterns_are_workspace_or_repository_relative() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"core": []}
+        }))
+        .unwrap();
+        let mode = |config: &Config, path: &str, prefix: &str| {
+            config.select(BTreeSet::from([path.into()]), prefix).mode
+        };
+        // Defaults cover workspace and repository READMEs and docs, nothing else.
+        assert_eq!(mode(&config, "README.md", "app"), "NONE");
+        assert_eq!(mode(&config, "@repository/docs/x.md", "app"), "NONE");
+        assert_eq!(mode(&config, "VALIDATION.md", ""), "ALL");
+        assert_eq!(mode(&config, "core/README.md", ""), "ALL");
+        config.ignore = Some(vec!["**/*.md".into(), "/other/**".into()]);
+        assert_eq!(mode(&config, "core/README.md", ""), "NONE");
+        assert_eq!(mode(&config, "@repository/other/src/A.java", "app"), "NONE");
+        // Anchored patterns see workspace paths under their repository location.
+        assert_eq!(mode(&config, "other/A.java", "app"), "ALL");
+        assert_eq!(mode(&config, "other/A.java", ""), "NONE");
+        // Unanchored patterns never match outside the workspace.
+        assert_eq!(mode(&config, "@repository/x.md", "app"), "ALL");
+        assert_eq!(mode(&config, "core/src/A.java", "app"), "MODULES");
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("core")).unwrap();
+        assert!(config.validate(temp.path()).is_ok());
+        config.ignore = Some(vec!["/".into()]);
+        assert!(config.validate(temp.path()).is_err());
+    }
+
+    #[test]
     fn conservative_selection_and_build_filters() {
         let mut config: Config =
             serde_json::from_str(include_str!("../projects/maven/impact.json")).unwrap();
-        let select = |path: &str| config.select(BTreeSet::from([path.into()]));
+        let select = |path: &str| config.select(BTreeSet::from([path.into()]), "");
         let tax = select("pricing/src/main/java/example/TaxRules.java");
         assert_eq!(
             tax.modules,
@@ -398,7 +498,7 @@ mod tests {
         let docs = select("README.md");
         assert_eq!(docs.mode, "NONE");
         assert_eq!(build_args(&config, &docs), ["-B", "-ntp", "clean"]);
-        assert_eq!(config.select(BTreeSet::new()).mode, "NONE");
+        assert_eq!(config.select(BTreeSet::new(), "").mode, "NONE");
         config.tool = "gradle".into();
         assert!(build_args(&config, &tax).contains(&"-Pimpact.modules=checkout,pricing".into()));
         config
@@ -408,9 +508,10 @@ mod tests {
             .push("checkout".into());
         assert_eq!(
             config
-                .select(BTreeSet::from([
-                    "checkout/src/test/java/NewTest.java".into()
-                ]))
+                .select(
+                    BTreeSet::from(["checkout/src/test/java/NewTest.java".into()]),
+                    ""
+                )
                 .modules
                 .len(),
             2

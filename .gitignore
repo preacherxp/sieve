@@ -4,3 +4,5 @@
 **/.kotlin/
 validation-results/
 workspaces/
+.DS_Store
+.idea/

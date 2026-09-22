@@ -456,7 +456,7 @@
           <ul>
             <li class="card"><p><strong>The grain is the module.</strong> TaxRules.java also runs CurrencyLabelTest, because they share pricing. You skip modules, not individual classes. There is no recording agent.</p></li>
             <li class="card"><p><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</p></li>
-            <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>VALIDATION.md</code>, and <code>docs/</code> do not compile or test. The job cleans and stops.</p></li>
+            <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>docs/</code>, and any <code>ignore</code> globs in <code>impact.json</code> do not compile or test. The job cleans and stops.</p></li>
             <li class="card"><p><strong>Setup is for a simple layout.</strong> One package, or direct child modules whose directory names match. Nested trees, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</p></li>
           </ul>
         </div>

@@ -81,6 +81,7 @@ cat model.json > "$output"
     assert_eq!(fs::read(root.join("impact.json")).unwrap(), original);
     let mut config: Value = serde_json::from_slice(&original).unwrap();
     config["modules"]["b"] = json!(["a", "removed"]); // manually declared runtime edge
+    config["ignore"] = json!(["notes/**"]);
     write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
     fs::remove_dir(root.join("removed")).unwrap();
     fs::create_dir(root.join("added")).unwrap();
@@ -95,6 +96,7 @@ cat model.json > "$output"
         serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
     assert_eq!(updated["modules"], json!({"a":[],"b":["a"],"added":["b"]}));
     assert!(updated["build_fingerprint"].is_string());
+    assert_eq!(updated["ignore"], json!(["notes/**"]));
     // The rejected model must not partially rewrite the previous configuration.
     let saved = fs::read(root.join("impact.json")).unwrap();
     write(&root, "model.json", "{}");

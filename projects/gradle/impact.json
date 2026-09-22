@@ -7,5 +7,12 @@
     "pricing": [],
     "runtime": []
   },
-  "build_fingerprint": "8be6eb4e96cc0a65483b07dcb5804bb213c52441"
+  "build_fingerprint": "8be6eb4e96cc0a65483b07dcb5804bb213c52441",
+  "ignore": [
+    "README.md",
+    "docs/**",
+    "/README.md",
+    "/VALIDATION.md",
+    "/docs/**"
+  ]
 }

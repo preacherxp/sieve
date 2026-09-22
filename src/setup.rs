@@ -332,6 +332,7 @@ fn maven_config(
         tool: "maven".into(),
         modules: BTreeMap::new(),
         build_fingerprint: None,
+        ignore: None,
     };
     let mut edits = Vec::new();
     for (module, model) in models {
@@ -450,6 +451,7 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         if previous.tool != config.tool {
             return Err("refresh cannot change the build tool".into());
         }
+        config.ignore = previous.ignore;
         let known: std::collections::BTreeSet<_> = config.modules.keys().cloned().collect();
         for (module, dependencies) in &mut config.modules {
             dependencies.extend(

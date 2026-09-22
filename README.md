@@ -106,9 +106,14 @@ For the samples, pricing changes select pricing and checkout: **10 classes / 12 
 invocations**. Checkout changes select **4 classes / 5 invocations**. Runtime changes
 select **5 integration classes**. Kotlin code participates in the same graph as Java.
 
-Root `README.md`, `VALIDATION.md`, and `docs/` changes select NONE. Other changes
+Changes matching the optional `ignore` globs in `impact.json` select NONE. Patterns
+are relative to the workspace; a leading `/` anchors them at the repository root.
+`*` and `?` stay within one path segment and `**` crosses segments. Without `ignore`,
+the default is `["README.md", "docs/**", "/README.md", "/docs/**"]`; an explicit list
+replaces it. The samples also ignore the repository's `VALIDATION.md`. Other changes
 outside recognized source directories, including build scripts, dependency versions,
-configuration, and shared repository inputs, select ALL. An unavailable base or Git
+configuration, and shared repository inputs, select ALL. Do not ignore build scripts,
+`impact.json`, or other test inputs: ignored changes never trigger tests. An unavailable base or Git
 history also selects ALL. Invalid configuration fails explicitly.
 
 ```bash
