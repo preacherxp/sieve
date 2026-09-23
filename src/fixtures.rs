@@ -103,10 +103,20 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn tool_name(tool: &str) -> Result<&str> {
-    if matches!(tool, "maven" | "gradle") {
+    if matches!(tool, "maven" | "gradle" | "single-maven" | "single-gradle") {
         Ok(tool)
     } else {
         Err(format!("Unknown build tool: {tool}").into())
+    }
+}
+
+/// Returns the underlying build system ("maven" or "gradle") for a possibly
+/// prefixed tool variant such as "single-maven" or "single-gradle".
+fn base_tool(tool: &str) -> &str {
+    if let Some(rest) = tool.strip_prefix("single-") {
+        rest
+    } else {
+        tool
     }
 }
 
@@ -412,7 +422,7 @@ fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
     }
     for module in modules {
         let mut folders = Vec::new();
-        if tool == "maven" {
+        if base_tool(tool) == "maven" {
             for (suite, folder) in [
                 ("unit", "surefire-reports"),
                 ("integration", "failsafe-reports"),
@@ -489,7 +499,7 @@ fn verify(
     if selection_path.exists() {
         fs::remove_file(&selection_path)?;
     }
-    let ignore = if tool == "maven" {
+    let ignore = if base_tool(tool) == "maven" {
         "-Dmaven.test.failure.ignore=true"
     } else {
         "-PfixtureIgnoreFailures=true"
@@ -513,7 +523,7 @@ fn verify(
         command
     } else {
         let mut command = Command::new(executable);
-        command.args(if tool == "maven" {
+        command.args(if base_tool(tool) == "maven" {
             vec!["-B", "-ntp", "clean", "verify", ignore]
         } else {
             vec!["--no-daemon", "--console=plain", "clean", "check", ignore]
@@ -815,8 +825,12 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             let mut ok = true;
             for tool in tools {
                 let executable = option(
-                    &format!("--{tool}"),
-                    if tool == "maven" { "mvn" } else { "gradle" },
+                    &format!("--{}", base_tool(tool)),
+                    if base_tool(tool) == "maven" {
+                        "mvn"
+                    } else {
+                        "gradle"
+                    },
                 );
                 // Resolve explicit relative executables before entering a temporary workspace.
                 let executable = if Path::new(&executable).components().count() > 1 {

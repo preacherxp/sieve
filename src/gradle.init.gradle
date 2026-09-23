@@ -14,11 +14,34 @@ gradle.beforeProject { p ->
     p.tasks.withType(Test).configureEach {
         def selected = p.providers.gradleProperty('impact.modules')
         onlyIf { !selected.isPresent() || moduleId(p) in selected.get().split(',') }
+        def testsValue = p.providers.gradleProperty('impact.tests').orNull
+        if (testsValue != null) {
+            filter {
+                testsValue.split(',').each { cls -> includeTestsMatching(cls) }
+                failOnNoMatchingTests = false
+            }
+        }
     }
 }
 
 gradle.projectsEvaluated {
     def root = gradle.rootProject
+    if (root.findProperty('impact.classes') != null) {
+        def sourceSets = root.extensions.findByName('sourceSets')
+        if (sourceSets == null) {
+            throw new GradleException('Class-level selection requires a Java or Kotlin/JVM root project.')
+        }
+        root.tasks.register('impactClasses') {
+            dependsOn(sourceSets.collect { it.classesTaskName })
+            doLast {
+                def paths = { files -> files.collect { it.absolutePath }.unique().sort() }
+                def tests = root.tasks.withType(Test).collectMany { it.testClassesDirs?.files ?: [] }
+                new File(root.property('impact.classes').toString()).text = JsonOutput.toJson([
+                    classes: paths(sourceSets.collectMany { it.output.classesDirs.files } + tests),
+                    tests: paths(tests)])
+            }
+        }
+    }
     if (root.findProperty('impact.output') != null) {
         root.tasks.register('impactInit') {
             doLast {

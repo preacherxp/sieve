@@ -1,0 +1,8 @@
+{
+  "tool": "gradle",
+  "modules": {
+    ".": []
+  },
+  "build_fingerprint": "f8068d0bd82d523acd6b8fe45789bc0403abce0a",
+  "class_level": true
+}

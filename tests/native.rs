@@ -716,3 +716,114 @@ fn native_java_consumer_of_kotlin_provider() {
         assert_eq!(actual["errors"], json!([]));
     }
 }
+
+#[test]
+#[ignore = "requires Java 17 and Maven/Gradle; run by fixture CI"]
+fn native_class_level_selection_runs_reaching_test_classes() {
+    for (tool, executable) in tools() {
+        let temp = fixture(&format!("single-{tool}"));
+        let root = temp.path().join("project");
+        let workspace = root.to_str().unwrap();
+        let output = temp.path().join("selection.json");
+        let integration = if tool == "maven" {
+            "integration"
+        } else {
+            "unit"
+        };
+        let unit = |names: &[&str]| -> Vec<String> {
+            names
+                .iter()
+                .map(|n| {
+                    let suite = if n.ends_with("IT") {
+                        integration
+                    } else {
+                        "unit"
+                    };
+                    format!(".:{suite}:example.{n}")
+                })
+                .collect()
+        };
+        let all = unit(&[
+            "CalculatorIT",
+            "CalculatorTest",
+            "DiscountTest",
+            "GreeterTest",
+            "LimitsTest",
+            "StringUtilsTest",
+        ]);
+        let cases: [(&str, &str, &str, &str, Vec<String>); 5] = [
+            // Direct and transitive callers, across both Maven test plugins.
+            (
+                "src/main/java/example/Calculator.java",
+                "a + b;",
+                "b + a;",
+                "SUBSET",
+                unit(&["CalculatorIT", "CalculatorTest", "DiscountTest"]),
+            ),
+            (
+                "src/main/java/example/StringUtils.java",
+                "toUpperCase()",
+                "toUpperCase(java.util.Locale.ROOT)",
+                "SUBSET",
+                unit(&["StringUtilsTest"]),
+            ),
+            // Reached only through Class.forName and its interface.
+            (
+                "src/main/java/example/EnglishGreeter.java",
+                "\"Hello \"",
+                "\"Hello\" + \" \"",
+                "SUBSET",
+                unit(&["GreeterTest"]),
+            ),
+            (
+                "src/main/java/example/Unused.java",
+                "42",
+                "43",
+                "NONE",
+                vec![],
+            ),
+            // Inlined constants leave no reference, so the module runs.
+            (
+                "src/main/java/example/Limits.java",
+                "public static",
+                "/* edited */ public static",
+                "MODULES",
+                all.clone(),
+            ),
+        ];
+        for (path, from, to, mode, executed) in cases {
+            let file = root.join(path);
+            let text = fs::read_to_string(&file).unwrap();
+            assert!(text.contains(from), "{path}");
+            fs::write(&file, text.replacen(from, to, 1)).unwrap();
+            let args = [
+                "run",
+                "--workspace",
+                workspace,
+                "--executable",
+                &executable,
+                "--base",
+                "HEAD",
+                "--output",
+                output.to_str().unwrap(),
+            ];
+            checked(cli(&args));
+            let selection: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+            assert_eq!(selection["mode"], mode, "{tool} {path}: {selection}");
+            assert_eq!(
+                reports(&root, tool)["executed"],
+                json!(executed),
+                "{tool} {path}"
+            );
+            git(workspace, &["checkout", "--", path]);
+        }
+        // A behavior change fails the selected tests, and the failure propagates.
+        let file = root.join("src/main/java/example/Calculator.java");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(&file, text.replacen("a + b;", "a + b + 1;", 1)).unwrap();
+        assert!(!run(&root, &executable, false, &[]).status.success());
+        // A compile error fails in the compile step.
+        fs::write(&file, "package example; class Calculator {").unwrap();
+        assert!(!run(&root, &executable, false, &[]).status.success());
+    }
+}

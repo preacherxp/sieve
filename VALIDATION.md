@@ -71,3 +71,17 @@ Validated with Rust 1.92.0, Java 17.0.20.1, Maven 4.0.0-rc-6, and Gradle 8.13.
   tests remain scheduled even if the new selection check fails.
 - This change has not been run on GitHub Actions. The recorded GitHub job costs
   refer to the preceding committed workflow, not these local changes.
+
+## Class-level selection (2026-09-23)
+
+Validated with Rust 1.92.0, Java 17.0.20.1, Maven 3.9.9, and Gradle 9.6.1.
+
+- `cargo fmt --check`, Clippy with warnings denied, and fast Rust checks passed.
+- Ignored native checks passed on Maven and Gradle: the new single-module class-level
+  run (direct and transitive callers, a Failsafe test, `Class.forName` use, no reaching
+  test, constant fallback, failure and compile-error propagation), the native graph
+  check, the Kotlin provider check, and unsupported Gradle layout rejection.
+- Surefire 3.5.2 was checked by hand: an excludes file removes listed classes and drops
+  the default `**/*$*` exclude, which Sieve therefore repeats.
+- `samples/bookstore/demo.sh` results are recorded in its README. Not yet run on GitHub
+  Actions.

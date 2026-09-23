@@ -4,9 +4,10 @@ A Rust CLI that runs tests in changed JVM modules and their transitive dependent
 It supports Java, Kotlin/JVM, and mixed projects using Maven or Gradle. The selector,
 fixture manager, validation oracle, and tests are all Rust.
 
-Selection is conservative and module-level. There is no class-level analysis or
-runtime recording agent yet. Build configuration changes or uncertain Git history
-trigger the full suite.
+Selection is conservative and module-level. Single-module projects can opt into
+experimental class-level selection from compiled bytecode; there is no runtime
+recording agent. Build configuration changes or uncertain Git history trigger the
+full suite.
 
 ## Install and set up a project
 
@@ -135,6 +136,42 @@ The runner propagates build/test failures and accepts additional build arguments
 after `--`. It starts with `clean` to prevent stale XML reports; NONE runs only
 `clean`, without compilation or tests. No baseline metadata or selection cache is
 needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
+
+### Class-level selection (single-module, experimental)
+
+A single-module project has one node in the module graph, so module-level selection
+runs every test. Add `"class_level": true` to its `impact.json` (`"modules": {".": []}`)
+to narrow the selection. When the module is selected, `run` first executes
+`clean test-compile` (Maven) or `clean impactClasses` (Gradle), then reads the class
+files of the working tree:
+
+- Edges follow constant-pool references (class entries, descriptors, generic signatures,
+  annotations), superclasses and interfaces, dotted string constants such as
+  `Class.forName("a.B")` arguments, and Kotlin inline-function source maps.
+- A reached type also reaches all of its subtypes, so a test that sees only an
+  interface still selects when an injected implementation changes.
+- Test classes reaching a changed class emit `SUBSET` with their binary names in
+  `tests`. None reaching it emits `NONE` with `modules: ["."]`: the build compiles
+  and verifies without executing tests.
+
+Selection falls back to `MODULES` for a changed non-Java/Kotlin file under `src/`
+(resources included), a deleted source, `package-info.java`/`module-info.java`, a source
+with no compiled class (such as a Kotlin file whose directory differs from its package),
+a class declaring non-private `static final` compile-time constants, which compilers
+copy into callers, or unreadable class files. Build inputs still select `ALL`.
+
+The second build skips `clean`. Maven receives `-Dsurefire.excludesFile` and
+`-Dfailsafe.excludesFile` listing the unselected test classes, so POM includes and the
+unit/integration split stay in effect; the file also repeats Surefire's default
+`**/*$*` exclude, which an excludes file otherwise drops. Gradle filters every `Test`
+task to the selected classes. `select` stays module-level because it does not compile;
+`--output` receives the refined decision. `refresh` preserves the flag.
+
+Static analysis cannot see classpath scanning without a type reference (such as Spring
+component scanning or `@SpringBootTest` context discovery), classes named only in
+resources, or other reflection built from non-constant strings. Keep full-suite runs
+on the default branch. [`samples/bookstore`](samples/bookstore/README.md) demonstrates
+the savings: an edit selects 1–4 of its 10 test classes.
 
 ## GitHub CI
 
@@ -290,7 +327,7 @@ This is a conservative module selector, not a soundness proof for arbitrary JVM
 builds. Explicit dependency graphs must include runtime/resource dependencies;
 unsupported custom layouts need further adapter work. The deletion fixture also
 edits its consumer, so it is not an isolated proof of previous-graph traversal.
-Class-level analysis, parallel runtime attribution, generated-code discovery, and
+Class-level analysis is limited to opted-in single-module projects; parallel runtime attribution, generated-code discovery, and
 selection-cache invalidation are outside the current implementation.
 
 Build integration follows the native [Maven Kotlin configuration](https://kotlinlang.org/docs/maven-configure-project.html),
