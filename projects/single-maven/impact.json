@@ -1,6 +1,9 @@
 {
   "tool": "maven",
-  "modules": { ".": [] },
+  "modules": {
+    ".": []
+  },
+  "build_fingerprint": "4b25fd067b144eb816f23d53aa917ca065f22270",
   "class_tests": {
     "src/main/java/example/Calculator.java": [
       ".:unit:example.CalculatorTest"

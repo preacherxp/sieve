@@ -826,7 +826,11 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             for tool in tools {
                 let executable = option(
                     &format!("--{}", base_tool(tool)),
-                    if base_tool(tool) == "maven" { "mvn" } else { "gradle" },
+                    if base_tool(tool) == "maven" {
+                        "mvn"
+                    } else {
+                        "gradle"
+                    },
                 );
                 // Resolve explicit relative executables before entering a temporary workspace.
                 let executable = if Path::new(&executable).components().count() > 1 {

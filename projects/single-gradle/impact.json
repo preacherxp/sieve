@@ -1,6 +1,9 @@
 {
   "tool": "gradle",
-  "modules": { ".": [] },
+  "modules": {
+    ".": []
+  },
+  "build_fingerprint": "f8068d0bd82d523acd6b8fe45789bc0403abce0a",
   "class_tests": {
     "src/main/java/example/Calculator.java": [
       ".:unit:example.CalculatorTest"

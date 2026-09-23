@@ -211,6 +211,7 @@ impl Config {
         }
         // Promote to SUBSET only when the class_tests map covered every changed src path
         // and we are in single-module mode (no dependency propagation can widen the set).
+        // An empty union still keeps the module so `run` compiles it without executing tests.
         if subset_possible && !selected.is_empty() {
             return Selection {
                 mode: if selected_tests.is_empty() {
@@ -218,14 +219,15 @@ impl Config {
                 } else {
                     "SUBSET"
                 },
-                modules: if selected_tests.is_empty() {
-                    BTreeSet::new()
+                reason: if selected_tests.is_empty() {
+                    "Class-level selection: changed sources map to no tests; compile only"
                 } else {
-                    selected
-                },
+                    "Class-level selection from source dependency map"
+                }
+                .into(),
+                modules: selected,
                 tests: selected_tests,
                 changed,
-                reason: "Class-level selection from source dependency map".into(),
             };
         }
         Selection {
@@ -303,6 +305,9 @@ fn changed_paths(workspace: &Path, base: &str) -> Result<(BTreeSet<String>, Stri
     Ok((changed, prefix))
 }
 
+/// Matches no test class, so a Maven suite without selected tests executes nothing.
+const NO_TESTS: &str = "sieve.NoSelectedTests";
+
 fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
     let mut args: Vec<String> = match config.tool.as_str() {
         "maven" => vec!["-B", "-ntp", "clean"],
@@ -311,86 +316,68 @@ fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    if selection.mode != "NONE" {
-        args.push(
-            if config.tool == "maven" {
-                "verify"
-            } else {
-                "check"
-            }
-            .into(),
-        );
-        if selection.mode == "MODULES" {
-            if config.tool == "maven" {
-                for module in config.modules.keys() {
-                    args.push(format!(
-                        "-Dimpact.skip.{}={}",
-                        if module == "." { "root" } else { module },
-                        !selection.modules.contains(module)
-                    ));
-                }
-            } else {
+    // NONE with modules comes from class-level selection: compile them but run no tests.
+    let compile_only = selection.mode == "NONE" && !selection.modules.is_empty();
+    if selection.mode == "NONE" && !compile_only {
+        return args;
+    }
+    args.push(
+        if config.tool == "maven" {
+            "verify"
+        } else {
+            "check"
+        }
+        .into(),
+    );
+    if selection.mode == "MODULES" || compile_only {
+        if config.tool == "maven" {
+            for module in config.modules.keys() {
                 args.push(format!(
-                    "-Pimpact.modules={}",
-                    selection
-                        .modules
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    "-Dimpact.skip.{}={}",
+                    if module == "." { "root" } else { module },
+                    compile_only || !selection.modules.contains(module)
                 ));
             }
-        } else if selection.mode == "SUBSET" {
-            // Class-level selection: run only the mapped test classes.
-            // Maven: -Dtest= targets Surefire (unit); -Dit.test= targets Failsafe (integration).
-            //   When only one suite has selected tests the other suite still runs conservatively;
-            //   a future adapter property will allow suppressing the unused suite cleanly.
-            // Gradle: -Pimpact.tests= is read by the init script, which applies
-            //   filter.includeTestsMatching per task with failOnNoMatchingTests=false.
-            if config.tool == "maven" {
-                let (surefire_tests, failsafe_tests): (Vec<_>, Vec<_>) = selection
-                    .tests
-                    .iter()
-                    .filter_map(|t| {
-                        let mut parts = t.splitn(3, ':');
-                        let _module = parts.next()?;
-                        let suite = parts.next()?;
-                        let fqcn = parts.next()?;
-                        Some((suite, fqcn))
-                    })
-                    .partition(|(suite, _)| *suite != "integration");
-                args.push("-Dsurefire.failIfNoSpecifiedTests=false".into());
-                if !surefire_tests.is_empty() {
-                    args.push(format!(
-                        "-Dtest={}",
-                        surefire_tests
-                            .iter()
-                            .map(|(_, fqcn)| *fqcn)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ));
-                }
-                if !failsafe_tests.is_empty() {
-                    args.push(format!(
-                        "-Dit.test={}",
-                        failsafe_tests
-                            .iter()
-                            .map(|(_, fqcn)| *fqcn)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ));
-                }
+        } else {
+            let modules = if compile_only {
+                Vec::new()
             } else {
-                args.push(format!(
-                    "-Pimpact.tests={}",
-                    selection
-                        .tests
+                selection.modules.iter().cloned().collect()
+            };
+            args.push(format!("-Pimpact.modules={}", modules.join(",")));
+        }
+    } else if selection.mode == "SUBSET" {
+        // Maven: Surefire runs non-integration IDs and Failsafe runs integration IDs; a
+        // suite without selected IDs receives a pattern that matches nothing.
+        // Gradle: the init script filters every Test task to the selected classes.
+        let parsed = selection.tests.iter().filter_map(|t| {
+            let mut parts = t.splitn(3, ':');
+            let _module = parts.next()?;
+            Some((parts.next()?, parts.next()?))
+        });
+        if config.tool == "maven" {
+            let (failsafe, surefire): (Vec<_>, Vec<_>) =
+                parsed.partition(|(suite, _)| *suite == "integration");
+            let classes = |tests: Vec<(&str, &str)>| {
+                if tests.is_empty() {
+                    NO_TESTS.to_owned()
+                } else {
+                    tests
                         .iter()
-                        .filter_map(|t| t.rsplitn(2, ':').next())
+                        .map(|(_, fqcn)| *fqcn)
                         .collect::<Vec<_>>()
                         .join(",")
-                ));
-            }
+                }
+            };
+            args.push("-Dsurefire.failIfNoSpecifiedTests=false".into());
+            args.push("-Dit.failIfNoSpecifiedTests=false".into());
+            args.push(format!("-Dtest={}", classes(surefire)));
+            args.push(format!("-Dit.test={}", classes(failsafe)));
+        } else {
+            args.push(format!(
+                "-Pimpact.tests={}",
+                parsed.map(|(_, fqcn)| fqcn).collect::<Vec<_>>().join(",")
+            ));
         }
     }
     args
@@ -679,9 +666,28 @@ mod tests {
         );
 
         // CT-02: file with no test coverage → NONE.
+        // The module is kept, so run compiles it without executing tests.
         let s = select("src/main/java/example/Unused.java");
         assert_eq!(s.mode, "NONE");
         assert!(s.tests.is_empty());
+        assert_eq!(s.modules, BTreeSet::from([".".into()]));
+        assert_eq!(
+            build_args(&config, &s),
+            ["-B", "-ntp", "clean", "verify", "-Dimpact.skip.root=true"]
+        );
+        let mut gradle: Config =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        gradle.tool = "gradle".into();
+        assert_eq!(
+            build_args(&gradle, &s),
+            [
+                "--no-daemon",
+                "--console=plain",
+                "clean",
+                "check",
+                "-Pimpact.modules="
+            ]
+        );
 
         // CT-03: file absent from map → MODULES fallback.
         let s = select("src/main/java/example/Unknown.java");
@@ -756,13 +762,14 @@ mod tests {
             test_arg.contains("example.FooTest") && test_arg.contains("example.BarTest"),
             "{test_arg}"
         );
-        assert!(!args.iter().any(|a| a.starts_with("-Dit.test=")));
+        assert!(args.contains(&"-Dit.test=sieve.NoSelectedTests".into()));
+        assert!(args.contains(&"-Dit.failIfNoSpecifiedTests=false".into()));
 
         // BA-01b: integration-only SUBSET.
         let s = subset(&[".:integration:example.FooIT"]);
         let args = build_args(&config, &s);
         assert!(args.contains(&"-Dsurefire.failIfNoSpecifiedTests=false".into()));
-        assert!(!args.iter().any(|a| a.starts_with("-Dtest=")));
+        assert!(args.contains(&"-Dtest=sieve.NoSelectedTests".into()));
         let it_arg = args.iter().find(|a| a.starts_with("-Dit.test=")).unwrap();
         assert!(it_arg.contains("example.FooIT"), "{it_arg}");
 
@@ -780,7 +787,10 @@ mod tests {
             args.iter().any(|a| a.starts_with("-Pimpact.tests=")),
             "{args:?}"
         );
-        let p_arg = args.iter().find(|a| a.starts_with("-Pimpact.tests=")).unwrap();
+        let p_arg = args
+            .iter()
+            .find(|a| a.starts_with("-Pimpact.tests="))
+            .unwrap();
         assert!(
             p_arg.contains("example.FooTest") && p_arg.contains("example.FooIT"),
             "{p_arg}"

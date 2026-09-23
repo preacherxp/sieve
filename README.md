@@ -136,6 +136,31 @@ after `--`. It starts with `clean` to prevent stale XML reports; NONE runs only
 `clean`, without compilation or tests. No baseline metadata or selection cache is
 needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
+### Class-level selection (single-module, experimental)
+
+A single-module `impact.json` (`"modules": {".": []}`) may declare `class_tests`,
+mapping workspace-relative source paths to test IDs (`module:suite:FQCN`):
+
+```json
+"class_tests": {
+  "src/main/java/example/Calculator.java": [".:unit:example.CalculatorTest"],
+  "src/main/java/example/Unused.java": []
+}
+```
+
+When every changed `src/` path is mapped, `select` emits `SUBSET` with the union of
+the mapped tests. A union that is empty emits `NONE` with `modules: ["."]`, and `run`
+still compiles the module without executing tests. Any unmapped changed path falls back
+to `MODULES`, and build inputs still select `ALL`. Maven runs `unit` IDs through
+Surefire (`-Dtest`) and `integration` IDs through Failsafe (`-Dit.test`); a suite
+without selected IDs executes nothing. Gradle filters every `Test` task to the selected
+classes. `refresh` preserves the map.
+
+The map is hand-maintained and not verified. Each entry must list every test that
+reaches the file, directly or transitively, including via reflection, dependency
+injection, and resources. A stale map silently skips affected tests, so keep full-suite
+runs on the default branch.
+
 ## GitHub CI
 
 The repository runs these checks on pushes, pull requests, and manual runs:

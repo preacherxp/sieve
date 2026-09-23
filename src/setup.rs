@@ -453,6 +453,7 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
             return Err("refresh cannot change the build tool".into());
         }
         config.ignore = previous.ignore;
+        config.class_tests = previous.class_tests;
         let known: std::collections::BTreeSet<_> = config.modules.keys().cloned().collect();
         for (module, dependencies) in &mut config.modules {
             dependencies.extend(
