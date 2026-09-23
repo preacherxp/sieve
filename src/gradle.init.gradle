@@ -14,6 +14,13 @@ gradle.beforeProject { p ->
     p.tasks.withType(Test).configureEach {
         def selected = p.providers.gradleProperty('impact.modules')
         onlyIf { !selected.isPresent() || moduleId(p) in selected.get().split(',') }
+        def testsValue = p.providers.gradleProperty('impact.tests').orNull
+        if (testsValue != null) {
+            filter {
+                testsValue.split(',').each { cls -> includeTestsMatching(cls) }
+                failOnNoMatchingTests = false
+            }
+        }
     }
 }
 

@@ -1,0 +1,19 @@
+{
+  "tool": "maven",
+  "modules": { ".": [] },
+  "class_tests": {
+    "src/main/java/example/Calculator.java": [
+      ".:unit:example.CalculatorTest"
+    ],
+    "src/main/java/example/StringUtils.java": [
+      ".:unit:example.StringUtilsTest"
+    ],
+    "src/main/java/example/Unused.java": [],
+    "src/test/java/example/CalculatorTest.java": [
+      ".:unit:example.CalculatorTest"
+    ],
+    "src/test/java/example/StringUtilsTest.java": [
+      ".:unit:example.StringUtilsTest"
+    ]
+  }
+}

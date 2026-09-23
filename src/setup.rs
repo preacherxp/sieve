@@ -333,6 +333,7 @@ fn maven_config(
         modules: BTreeMap::new(),
         build_fingerprint: None,
         ignore: None,
+        class_tests: None,
     };
     let mut edits = Vec::new();
     for (module, model) in models {

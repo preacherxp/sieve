@@ -360,3 +360,44 @@ fn committed_build_change_keeps_falling_back_until_refresh() {
         assert_eq!(decision(&root)["mode"], "ALL");
     }
 }
+
+#[test]
+fn class_level_selection_single_module_workspace() {
+    // GIT-CT: end-to-end git integration for class-level (SUBSET) selection.
+    // Uses `fixtures prepare --tool single-maven` so impact.json carries the
+    // correct build_fingerprint for the workspace.
+    let temp = fixture("single-maven");
+    let root = temp.path().join("project");
+    let root_str = root.to_str().unwrap();
+
+    // GIT-CT-01: changing a covered source file produces SUBSET with its test.
+    write(&root, "src/main/java/example/Calculator.java", b"class Calculator{ int v=1; }".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "SUBSET", "covered source → SUBSET: {s}");
+    assert_eq!(s["tests"], json!([".:unit:example.CalculatorTest"]), "{s}");
+    git(root_str, &["checkout", "--", "src/main/java/example/Calculator.java"]);
+
+    // GIT-CT-02: changing an unused source file (empty test list) produces NONE.
+    write(&root, "src/main/java/example/Unused.java", b"class Unused{ int v=2; }".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "NONE", "empty test list → NONE: {s}");
+    git(root_str, &["checkout", "--", "src/main/java/example/Unused.java"]);
+
+    // GIT-CT-03: changing a file absent from class_tests falls back to MODULES.
+    write(&root, "src/main/java/example/New.java", b"class New{}".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "MODULES", "absent from map → MODULES: {s}");
+    let _ = fs::remove_file(root.join("src/main/java/example/New.java"));
+
+    // GIT-CT-04: changing a build input (pom.xml) still produces ALL.
+    write(&root, "pom.xml", b"<project><!-- changed --></project>".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "ALL", "build input → ALL: {s}");
+    git(root_str, &["checkout", "--", "pom.xml"]);
+
+    // GIT-CT-05: changing a covered test file produces SUBSET with its own test.
+    write(&root, "src/test/java/example/CalculatorTest.java", b"class CalculatorTest{ int v=1; }".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "SUBSET", "changed test file → SUBSET: {s}");
+    assert_eq!(s["tests"], json!([".:unit:example.CalculatorTest"]), "{s}");
+}
