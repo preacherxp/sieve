@@ -401,3 +401,37 @@ fn class_level_selection_single_module_workspace() {
     assert_eq!(s["mode"], "SUBSET", "changed test file → SUBSET: {s}");
     assert_eq!(s["tests"], json!([".:unit:example.CalculatorTest"]), "{s}");
 }
+
+#[test]
+fn class_level_selection_single_module_gradle() {
+    // GIT-CT-G: mirrors class_level_selection_single_module_workspace for the
+    // Gradle path, exercising the impact.tests property in the init script.
+    let temp = fixture("single-gradle");
+    let root = temp.path().join("project");
+    let root_str = root.to_str().unwrap();
+
+    // Covered source → SUBSET.
+    write(&root, "src/main/java/example/Calculator.java", b"class Calculator{ int v=1; }".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "SUBSET", "covered source → SUBSET: {s}");
+    assert_eq!(s["tests"], json!([".:unit:example.CalculatorTest"]), "{s}");
+    git(root_str, &["checkout", "--", "src/main/java/example/Calculator.java"]);
+
+    // Unused source (empty test list) → NONE.
+    write(&root, "src/main/java/example/Unused.java", b"class Unused{ int v=2; }".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "NONE", "empty test list → NONE: {s}");
+    git(root_str, &["checkout", "--", "src/main/java/example/Unused.java"]);
+
+    // File absent from class_tests → MODULES fallback.
+    write(&root, "src/main/java/example/New.java", b"class New{}".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "MODULES", "absent from map → MODULES: {s}");
+    let _ = fs::remove_file(root.join("src/main/java/example/New.java"));
+
+    // Build input change → ALL.
+    write(&root, "build.gradle", b"// changed".as_ref());
+    let s = decision(&root);
+    assert_eq!(s["mode"], "ALL", "build input → ALL: {s}");
+    git(root_str, &["checkout", "--", "build.gradle"]);
+}

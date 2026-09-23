@@ -348,7 +348,7 @@ fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
             // Gradle: -Pimpact.tests= is read by the init script, which applies
             //   filter.includeTestsMatching per task with failOnNoMatchingTests=false.
             if config.tool == "maven" {
-                let (unit_tests, it_tests): (Vec<_>, Vec<_>) = selection
+                let (surefire_tests, failsafe_tests): (Vec<_>, Vec<_>) = selection
                     .tests
                     .iter()
                     .filter_map(|t| {
@@ -360,20 +360,20 @@ fn build_args(config: &Config, selection: &Selection) -> Vec<String> {
                     })
                     .partition(|(suite, _)| *suite != "integration");
                 args.push("-Dsurefire.failIfNoSpecifiedTests=false".into());
-                if !unit_tests.is_empty() {
+                if !surefire_tests.is_empty() {
                     args.push(format!(
                         "-Dtest={}",
-                        unit_tests
+                        surefire_tests
                             .iter()
                             .map(|(_, fqcn)| *fqcn)
                             .collect::<Vec<_>>()
                             .join(",")
                     ));
                 }
-                if !it_tests.is_empty() {
+                if !failsafe_tests.is_empty() {
                     args.push(format!(
                         "-Dit.test={}",
-                        it_tests
+                        failsafe_tests
                             .iter()
                             .map(|(_, fqcn)| *fqcn)
                             .collect::<Vec<_>>()
