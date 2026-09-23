@@ -82,7 +82,6 @@ cat model.json > "$output"
     let mut config: Value = serde_json::from_slice(&original).unwrap();
     config["modules"]["b"] = json!(["a", "removed"]); // manually declared runtime edge
     config["ignore"] = json!(["notes/**"]);
-    config["class_tests"] = json!({"a/src/main/java/A.java": ["a:unit:example.ATest"]});
     write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
     fs::remove_dir(root.join("removed")).unwrap();
     fs::create_dir(root.join("added")).unwrap();
@@ -98,10 +97,17 @@ cat model.json > "$output"
     assert_eq!(updated["modules"], json!({"a":[],"b":["a"],"added":["b"]}));
     assert!(updated["build_fingerprint"].is_string());
     assert_eq!(updated["ignore"], json!(["notes/**"]));
+    // Class-level selection needs a single module, so the multi-module graph rejects it.
+    let mut invalid = updated.clone();
+    invalid["class_level"] = json!(true);
+    write(&root, "impact.json", serde_json::to_vec(&invalid).unwrap());
     assert_eq!(
-        updated["class_tests"],
-        json!({"a/src/main/java/A.java": ["a:unit:example.ATest"]})
+        cli(&["refresh", "--workspace", root.to_str().unwrap()])
+            .status
+            .code(),
+        Some(2)
     );
+    write(&root, "impact.json", serde_json::to_vec(&updated).unwrap());
     // The rejected model must not partially rewrite the previous configuration.
     let saved = fs::read(root.join("impact.json")).unwrap();
     write(&root, "model.json", "{}");

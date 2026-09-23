@@ -7,6 +7,8 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 
 - Sieve is a Rust CLI named `sieve`. It currently supports Java and
   Kotlin/JVM projects using Maven or Gradle, with conservative module selection.
+  Single-module projects can opt into experimental bytecode-based class-level
+  selection (`"class_level": true`); it compiles before running tests.
 - Language independence is a future direction, not an implemented capability.
   Do not advertise support for other languages or invent adapter commands.
 - Read `README.md`, `Cargo.toml`, and `src/gradle.init.gradle` for current setup
