@@ -167,7 +167,10 @@ Gradle), then reads the class files of every module:
   Quarkus) are components. When an affected class is a component, every test that
   starts a container (Spring TestContext and Boot test annotations, `@MicronautTest`,
   `@QuarkusTest`, Arquillian, including composed annotations and inherited
-  configuration) is selected, since component scanning leaves no reference to follow.
+  configuration, or a test that boots one itself through `SpringApplication`,
+  `SpringApplicationBuilder`, a Spring application context, or Micronaut's
+  `ApplicationContext`) is selected in the modules that run, since component scanning
+  leaves no reference to follow.
 - Test classes reaching a change emit `SUBSET` with their binary names in `tests`. None
   reaching it emits `NONE` with the selected modules: the build compiles and verifies
   without executing tests.
@@ -190,7 +193,9 @@ non-constant strings, or scanning by frameworks not listed above. A Spring appli
 change usually reaches a component, so container tests are selected together with the
 unit tests that reach it. Keep full-suite runs on the default branch.
 [`samples/bookstore`](samples/bookstore/README.md) demonstrates the savings: an edit
-selects 1–3 of its 10 test classes.
+selects 1–3 of its 10 test classes. [`samples/webshop`](samples/webshop/README.md) applies
+both levels to five Spring WebFlux services and an end-to-end module, and replays a
+history of breaking and fixing commits against the full suite.
 
 ## GitHub CI
 

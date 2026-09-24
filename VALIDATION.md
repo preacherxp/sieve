@@ -107,3 +107,24 @@ Validated with Rust 1.92.0, Java 17.0.20.1, Maven 3.9.16, and Gradle 9.6.1.
   See [performance](docs/performance.md#real-history-replay-apachecommons-text).
 - `actionlint` was unavailable locally; the workflow changes have not run on GitHub
   Actions.
+
+## WebFlux multi-service sample (2026-09-25)
+
+Validated with Rust 1.92.0, Java 17.0.20.1, Maven 3.9.16, and Spring Boot 3.5.6.
+
+- `samples/webshop` (five WebFlux services, `common`, `system-tests`; 24 test classes)
+  was configured by `sieve init` with `class_level` enabled.
+- The sample exposed a miss: `ShopSystemIT` boots services through
+  `SpringApplicationBuilder` and was not treated as a container test, so a catalog price
+  change passed its selected run while breaking the end-to-end total. Tests using the
+  Spring Boot bootstrap API, Spring application contexts, or Micronaut's
+  `ApplicationContext` are now container tests.
+- Maven selections no longer report tests of upstream modules that `-am` compiles but
+  skips.
+- `samples/webshop/demo.sh` replayed 19 commits (9 bugs, their reverts, benign code,
+  resource, docs and test changes) with `sieve replay --run` and
+  `-Dmaven.test.failure.ignore=true`: 635 s full versus 355 s selected, 1,083 versus 314
+  test cases, **no missed failures**. Results are in the sample README.
+- `cargo fmt --check`, Clippy with warnings denied, and fast Rust checks passed. The
+  class-level fixture oracle (baseline plus 21 mutations) passed on Maven and Gradle.
+- The nightly `webshop` job in `fixtures.yml` has not run on GitHub Actions.

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>shop</groupId>
+    <artifactId>webshop</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>system-tests</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>shop</groupId>
+      <artifactId>catalog</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>shop</groupId>
+      <artifactId>pricing</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>shop</groupId>
+      <artifactId>inventory</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>shop</groupId>
+      <artifactId>orders</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>shop</groupId>
+      <artifactId>notifications</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+<properties><impact.skip.system-tests>false</impact.skip.system-tests></properties><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><configuration><skipTests>${impact.skip.system-tests}</skipTests></configuration></plugin><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId><configuration><skipTests>${impact.skip.system-tests}</skipTests></configuration></plugin></plugins></build></project>

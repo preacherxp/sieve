@@ -34,6 +34,7 @@ fn every_fixture_has_one_selected_variant_and_full_verification_remains() {
         fs::read_to_string(Path::new(ROOT).join(".github/workflows/fixtures.yml")).unwrap();
     assert!(fixtures.contains("--scenario all\n"));
     assert!(fixtures.contains("--scenario all --selected"));
+    assert!(fixtures.contains("samples/webshop/demo.sh"));
     let tests =
         fs::read_to_string(Path::new(ROOT).join(".github/workflows/java-tests.yml")).unwrap();
     assert!(tests.contains("fetch-depth: 0"));
