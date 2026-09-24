@@ -266,7 +266,16 @@ for parallel CI. No speed percentage should be inferred from test counts alone.
   forwarded build flags, preservation, add/remove modules and graph refresh.
 - `tests/native.rs`: real Maven/Gradle deep graph, diamond, runtime reflection,
   resources, test artifacts, root tests, native failures, cycles, clean reports,
-  active default profiles, custom Gradle Test task, and stale graph refresh.
+  active default profiles, custom Gradle Test task, and stale graph refresh, now
+  through scoped `-pl … -am` / `:module:check` builds with stale reports of unbuilt
+  modules removed. Single-module class-level runs (Maven/Gradle), and Gradle
+  configuration-cache runs for module-level and multi-module class-level selection.
+- `fixtures verify --selected --class-level`: every mutation on the multi-module
+  fixtures with bytecode selection; required tests, expected failures, and the exact
+  executed inventory are checked by the independent oracle.
+- `src/classes.rs` unit tests: supertype dispatch without sibling implementations,
+  decorators, constant users found by source names, DI components reaching container
+  tests through composed annotations and inherited configuration.
   Unsupported layout checks exercise real Gradle with local placeholder plugin IDs;
   they do not build Android/KMP applications.
 - `tests/oracle.rs`: complete-verifier negative cases, atomic safe mutations,
@@ -290,7 +299,7 @@ for parallel CI. No speed percentage should be inferred from test counts alone.
   the current small warm-cache benchmark.
 
 
-Class-level analysis, runtime tracing, previous class-dependency graphs, and
-selection-cache invalidation remain future capabilities. Add their dedicated
-coverage when those capabilities are implemented; do not count them as current
-support or require them to validate this module selector.
+Runtime tracing, previous class-dependency graphs, and selection-cache invalidation
+remain future capabilities. Add their dedicated coverage when those capabilities are
+implemented; do not count them as current support. `sieve replay --run` supplies the
+real-history dataset: selection modes, time, and missed failures per commit.

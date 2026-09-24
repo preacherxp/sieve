@@ -26,19 +26,19 @@ cargo build --release
 SIEVE=$PWD/target/release/sieve samples/bookstore/demo.sh
 ```
 
-Recorded on 2026-09-23 with Maven 3.9.9 and Java 17 (times include both Maven runs):
+Recorded on 2026-09-24 with Maven 3.9.16 and Java 17 (times include both Maven runs):
 
 | Change | Mode | Test classes | Time |
 | --- | --- | ---: | ---: |
 | none (`--full`) | ALL | 10 | 17 s |
-| `notify/EmailFormatter` | SUBSET | 2 | 6 s |
-| `pricing/BulkDiscount` | SUBSET | 4 | 9 s |
+| `notify/EmailFormatter` | SUBSET | 2 | 5 s |
+| `pricing/BulkDiscount` | SUBSET | 3 | 7 s |
 | `report/SalesReport` | SUBSET | 1 | 4 s |
 | `catalog/Book` | SUBSET | 10 | 18 s |
 | `README.md` | NONE | 0 | 1 s |
 
 `BulkDiscount` selects `BulkDiscountTest`, `PriceCalculatorTest`, and `OrderServiceIT`,
-which reach it through `PriceCalculator`, and `MemberDiscountTest`. The last is extra:
-`MemberDiscount` implements `PriceRule`, and Sieve treats every implementation of a reached
-interface as reached, so injected implementations are not missed. `Book` is used by
-every test, so its change costs one extra compile over the full suite.
+which reach it through `PriceCalculator`. `PriceCalculator` only calls the `PriceRule`
+interface, so a change to one implementation reaches callers of the interface, not
+`MemberDiscount`, a sibling implementation. `Book` is used by every test, so its change
+costs one extra compile over the full suite.

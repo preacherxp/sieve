@@ -85,3 +85,25 @@ Validated with Rust 1.92.0, Java 17.0.20.1, Maven 3.9.9, and Gradle 9.6.1.
   the default `**/*$*` exclude, which Sieve therefore repeats.
 - `samples/bookstore/demo.sh` results are recorded in its README. Not yet run on GitHub
   Actions.
+
+## Scoped builds, multi-module class-level selection and replay (2026-09-24)
+
+Validated with Rust 1.92.0, Java 17.0.20.1, Maven 3.9.16, and Gradle 9.6.1.
+
+- `cargo fmt --check`, Clippy with warnings denied, and fast Rust checks passed.
+- Ignored native checks passed on Maven and Gradle: the native graph through scoped
+  `-pl … -am` / `:module:check` builds (test JARs, runtime edges, failures, cycles,
+  refresh, stale reports of unbuilt modules removed), the Kotlin provider, single-module
+  class-level runs (a changed constant now selects only `LimitsTest`), and Gradle
+  `--configuration-cache` runs for module-level and multi-module class-level selection.
+  The unsupported Gradle layout and both installation checks also passed.
+- **132 fixture runs passed** against the independent oracle: baseline plus all 21
+  mutations on both tools, each with module-level selection, class-level selection on
+  the multi-module fixtures (`--class-level`), and the full suite.
+- `samples/bookstore/demo.sh`: a `BulkDiscount` change now selects 3 of 10 classes
+  (the sibling `MemberDiscount` test is no longer selected).
+- `sieve replay --run` over 30 apache/commons-text commits: 511 s full versus 222 s
+  selected, no missed failures, although no commit in the window had a failing test.
+  See [performance](docs/performance.md#real-history-replay-apachecommons-text).
+- `actionlint` was unavailable locally; the workflow changes have not run on GitHub
+  Actions.

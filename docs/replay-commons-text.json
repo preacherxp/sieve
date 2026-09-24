@@ -1,0 +1,647 @@
+{
+  "source": "apache/commons-text",
+  "head": "8b5fc735532d9b98d03864439bd358db3d003b69",
+  "measured": "2026-09-24",
+  "platform": "macOS arm64, Java 17.0.20.1, Maven 3.9.16",
+  "class_level": true,
+  "extra_build_args": [
+    "-Drat.skip=true",
+    "-Djapicmp.skip=true",
+    "-Dcheckstyle.skip=true",
+    "-Dspotbugs.skip=true",
+    "-Dpmd.skip=true",
+    "-Djacoco.skip=true",
+    "-Danimal.sniffer.skip=true",
+    "-Dmaven.javadoc.skip=true",
+    "-Dcyclonedx.skip=true",
+    "-Dspdx.skip=true",
+    "-Dmaven.test.failure.ignore=true"
+  ],
+  "config": {
+    "ignore": [
+      "*.md",
+      "*.txt",
+      ".asf.yaml",
+      ".github/**",
+      "src/changes/**",
+      "src/site/**"
+    ]
+  },
+  "summary": {
+    "commits": 30,
+    "full_cases": 57743.0,
+    "full_seconds": 511.33451324999993,
+    "missed_failures": 0,
+    "modes": {
+      "ALL": 8,
+      "MODULES": 0,
+      "NONE": 15,
+      "SUBSET": 7
+    },
+    "replayed": 30,
+    "selected_cases": 19822.0,
+    "selected_seconds": 222.226532124
+  },
+  "records": [
+    {
+      "commit": "8b5fc735532d9b98d03864439bd358db3d003b69",
+      "subject": "Protect main branches",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.247865416,
+        "cases": 1988,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.8419805,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "00be782c2bb48fdc68ad59eda45eed7623758d74",
+      "subject": "Bump github/codeql-action/* from 4.37.9 to 4.38.1",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.619391667,
+        "cases": 1988,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.918703416,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "c7e433615fc2291e29a79eda0c34cfb51e446902",
+      "subject": "Bump actions/setup-java from 6.0.0 to 6.0.1",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.580164583,
+        "cases": 1988,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 1.013219708,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "ae3d36b8cea5d1fa5eaf3bd28f07bb111d1890e0",
+      "subject": "Harden XML parsing via commons-secure-xml (#766)",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 16.321475292,
+        "cases": 1988,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 17.7778355,
+        "cases": 1988,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "9c9a0047b2c4ae5b6be0382177cd6d19439601f7",
+      "subject": "Bump org.apache.commons:commons-parent from 104 to 105.",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 18.041362333,
+        "cases": 1966,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 17.302064833,
+        "cases": 1966,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "5d882dca7cb01b52a184a7e36f71d0aae4b1c9ac",
+      "subject": "StringMatcher.isMatch(CharSequence, int, int, int) forwards bufferEnd as bufferStart (#768).",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 20.517761917,
+        "cases": 1966,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.877457166,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "8917fae05e93a393bfb65e20cee79080ebc58292",
+      "subject": "Typo",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.532654125,
+        "cases": 1966,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.897139042,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "81de4f7a7c7d3b13d89edd72d4c4b92aa33e6c81",
+      "subject": "StringMatcher.isMatch(CharSequence, int, int, int) forwards bufferEnd as bufferStart (#768)",
+      "mode": "SUBSET",
+      "selected_test_classes": 37,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 16.931951167,
+        "cases": 1966,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 15.206919334,
+        "cases": 1252,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "a6cbba814422a06a0366468b2346f52aaacf8f3d",
+      "subject": "Move profile from Java 22 to 25 (LTS) boundary.",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 16.388265167,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 16.772813,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "8f11af0b260641346da6909751670c7c6dcbdb63",
+      "subject": "Bump net.bytebuddy:byte-buddy from 1.18.10 to 1.18.13",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 16.967034792,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 16.8393575,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "d14377dd6f6a0649b894a9586112720623aba28c",
+      "subject": "[test] Bump org.graalvm.js:js from 25.0.2 to 25.3.4.1 on Java 22 and up.",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 19.155061375,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 16.543389083,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "ad7bce752d49f50630aa2a059d66dc572c921bc1",
+      "subject": "Compare characters by value in DamerauLevenshteinDistance (#770).",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.591667875,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.836770792,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "14657580972a27e504d08c1057699aaa31e0e6bc",
+      "subject": "Compare characters by value in DamerauLevenshteinDistance (#770)",
+      "mode": "SUBSET",
+      "selected_test_classes": 6,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 17.960522875,
+        "cases": 1962,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 7.402661708,
+        "cases": 502,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "52c1e545be7c0c0fad766e4133a055706f4a222d",
+      "subject": "Bump github/codeql-action/analyze from 4.37.8 to 4.37.9.",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 17.493017125,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.914312,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "5884c2dad6351869b203d29152847815f27a4fff",
+      "subject": "Add link to Commons Security Model",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.687778125,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.885660459,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "c288f85fbd04331b459da784433472743c5b531d",
+      "subject": "Fix Maven property commons.release.version",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 17.517042959,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 16.753752916,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "114609057dcfc27e54d75c7fcf744de845951b82",
+      "subject": "Bump actions/setup-java from 5.7.0 to 6.0.0.",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.604356958,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.864473167,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "249770ef6309e04c8bae84e5fa1dcd33bfaec803",
+      "subject": "Fix ArrayIndexOutOfBoundsException in DnsStringLookup for '|' key (#765).",
+      "mode": "SUBSET",
+      "selected_test_classes": 1,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 17.075772875,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 7.239101041,
+        "cases": 8,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "f04ebec055370aba39ce747a2a2b60697d8d1ac6",
+      "subject": "Guard empty split result in DnsStringLookup.lookup (#765)",
+      "mode": "SUBSET",
+      "selected_test_classes": 23,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 16.370281458,
+        "cases": 1890,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 9.99386175,
+        "cases": 315,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "e0af4001481095db23774789743d731fcebe6711",
+      "subject": "Bump github/codeql-action/init from 4.37.7 to 4.37.8",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.754689625,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.892133417,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "5a23e10056646febd4d43527a8c5b930ea540c78",
+      "subject": "Bump org.apache.commons:commons-parent from 103 to 104.",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 16.517993333,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 16.687144792,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "624443b8a4fb421ce1621fdad98fd6928290f3e2",
+      "subject": "Bump codeql-action from 4.37.6 to 4.37.7",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 17.591751459,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.87339175,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "0b68c23d465aa148396a030467fa43dce6547409",
+      "subject": "Javadoc",
+      "mode": "SUBSET",
+      "selected_test_classes": 39,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 16.829320333,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 11.359523042,
+        "cases": 452,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "69167c8344feada712e1e8736b205f5bf1b987e5",
+      "subject": "Bump org.apache.commons:commons-collections4 from 4.5.0 to 4.6.0",
+      "mode": "ALL",
+      "selected_test_classes": 0,
+      "reason": "Unclassified or build input changed: impact.json",
+      "full": {
+        "seconds": 16.595220791,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 16.85498725,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "d7146030127e2a7004cb3b87798ebe23e5f591d0",
+      "subject": "Bump actions/setup-java from 5.6.0 to 5.7.0",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 17.098539958,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 1.004440375,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "f0645eed1f8d9dd767b6145390e167a72259e29a",
+      "subject": "Bump github/codeql-action from 4.37.3 to 4.37.6.",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 17.137670458,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.875751917,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "6a06b28bc8837fa10967d9b90ac210e6af8fa285",
+      "subject": "[TEXT-242] StringSubstitutorReader can now substitute variables with a suffix longer than two characters (#764).",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 17.095997792,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.864907208,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "01f9e9c7402d3af01ef815c0e19932cb19c29228",
+      "subject": "StringSubstitutorReader now substitute variables whose configured suffix is longer than two characters (#764)",
+      "mode": "SUBSET",
+      "selected_test_classes": 12,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 16.179455666,
+        "cases": 1889,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 9.858226375,
+        "cases": 261,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "79083a00a3c593592a42dd975b6e9ed27e35179a",
+      "subject": "Javadoc",
+      "mode": "SUBSET",
+      "selected_test_classes": 64,
+      "reason": "Test classes whose bytecode reaches the changed classes",
+      "full": {
+        "seconds": 16.270332167,
+        "cases": 1888,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 12.21067725,
+        "cases": 1524,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    },
+    {
+      "commit": "d17d15b4185eb9db728292c6f9fbbb7b283be231",
+      "subject": "[TEXT-241] TextStringBuilder.lastIndexOf(\"\") and StrBuilder.lastIndexOf(\"\") return incorrect index for empty string (size - 1 instead of size) (#763).",
+      "mode": "NONE",
+      "selected_test_classes": 0,
+      "reason": "Changed source/resource modules and their transitive dependents",
+      "full": {
+        "seconds": 16.660113584,
+        "cases": 1888,
+        "failed": [],
+        "exit": 0
+      },
+      "selected": {
+        "seconds": 0.863875833,
+        "cases": 0,
+        "failed": [],
+        "exit": 0
+      },
+      "missed": []
+    }
+  ]
+}

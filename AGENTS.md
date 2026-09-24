@@ -7,8 +7,8 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 
 - Sieve is a Rust CLI named `sieve`. It currently supports Java and
   Kotlin/JVM projects using Maven or Gradle, with conservative module selection.
-  Single-module projects can opt into experimental bytecode-based class-level
-  selection (`"class_level": true`); it compiles before running tests.
+  Projects can opt into bytecode-based class-level selection
+  (`"class_level": true`); it compiles the selected modules before running tests.
 - Language independence is a future direction, not an implemented capability.
   Do not advertise support for other languages or invent adapter commands.
 - Read `README.md`, `Cargo.toml`, and `src/gradle.init.gradle` for current setup
@@ -55,8 +55,12 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 - Use `sieve run --workspace PATH` with either `--base REV` or `--full`.
   Prefer the project's existing wrapper; use `--executable` only when needed.
 - Forward applicable build flags after `--`. Check command equivalence: Sieve
-  currently runs Maven `clean verify` or Gradle `clean check`; it does not preserve
-  arbitrary existing tasks automatically. `NONE` still runs `clean`.
+  currently runs Maven `clean verify` or Gradle `clean check`, limited for a partial
+  selection to `-pl <modules> -am` or `:<module>:check` tasks; it does not preserve
+  arbitrary existing tasks automatically. Aggregating steps (coverage reports, packaging
+  of unselected modules) see only the built modules. `NONE` still runs `clean`.
+- Use `sieve replay --workspace PATH --commits N --run` on the consumer repository
+  to measure selection modes, time saved, and missed failures before relying on it.
 - Place execution before steps that consume build outputs, and account for
   existing coverage, packaging, or custom test tasks before replacing commands.
 - Write selection JSON under `$RUNNER_TEMP` or an ignored directory so reports

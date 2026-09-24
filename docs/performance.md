@@ -42,6 +42,45 @@ checkout, and artifact uploads. These short source-change builds offer little
 reliable saving; ranges and startup cost matter. Docs-only changes avoid more work.
 This is not evidence of a general CI speedup.
 
+## Real history replay: apache/commons-text
+
+Measured 2026-09-24 on macOS ARM64, Java 17.0.20.1, Maven 3.9.16, with
+`sieve replay --commits 30 --run` over the 30 first-parent commits ending at
+`8b5fc735`. commons-text is one Maven module with 103 test classes and about 1,900
+test cases; its full `verify` takes about 16 s. Configuration: `sieve init`, then
+`"class_level": true` and an adopter's ignore list (`*.md`, `*.txt`, `.asf.yaml`,
+`.github/**`, `src/changes/**`, `src/site/**`). Both runs of every commit skip the same
+report plugins (RAT, japicmp, Checkstyle, SpotBugs, PMD, JaCoCo, Javadoc, CycloneDX,
+SPDX) and ignore test failures to collect them all. Per-commit data is in
+[replay-commons-text.json](replay-commons-text.json).
+
+| Mode | Commits | Changes | Build time full → Sieve |
+| --- | ---: | --- | ---: |
+| NONE | 15 | CI action bumps, release notes, site, `.asf.yaml` | 256 s → 13 s |
+| SUBSET | 7 | Java sources and tests (1–64 of 103 classes) | 118 s → 73 s |
+| ALL | 8 | POM, dependency and plugin changes | 138 s → 136 s |
+| **Total** | **30** | | **511 s → 222 s (−57%)** |
+
+Executed test cases fell from 57,743 to 19,822 (−66%). Timings use a monotonic clock
+and exclude the laptop's sleep periods; JUnit's wall-clock times in the logs do not.
+
+- **NONE carries most of the saving.** It still starts Maven for `clean` (about 1 s).
+  Eight commits touch only `.github/`, six only
+  release notes or site sources. Ignoring `.github/**` is an adopter decision: a
+  workflow change can alter the JDK or test flags. Before ignore globs applied inside
+  module source folders, the six `src/changes`/`src/site` commits ran every test.
+- **SUBSET saves less on a fast suite.** The compile step costs a second Maven start, so
+  a change reached by 37 classes took 15 s against 16 s. Two `Javadoc` commits still
+  selected 39 and 64 classes: selection follows changed sources, not changed bytecode.
+- **ALL costs the same as the full suite**; the selection overhead is within noise.
+- **No failure was missed, but none could be:** no full run in this window failed. The
+  replay shows savings on real history; safety evidence still comes from the fixture
+  mutations. A window containing failing commits is needed for real-failure evidence.
+
+One repository and one machine; a slower suite or per-class setup costs (containers,
+application contexts) would raise the SUBSET saving, and a multi-module replay remains
+open.
+
 ## Actual GitHub Actions cost
 
 [Run 35655467667](https://github.com/preacherxp/sieve/actions/runs/35655467667)
