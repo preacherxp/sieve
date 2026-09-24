@@ -33,10 +33,16 @@ const COMPONENT_MARKERS: &[&str] = &[
     "io/quarkus/",
 ];
 
-/// Test support that starts such a container.
+/// Test support that starts such a container, declaratively or, as system tests booting
+/// several applications do, by calling the container's bootstrap API.
 const CONTEXT_MARKERS: &[&str] = &[
     "org/springframework/test/context/",
     "org/springframework/boot/test/",
+    "org/springframework/boot/SpringApplication",
+    "org/springframework/boot/builder/",
+    "org/springframework/context/annotation/AnnotationConfigApplicationContext",
+    "org/springframework/context/support/",
+    "io/micronaut/context/ApplicationContext",
     "io/micronaut/test/",
     "io/quarkus/test/",
     "org/jboss/arquillian/",
@@ -800,6 +806,14 @@ mod tests {
             class("a/Base", "a/Base.java", true, &[spring], &[]),
             class("a/WebIT", "a/WebIT.java", true, &[], &["a/Base"]),
             class("a/PlainTest", "a/PlainTest.java", true, &["a/Plain"], &[]),
+            // Boots applications itself, as system tests starting several services do.
+            class(
+                "a/SystemIT",
+                "a/SystemIT.java",
+                true,
+                &["org/springframework/boot/builder/SpringApplicationBuilder"],
+                &[],
+            ),
         ];
         classes[5].annotation = true;
         classes[7].annotation = true;
@@ -807,11 +821,17 @@ mod tests {
         // Helper reaches a class carrying a custom stereotype, so containers start it.
         assert_eq!(
             graph.impact(&["src/main/java/a/Helper.java"]),
-            tests(&["a.AppIT", "a.Base", "a.WebIT"], &["a.PlainTest"])
+            tests(
+                &["a.AppIT", "a.Base", "a.SystemIT", "a.WebIT"],
+                &["a.PlainTest"]
+            )
         );
         assert_eq!(
             graph.impact(&["src/main/java/a/Plain.java"]),
-            tests(&["a.PlainTest"], &["a.AppIT", "a.Base", "a.WebIT"])
+            tests(
+                &["a.PlainTest"],
+                &["a.AppIT", "a.Base", "a.SystemIT", "a.WebIT"]
+            )
         );
     }
 

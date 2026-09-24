@@ -196,7 +196,12 @@ impl Config {
 impl Selection {
     /// Narrows a module selection to the test classes that reach the changed classes,
     /// returning the unselected test classes.
-    fn refine(&mut self, classes: &[classes::Class], workspace: &Path) -> Result<BTreeSet<String>> {
+    fn refine(
+        &mut self,
+        classes: &[classes::Class],
+        workspace: &Path,
+        maven: bool,
+    ) -> Result<BTreeSet<String>> {
         Ok(
             match classes::affected(classes, &self.sources, workspace)? {
                 classes::Impact::Fallback(reason) => {
@@ -204,9 +209,22 @@ impl Selection {
                     BTreeSet::new()
                 }
                 classes::Impact::Tests {
-                    selected,
+                    mut selected,
                     unselected,
                 } => {
+                    if maven {
+                        // `-am` also compiles the tests of upstream modules, which stay skipped.
+                        selected.retain(|test| {
+                            let class = format!("{}.class", test.replace('.', "/"));
+                            self.modules.iter().any(|module| {
+                                workspace
+                                    .join(module)
+                                    .join("target/test-classes")
+                                    .join(&class)
+                                    .is_file()
+                            })
+                        });
+                    }
                     self.reason = if selected.is_empty() {
                         self.mode = "NONE";
                         "No test class reaches the changed classes; compile only"
@@ -556,7 +574,7 @@ fn main_result() -> Result<u8> {
         // Analysis problems keep the module selection instead of failing the build.
         let unselected = class_dirs(&config, &workspace, &listing)
             .and_then(|dirs| classes::load(&dirs))
-            .and_then(|classes| selection.refine(&classes, &workspace))
+            .and_then(|classes| selection.refine(&classes, &workspace, config.tool == "maven"))
             .unwrap_or_else(|error| {
                 selection.reason = format!("Class-level selection unavailable: {error}");
                 BTreeSet::new()
@@ -769,14 +787,19 @@ mod tests {
     }
 
     #[test]
-    fn bookstore_sample_configuration_is_current() {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/bookstore");
-        let config = Config::read(&workspace).unwrap();
-        assert!(config.class_level);
-        assert_eq!(
-            config.build_fingerprint,
-            Some(fingerprint::build_inputs(&workspace).unwrap())
-        );
+    fn sample_configurations_are_current() {
+        for sample in ["bookstore", "webshop"] {
+            let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("samples")
+                .join(sample);
+            let config = Config::read(&workspace).unwrap();
+            assert!(config.class_level, "{sample}");
+            assert_eq!(
+                config.build_fingerprint,
+                Some(fingerprint::build_inputs(&workspace).unwrap()),
+                "{sample}"
+            );
+        }
     }
 
     #[test]
@@ -805,7 +828,17 @@ mod tests {
             class("a/Calc", "a/Calc.java", false, &[]),
             class("b/CalcTest", "b/CalcTest.java", true, &["a/Calc"]),
             class("a/OtherTest", "a/OtherTest.java", true, &[]),
+            class("c/UpstreamTest", "c/UpstreamTest.java", true, &["a/Calc"]),
         ];
+        for (module, test) in [("app", "b/CalcTest"), ("other", "c/UpstreamTest")] {
+            let file = temp
+                .path()
+                .join(module)
+                .join("target/test-classes")
+                .join(test);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file.with_extension("class"), "").unwrap();
+        }
         let changed = || BTreeSet::from([source.into(), "README.md".into()]);
         let mut selection = config.select(changed(), "");
         assert_eq!(selection.mode, "MODULES");
@@ -824,7 +857,8 @@ mod tests {
         );
         // Unselected modules may lie on a path from a test to the change.
         assert_eq!(class_dirs(&config, temp.path(), listing).unwrap().len(), 6);
-        let unselected = selection.refine(&graph, temp.path()).unwrap();
+        // Tests compiled in modules that stay skipped are not reported.
+        let unselected = selection.refine(&graph, temp.path(), true).unwrap();
         assert_eq!(selection.mode, "SUBSET");
         assert_eq!(selection.tests, BTreeSet::from(["b.CalcTest".into()]));
         assert_eq!(unselected, BTreeSet::from(["a.OtherTest".into()]));
@@ -869,10 +903,10 @@ mod tests {
                 "-Pimpact.testsFile=/tmp/tests.txt"
             ]
         );
-        // No test reaches the class: compile only, still without clean.
+        // No test in a selected module reaches the class: compile only, still without clean.
         graph[1].refs.clear();
         let mut selection = config.select(changed(), "");
-        selection.refine(&graph, temp.path()).unwrap();
+        selection.refine(&graph, temp.path(), true).unwrap();
         assert_eq!(selection.mode, "NONE");
         assert_eq!(
             selection.modules,
@@ -899,7 +933,7 @@ mod tests {
             BTreeSet::from(["core/src/main/java/a/Gone.java".into()]),
             "",
         );
-        selection.refine(&graph, temp.path()).unwrap();
+        selection.refine(&graph, temp.path(), true).unwrap();
         assert_eq!(selection.mode, "MODULES");
         assert!(selection.reason.contains("deleted"), "{}", selection.reason);
         // A single module builds without a reactor restriction.
