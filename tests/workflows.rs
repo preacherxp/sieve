@@ -25,11 +25,17 @@ fn every_fixture_has_one_selected_variant_and_full_verification_remains() {
         .map(|s| (s["id"].as_str().unwrap().to_owned(), 1))
         .collect();
     assert_eq!(scheduled, expected);
-    assert!(workflow.contains("needs: selected-tests\n    if: ${{ !cancelled() }}"));
+    // The full stage runs beside the selected stage, not after it.
+    assert!(workflow.contains("full-tests:\n    name: All tests\n    needs: [rust, build]"));
+    assert!(workflow.contains("--scenario all --selected --class-level"));
     assert!(!workflow.contains("pull_request_target"));
+    // Full-suite mutation verification remains, on the scheduled fixture workflow.
+    let fixtures =
+        fs::read_to_string(Path::new(ROOT).join(".github/workflows/fixtures.yml")).unwrap();
+    assert!(fixtures.contains("--scenario all\n"));
+    assert!(fixtures.contains("--scenario all --selected"));
     let tests =
         fs::read_to_string(Path::new(ROOT).join(".github/workflows/java-tests.yml")).unwrap();
-    assert!(tests.contains("--scenario all"));
     assert!(tests.contains("fetch-depth: 0"));
     assert!(tests.contains("persist-credentials: false"));
     assert!(tests.contains("if: always()"));

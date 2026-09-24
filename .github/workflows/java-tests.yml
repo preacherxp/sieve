@@ -25,10 +25,11 @@ jobs:
       - uses: ./.github/actions/java-build
         with:
           tool: ${{ matrix.tool }}
-      - name: Build Rust tooling
-        run: |
-          rustup toolchain install 1.92.0 --profile minimal
-          cargo +1.92.0 build --locked --release
+      - uses: actions/download-artifact@v4
+        with:
+          name: sieve
+          path: target/release
+      - run: chmod +x target/release/sieve
       - name: Run test stage
         env:
           BUILD_TOOL: ${{ matrix.tool }}
@@ -38,14 +39,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         shell: bash
         run: bash scripts/ci-test-stage.sh
-      - name: Verify full suite across fixture mutations
-        if: inputs.mode == 'full'
-        env:
-          BUILD_TOOL: ${{ matrix.tool }}
-        run: >-
-          target/release/sieve fixtures verify
-          --tool "$BUILD_TOOL" --scenario all
-          --output validation-results/full-fixtures
       - name: Publish selection summary
         if: always()
         env:
