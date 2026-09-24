@@ -743,14 +743,6 @@ fn native_class_level_selection_runs_reaching_test_classes() {
                 })
                 .collect()
         };
-        let all = unit(&[
-            "CalculatorIT",
-            "CalculatorTest",
-            "DiscountTest",
-            "GreeterTest",
-            "LimitsTest",
-            "StringUtilsTest",
-        ]);
         let cases: [(&str, &str, &str, &str, Vec<String>); 5] = [
             // Direct and transitive callers, across both Maven test plugins.
             (
@@ -782,13 +774,13 @@ fn native_class_level_selection_runs_reaching_test_classes() {
                 "NONE",
                 vec![],
             ),
-            // Inlined constants leave no reference, so the module runs.
+            // Inlined constants leave no reference; sources naming them are selected.
             (
                 "src/main/java/example/Limits.java",
                 "public static",
                 "/* edited */ public static",
-                "MODULES",
-                all.clone(),
+                "SUBSET",
+                unit(&["LimitsTest"]),
             ),
         ];
         for (path, from, to, mode, executed) in cases {
@@ -825,5 +817,77 @@ fn native_class_level_selection_runs_reaching_test_classes() {
         // A compile error fails in the compile step.
         fs::write(&file, "package example; class Calculator {").unwrap();
         assert!(!run(&root, &executable, false, &[]).status.success());
+    }
+}
+
+#[test]
+#[ignore = "requires Java 17 and Gradle; run by fixture CI"]
+fn native_gradle_configuration_cache_module_and_class_level_runs() {
+    for (tool, executable) in tools() {
+        if tool != "gradle" {
+            continue;
+        }
+        for class_level in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("project");
+            let mut args = vec![
+                "fixtures",
+                "prepare",
+                "--tool",
+                "gradle",
+                "--dest",
+                root.to_str().unwrap(),
+                "--git",
+            ];
+            if class_level {
+                args.push("--class-level");
+            }
+            success(&args);
+            success(&[
+                "fixtures",
+                "apply",
+                "unrelated",
+                "--workspace",
+                root.to_str().unwrap(),
+            ]);
+            let output = temp.path().join("selection.json");
+            let cached = |expected: &str| {
+                let result = cli(&[
+                    "run",
+                    "--workspace",
+                    root.to_str().unwrap(),
+                    "--executable",
+                    &executable,
+                    "--base",
+                    "HEAD",
+                    "--output",
+                    output.to_str().unwrap(),
+                    "--",
+                    "--configuration-cache",
+                    "-PfixtureIgnoreFailures=true",
+                ]);
+                checked(result.clone());
+                let log = String::from_utf8_lossy(&result.stdout);
+                assert!(log.contains(expected), "{class_level}: {log}");
+            };
+            cached("Configuration cache entry stored");
+            let selection: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+            let actual = reports(&root, tool);
+            assert_eq!(
+                actual["failed"],
+                json!(["pricing:unit:example.CurrencyLabelTest"])
+            );
+            if class_level {
+                assert_eq!(selection["mode"], "SUBSET", "{selection}");
+                assert_eq!(
+                    actual["executed"],
+                    json!(["pricing:unit:example.CurrencyLabelTest"])
+                );
+            } else {
+                assert_eq!(selection["mode"], "MODULES", "{selection}");
+                // Identical arguments reuse the stored entry.
+                cached("Reusing configuration cache");
+            }
+        }
     }
 }

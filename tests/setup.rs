@@ -97,16 +97,18 @@ cat model.json > "$output"
     assert_eq!(updated["modules"], json!({"a":[],"b":["a"],"added":["b"]}));
     assert!(updated["build_fingerprint"].is_string());
     assert_eq!(updated["ignore"], json!(["notes/**"]));
-    // Class-level selection needs a single module, so the multi-module graph rejects it.
-    let mut invalid = updated.clone();
-    invalid["class_level"] = json!(true);
-    write(&root, "impact.json", serde_json::to_vec(&invalid).unwrap());
-    assert_eq!(
-        cli(&["refresh", "--workspace", root.to_str().unwrap()])
-            .status
-            .code(),
-        Some(2)
+    // Refresh preserves class-level selection on a multi-module graph.
+    let mut class_level = updated.clone();
+    class_level["class_level"] = json!(true);
+    write(
+        &root,
+        "impact.json",
+        serde_json::to_vec(&class_level).unwrap(),
     );
+    success(&["refresh", "--workspace", root.to_str().unwrap()]);
+    let refreshed: Value =
+        serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+    assert_eq!(refreshed["class_level"], json!(true));
     write(&root, "impact.json", serde_json::to_vec(&updated).unwrap());
     // The rejected model must not partially rewrite the previous configuration.
     let saved = fs::read(root.join("impact.json")).unwrap();
