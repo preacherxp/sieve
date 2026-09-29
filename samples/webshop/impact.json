@@ -1,0 +1,30 @@
+{
+  "tool": "maven",
+  "modules": {
+    "catalog": [
+      "common"
+    ],
+    "common": [],
+    "inventory": [
+      "common"
+    ],
+    "notifications": [
+      "common"
+    ],
+    "orders": [
+      "common"
+    ],
+    "pricing": [
+      "common"
+    ],
+    "system-tests": [
+      "catalog",
+      "inventory",
+      "notifications",
+      "orders",
+      "pricing"
+    ]
+  },
+  "build_fingerprint": "fcdfa6663bde3434425d259bcf617a3ee2d03e79",
+  "class_level": true
+}

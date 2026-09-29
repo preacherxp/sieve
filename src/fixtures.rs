@@ -103,14 +103,30 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn tool_name(tool: &str) -> Result<&str> {
-    if matches!(tool, "maven" | "gradle") {
+    if matches!(tool, "maven" | "gradle" | "single-maven" | "single-gradle") {
         Ok(tool)
     } else {
         Err(format!("Unknown build tool: {tool}").into())
     }
 }
 
-fn prepare(root: &Path, tool: &str, destination: &Path, git: bool) -> Result<PathBuf> {
+/// Returns the underlying build system ("maven" or "gradle") for a possibly
+/// prefixed tool variant such as "single-maven" or "single-gradle".
+fn base_tool(tool: &str) -> &str {
+    if let Some(rest) = tool.strip_prefix("single-") {
+        rest
+    } else {
+        tool
+    }
+}
+
+fn prepare(
+    root: &Path,
+    tool: &str,
+    destination: &Path,
+    git: bool,
+    class_level: bool,
+) -> Result<PathBuf> {
     tool_name(tool)?;
     if destination.try_exists()? || fs::symlink_metadata(destination).is_ok() {
         return Err(format!("Refusing to overwrite {}", destination.display()).into());
@@ -121,6 +137,7 @@ fn prepare(root: &Path, tool: &str, destination: &Path, git: bool) -> Result<Pat
     copy_tree(&root.join("projects").join(tool), destination)?;
     let destination = destination.canonicalize()?;
     let mut config = crate::Config::read(&destination)?;
+    config.class_level |= class_level;
     config.build_fingerprint = Some(crate::fingerprint::build_inputs(&destination)?);
     write_json(&destination.join("impact.json"), &config)?;
     write_json(
@@ -247,7 +264,29 @@ fn expand_selection(available: &BTreeSet<String>, payload: &Value) -> Result<BTr
     match payload.get("mode").and_then(Value::as_str) {
         Some("ALL") if tests.is_empty() => Ok(available.clone()),
         Some("NONE") if tests.is_empty() => Ok(BTreeSet::new()),
-        Some("SUBSET") if !tests.is_empty() => Ok(tests),
+        // Class-level selection names binary classes; each runs in every selected module.
+        Some("SUBSET") if !tests.is_empty() => {
+            let modules = string_set(payload, "modules")?;
+            let mut selected = BTreeSet::new();
+            for test in tests {
+                if test.contains(':') {
+                    selected.insert(test);
+                    continue;
+                }
+                selected.extend(
+                    available
+                        .iter()
+                        .filter(|id| {
+                            let mut parts = id.splitn(3, ':');
+                            let module = parts.next().unwrap_or_default();
+                            (modules.is_empty() || modules.contains(module))
+                                && parts.nth(1) == Some(test.as_str())
+                        })
+                        .cloned(),
+                );
+            }
+            Ok(selected)
+        }
         Some("MODULES") if tests.is_empty() => {
             let modules = string_set(payload, "modules")?;
             let known: BTreeSet<_> = available
@@ -302,12 +341,12 @@ fn check_selection(
 }
 
 #[derive(Default, Serialize)]
-struct Reports {
-    executed: BTreeSet<String>,
-    failed: BTreeSet<String>,
+pub(crate) struct Reports {
+    pub(crate) executed: BTreeSet<String>,
+    pub(crate) failed: BTreeSet<String>,
     errors: BTreeSet<String>,
     skipped: BTreeSet<String>,
-    cases: usize,
+    pub(crate) cases: usize,
     #[serde(skip)]
     seen: BTreeSet<(String, String)>,
 }
@@ -395,7 +434,7 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
     Ok(())
 }
 
-fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
+pub(crate) fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
     tool_name(tool)?;
     let mut reports = Reports::default();
     let mut modules = vec![".".to_owned()];
@@ -412,7 +451,7 @@ fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
     }
     for module in modules {
         let mut folders = Vec::new();
-        if tool == "maven" {
+        if base_tool(tool) == "maven" {
             for (suite, folder) in [
                 ("unit", "surefire-reports"),
                 ("integration", "failsafe-reports"),
@@ -464,6 +503,7 @@ enum Execution {
     Selected,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify(
     root: &Path,
     catalog: &Catalog,
@@ -472,6 +512,7 @@ fn verify(
     executable: &str,
     output: &Path,
     execution: Execution,
+    class_level: bool,
 ) -> Result<bool> {
     let selected_run = execution == Execution::Selected;
     fs::create_dir_all(output)?;
@@ -481,7 +522,13 @@ fn verify(
         fs::remove_file(&result_path)?;
     }
     let temp = tempfile::Builder::new().prefix("impact-").tempdir()?;
-    let workspace = prepare(root, tool, &temp.path().join("project"), selected_run)?;
+    let workspace = prepare(
+        root,
+        tool,
+        &temp.path().join("project"),
+        selected_run,
+        class_level,
+    )?;
     if scenario != "baseline" {
         apply(&workspace, catalog.scenario(scenario)?)?;
     }
@@ -489,7 +536,7 @@ fn verify(
     if selection_path.exists() {
         fs::remove_file(&selection_path)?;
     }
-    let ignore = if tool == "maven" {
+    let ignore = if base_tool(tool) == "maven" {
         "-Dmaven.test.failure.ignore=true"
     } else {
         "-PfixtureIgnoreFailures=true"
@@ -513,7 +560,7 @@ fn verify(
         command
     } else {
         let mut command = Command::new(executable);
-        command.args(if tool == "maven" {
+        command.args(if base_tool(tool) == "maven" {
             vec!["-B", "-ntp", "clean", "verify", ignore]
         } else {
             vec!["--no-daemon", "--console=plain", "clean", "check", ignore]
@@ -589,6 +636,7 @@ fn verify(
     Ok(ok)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn benchmark(
     root: &Path,
     catalog: &Catalog,
@@ -597,6 +645,7 @@ fn benchmark(
     executable: &str,
     output: &Path,
     runs: usize,
+    class_level: bool,
 ) -> Result<bool> {
     if runs < 5 {
         return Err("Benchmark requires at least five measured runs after warmup".into());
@@ -621,7 +670,14 @@ fn benchmark(
                 .to_owned();
             let folder = output.join(format!("{tool}-{scenario}/{iteration}-{name}"));
             if !verify(
-                root, catalog, tool, scenario, executable, &folder, execution,
+                root,
+                catalog,
+                tool,
+                scenario,
+                executable,
+                &folder,
+                execution,
+                class_level,
             )? {
                 return Err(format!(
                     "Correctness failed; no speedup claim is valid. Inspect {}",
@@ -690,20 +746,20 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         println!(
             "sieve fixtures <command> [--root FIXTURE_REPO]\n\
           list\n\
-          prepare --tool maven|gradle --dest PATH [--git]\n\
+          prepare --tool maven|gradle --dest PATH [--git] [--class-level]\n\
           apply SCENARIO --workspace PATH\n\
           check-selection SCENARIO --actual FILE [--exact]\n\
           reports --tool maven|gradle --workspace PATH\n\
           verify [--tool maven|gradle|both] [--scenario baseline|all|SCENARIO]\n\
-                 [--selected] [--maven PATH] [--gradle PATH] [--output PATH]\n\
+                 [--selected] [--class-level] [--maven PATH] [--gradle PATH] [--output PATH]\n\
           benchmark [--tool maven|gradle|both] [--scenario baseline|all|SCENARIO]\n\
-                    [--runs 5] [--maven PATH] [--gradle PATH] [--output PATH]"
+                    [--runs 5] [--class-level] [--maven PATH] [--gradle PATH] [--output PATH]"
         );
         return Ok(0);
     }
     let allowed: &[&str] = match command.as_str() {
         "list" => &[],
-        "prepare" => &["--tool", "--dest", "--git"],
+        "prepare" => &["--tool", "--dest", "--git", "--class-level"],
         "apply" => &["--workspace"],
         "check-selection" => &["--actual", "--exact"],
         "reports" => &["--tool", "--workspace"],
@@ -711,6 +767,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             "--tool",
             "--scenario",
             "--selected",
+            "--class-level",
             "--maven",
             "--gradle",
             "--output",
@@ -719,6 +776,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             "--tool",
             "--scenario",
             "--runs",
+            "--class-level",
             "--maven",
             "--gradle",
             "--output",
@@ -732,7 +790,10 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             if arg != "--root" && !allowed.contains(&arg.as_str()) {
                 return Err(format!("Unknown option: {arg}").into());
             }
-            let value = if matches!(arg.as_str(), "--git" | "--exact" | "--selected") {
+            let value = if matches!(
+                arg.as_str(),
+                "--git" | "--exact" | "--selected" | "--class-level"
+            ) {
                 String::new()
             } else {
                 args.next()
@@ -769,7 +830,8 @@ pub fn main(args: Vec<String>) -> Result<u8> {
                 &root,
                 required("--tool")?,
                 Path::new(required("--dest")?),
-                options.contains_key("--git")
+                options.contains_key("--git"),
+                options.contains_key("--class-level"),
             )?
             .display()
         ),
@@ -815,8 +877,12 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             let mut ok = true;
             for tool in tools {
                 let executable = option(
-                    &format!("--{tool}"),
-                    if tool == "maven" { "mvn" } else { "gradle" },
+                    &format!("--{}", base_tool(tool)),
+                    if base_tool(tool) == "maven" {
+                        "mvn"
+                    } else {
+                        "gradle"
+                    },
                 );
                 // Resolve explicit relative executables before entering a temporary workspace.
                 let executable = if Path::new(&executable).components().count() > 1 {
@@ -838,6 +904,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
                             &executable,
                             &output,
                             option("--runs", "5").parse()?,
+                            options.contains_key("--class-level"),
                         )?;
                         continue;
                     }
@@ -853,6 +920,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
                         } else {
                             Execution::Native
                         },
+                        options.contains_key("--class-level"),
                     )?;
                 }
             }
@@ -906,7 +974,25 @@ mod tests {
             !check_selection(
                 &catalog,
                 "unused",
-                &json!({"mode":"SUBSET","tests":["bogus"]}),
+                &json!({"mode":"SUBSET","tests":["pricing:unit:example.Bogus"]}),
+                false
+            )?
+            .ok
+        );
+        // Bare class names expand through the oracle's own inventory.
+        let bare = check_selection(
+            &catalog,
+            "gateway-implementation",
+            &json!({"mode":"SUBSET","modules":["checkout"],
+                "tests":["example.CheckoutTest","example.GatewayTest","example.ParameterizedCheckoutTest","example.AbstractBase"]}),
+            true,
+        )?;
+        assert!(bare.ok, "{:?}", bare.missing);
+        assert!(
+            !check_selection(
+                &catalog,
+                "gateway-implementation",
+                &json!({"mode":"SUBSET","modules":["pricing"],"tests":["example.CheckoutTest"]}),
                 false
             )?
             .ok

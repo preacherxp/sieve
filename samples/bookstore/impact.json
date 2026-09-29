@@ -1,0 +1,8 @@
+{
+  "tool": "maven",
+  "modules": {
+    ".": []
+  },
+  "build_fingerprint": "737e51363b6eb450e0a26caa3a002e4662425253",
+  "class_level": true
+}

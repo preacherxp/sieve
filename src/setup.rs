@@ -200,7 +200,7 @@ fn check_execution_skips(xml: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_maven_adapter(xml: &str, module: &str, refresh: bool) -> Result<String> {
+pub(crate) fn install_maven_adapter(xml: &str, module: &str, refresh: bool) -> Result<String> {
     check_execution_skips(xml)?;
     let module = if module == "." { "root" } else { module };
     let property = format!("impact.skip.{module}");
@@ -333,6 +333,7 @@ fn maven_config(
         modules: BTreeMap::new(),
         build_fingerprint: None,
         ignore: None,
+        class_level: false,
     };
     let mut edits = Vec::new();
     for (module, model) in models {
@@ -433,7 +434,13 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         let output = tempfile::NamedTempFile::new()?;
         let status = Command::new(executable)
             .current_dir(&workspace)
-            .args(["--no-daemon", "--console=plain", "--init-script"])
+            // Discovery reads the project model at execution time.
+            .args([
+                "--no-daemon",
+                "--console=plain",
+                "--no-configuration-cache",
+                "--init-script",
+            ])
             .arg(script.path())
             .arg(format!("-Pimpact.output={}", output.path().display()))
             .arg("impactInit")
@@ -452,6 +459,7 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
             return Err("refresh cannot change the build tool".into());
         }
         config.ignore = previous.ignore;
+        config.class_level = previous.class_level;
         let known: std::collections::BTreeSet<_> = config.modules.keys().cloned().collect();
         for (module, dependencies) in &mut config.modules {
             dependencies.extend(

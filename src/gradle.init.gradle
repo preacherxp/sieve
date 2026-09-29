@@ -1,4 +1,6 @@
 // Shared adapter for Groovy and Kotlin DSL builds, loaded by the Rust CLI.
+// Execution-time closures capture only strings, booleans and file collections, never
+// Project objects, so builds using the configuration cache keep working.
 import groovy.json.JsonOutput
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.tasks.testing.Test
@@ -11,14 +13,56 @@ if (GradleVersion.current() < GradleVersion.version('7.6.3')) {
 def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1) }
 
 gradle.beforeProject { p ->
-    p.tasks.withType(Test).configureEach {
-        def selected = p.providers.gradleProperty('impact.modules')
-        onlyIf { !selected.isPresent() || moduleId(p) in selected.get().split(',') }
+    def modules = p.providers.gradleProperty('impact.modules').orNull
+    def enabled = modules == null || moduleId(p) in modules.split(',')
+    def testsFile = p.providers.gradleProperty('impact.testsFile').orNull
+    def tests = testsFile == null ? null : p.providers.fileContents(p.layout.projectDirectory.file(testsFile))
+        .asText.get().readLines().findAll { !it.isEmpty() }
+    p.tasks.withType(Test).configureEach { task ->
+        // An empty include filter would run every test, so an empty selection disables the task.
+        if (!enabled || tests?.isEmpty()) {
+            task.enabled = false
+        } else if (tests != null) {
+            task.filter { filter ->
+                tests.each { cls ->
+                    filter.includeTestsMatching(cls)
+                    filter.includeTestsMatching(cls + '$*')
+                }
+                filter.failOnNoMatchingTests = false
+            }
+        }
     }
 }
 
 gradle.projectsEvaluated {
     def root = gradle.rootProject
+    def listing = root.findProperty('impact.classes')?.toString()
+    if (listing != null) {
+        def classes = root.files()
+        def tests = root.files()
+        def jvm = false
+        root.allprojects.each { p ->
+            def sourceSets = p.extensions.findByName('sourceSets')
+            def compile = p.tasks.register('impactCompile')
+            if (sourceSets != null) {
+                jvm = true
+                sourceSets.each { classes.from(it.output.classesDirs) }
+                compile.configure { dependsOn(sourceSets.collect { it.classesTaskName }) }
+                p.tasks.withType(Test).each { if (it.testClassesDirs != null) tests.from(it.testClassesDirs) }
+            }
+        }
+        if (!jvm) {
+            throw new GradleException('Class-level selection requires Java or Kotlin/JVM projects.')
+        }
+        root.tasks.register('impactClasses') {
+            doLast {
+                def paths = { files -> files.collect { it.absolutePath }.unique().sort() }
+                new File(listing).text = JsonOutput.toJson([
+                    classes: paths(classes.files + tests.files),
+                    tests: paths(tests.files)])
+            }
+        }
+    }
     if (root.findProperty('impact.output') != null) {
         root.tasks.register('impactInit') {
             doLast {

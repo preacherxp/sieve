@@ -42,3 +42,30 @@ jobs:
         with:
           name: validation-${{ matrix.tool }}
           path: validation-results/
+  webshop:
+    name: Webshop history replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: maven
+      - name: Build selector
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked --release
+      - name: Replay breaking and fixing commits against the full suite
+        env:
+          SIEVE: ${{ github.workspace }}/target/release/sieve
+          OUTPUT: ${{ github.workspace }}/validation-results/webshop-replay.json
+        run: |
+          mkdir -p validation-results
+          samples/webshop/demo.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-webshop
+          path: validation-results/

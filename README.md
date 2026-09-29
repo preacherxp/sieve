@@ -4,9 +4,10 @@ A Rust CLI that runs tests in changed JVM modules and their transitive dependent
 It supports Java, Kotlin/JVM, and mixed projects using Maven or Gradle. The selector,
 fixture manager, validation oracle, and tests are all Rust.
 
-Selection is conservative and module-level. There is no class-level analysis or
-runtime recording agent yet. Build configuration changes or uncertain Git history
-trigger the full suite.
+Selection is conservative and module-level by default, and builds only the selected
+modules and what they depend on. Projects can opt into class-level selection from
+compiled bytecode; there is no runtime recording agent. Build configuration changes or
+uncertain Git history trigger the full suite.
 
 ## Install and set up a project
 
@@ -42,7 +43,8 @@ It writes `impact.json`. Maven also receives per-module Surefire/Failsafe
 test JARs still work. Existing default profiles remain active. Explicit execution
 skip overrides in local build sections are rejected during setup; external parent
 and profile overrides still require manual review. Gradle uses a bundled init script, so both `build.gradle` and
-`build.gradle.kts` work without build-file edits. Commit the generated configuration
+`build.gradle.kts` work without build-file edits; the adapter is compatible with the
+configuration cache. Commit the generated configuration
 and POM changes. Setup refuses to overwrite an existing `impact.json`.
 
 Optional overrides:
@@ -99,15 +101,19 @@ A single-module package uses `".": []`. The conventional source layout is
 
 1. Find the merge base between `--base` and HEAD.
 2. Collect committed, staged, unstaged, deleted, renamed, and untracked changed paths.
-3. Select changed source/resource modules and follow reverse dependency edges.
-4. Run every unit/integration test in those modules through the native build tool.
+3. Drop paths matching `ignore`, select changed source/resource modules, and follow
+   reverse dependency edges.
+4. Build only the selected modules and run their unit/integration tests through the
+   native build tool: Maven `verify -pl <selected> -am` (dependencies build with their
+   tests skipped), Gradle `:<module>:check` per selected module.
 
 For the samples, pricing changes select pricing and checkout: **10 classes / 12 test
 invocations**. Checkout changes select **4 classes / 5 invocations**. Runtime changes
 select **5 integration classes**. Kotlin code participates in the same graph as Java.
 
-Changes matching the optional `ignore` globs in `impact.json` select NONE. Patterns
-are relative to the workspace; a leading `/` anchors them at the repository root.
+Changes matching the optional `ignore` globs in `impact.json` select NONE, including
+paths inside module source directories such as `src/site/**`. Patterns are relative to
+the workspace; a leading `/` anchors them at the repository root.
 `*` and `?` stay within one path segment and `**` crosses segments. Without `ignore`,
 the default is `["README.md", "docs/**", "/README.md", "/docs/**"]`; an explicit list
 replaces it. The samples also ignore the repository's `VALIDATION.md`. Other changes
@@ -132,25 +138,83 @@ sieve run --workspace projects/gradle --full
 Omitting `--base` also requests a full run. Put selection output in an ignored
 folder or outside the project so it does not become an untracked build input.
 The runner propagates build/test failures and accepts additional build arguments
-after `--`. It starts with `clean` to prevent stale XML reports; NONE runs only
-`clean`, without compilation or tests. No baseline metadata or selection cache is
+after `--`. It starts with `clean` to prevent stale XML reports; because a scoped Maven
+build cleans only its reactor, Sieve also deletes the Surefire/Failsafe report folders
+of the other modules. NONE runs only `clean`, without compilation or tests. No baseline metadata or selection cache is
 needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
+
+### Class-level selection
+
+Module-level selection runs every test of a selected module, and a single-module
+project has only one. Add `"class_level": true` to `impact.json` to narrow a module
+selection to test classes. `run` first compiles the selected modules
+(`clean test-compile -pl <selected> -am` on Maven, `clean :<module>:impactCompile` on
+Gradle), then reads the class files of every module:
+
+- Edges follow constant-pool references (class entries, descriptors, generic signatures,
+  annotations), superclasses and interfaces, dotted string constants such as
+  `Class.forName("a.B")` arguments, and Kotlin inline-function source maps. Paths may
+  cross unselected modules.
+- A changed or affected type affects its subtypes. A changed implementation affects
+  callers of its interfaces and superclasses, because they may run it through DI or
+  `ServiceLoader`, but not the other implementations. A subtype that also calls through
+  its supertype (a decorator) is a caller.
+- Compilers copy non-private `static final` constants into callers without a reference.
+  When a changed class declares one, every class whose source names the constant or its
+  class is affected, and so is every class whose source cannot be found.
+- Classes annotated for dependency-injection scanning (Spring stereotypes and
+  configuration, Spring Data, JPA, JAX-RS, Jakarta/`javax` inject and CDI, Micronaut,
+  Quarkus) are components. When an affected class is a component, every test that
+  starts a container (Spring TestContext and Boot test annotations, `@MicronautTest`,
+  `@QuarkusTest`, Arquillian, including composed annotations and inherited
+  configuration, or a test that boots one itself through `SpringApplication`,
+  `SpringApplicationBuilder`, a Spring application context, or Micronaut's
+  `ApplicationContext`) is selected in the modules that run, since component scanning
+  leaves no reference to follow.
+- Test classes reaching a change emit `SUBSET` with their binary names in `tests`. None
+  reaching it emits `NONE` with the selected modules: the build compiles and verifies
+  without executing tests.
+
+Selection falls back to `MODULES` for a changed non-Java/Kotlin file under `src/`
+(resources included), a deleted source, `package-info.java`/`module-info.java`, a source
+with no compiled class (such as a Kotlin file whose directory differs from its package),
+or unreadable class files. Build inputs still select `ALL`.
+
+The second build skips `clean`. Maven receives `-Dsurefire.excludesFile` and
+`-Dfailsafe.excludesFile` listing the unselected test classes, so POM includes and the
+unit/integration split stay in effect; the file also repeats Surefire's default
+`**/*$*` exclude, which an excludes file otherwise drops. Gradle reads the selected
+classes from a file (`-Pimpact.testsFile`) and filters every `Test` task to them and
+their nested classes. `select` stays module-level because it does not compile;
+`--output` receives the refined decision. `refresh` preserves the flag.
+
+Static analysis still cannot see classes named only in resources, reflection built from
+non-constant strings, or scanning by frameworks not listed above. A Spring application
+change usually reaches a component, so container tests are selected together with the
+unit tests that reach it. Keep full-suite runs on the default branch.
+[`samples/bookstore`](samples/bookstore/README.md) demonstrates the savings: an edit
+selects 1–3 of its 10 test classes. [`samples/webshop`](samples/webshop/README.md) applies
+both levels to five Spring WebFlux services and an end-to-end module, and replays a
+history of breaking and fixing commits against the full suite.
 
 ## GitHub CI
 
 The repository runs these checks on pushes, pull requests, and manual runs:
 
 1. **Rust and selector checks:** formatting, Clippy, unit checks, and all scenario
-   selections for both build tools.
+   selections for both build tools. In parallel, one job builds the release binary that
+   every Java job downloads, instead of compiling Rust in each job. Cargo caches cover
+   the jobs that still compile tests.
 2. **Selected tests:** Maven and Gradle jobs use the PR base or previous push SHA.
    Missing history or shared build/selector changes select ALL; the selected job
-   records that decision and the full-test stage executes the suite once. Eight
+   records that decision and the full-test stage executes the suite once. Ten
    additional jobs verify selected execution for Java, Kotlin, integration, and
-   edge-case fixture mutations on both build tools.
+   edge-case fixture mutations on both build tools, and class-level selection across
+   every mutation. The edge jobs also run the native graph, class-level, and Gradle
+   configuration-cache checks.
 3. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
-   revision and across every fixture mutation. Six container tests also
-   run on every CI event. The full stage still runs if the selective stage fails,
-   unless cancelled.
+   revision, in parallel with the selected stage. Six container tests also run on every
+   CI event.
 
 Selected and full Java jobs upload selection and JUnit reports and add decisions to
 the job summary. Scenario and container jobs upload their own results. CI uses full
@@ -158,7 +222,7 @@ Git history, read-only repository permissions, no persisted checkout credentials
 and no secrets for pull requests.
 
 The weekly/manual `fixtures.yml` workflow also validates installation and runs every
-mutation twice, including known failure detection. If merges must require all test
+mutation under the full suite and the selector, including known failure detection. If merges must require all test
 stages, make the Rust check and Java/Kotlin jobs required in branch protection.
 
 The primary CI runs the compatibility matrix as separate jobs on pushes to the
@@ -216,6 +280,9 @@ target/debug/sieve fixtures verify --tool both
 target/debug/sieve fixtures verify --tool both --scenario all
 target/debug/sieve fixtures verify --tool both --scenario all \
   --selected --output validation-results/selected
+# The same mutations with class-level selection on the multi-module fixtures.
+target/debug/sieve fixtures verify --tool both --scenario all \
+  --selected --class-level --output validation-results/class-level
 
 # Installation integration checks require Java 17, Maven, and Gradle on PATH.
 cargo test --locked --test cli installs_ -- --ignored
@@ -251,7 +318,11 @@ points the fixture commands at a different checkout containing the manifest/proj
 External selectors can export `{"mode":"SUBSET","tests":["pricing:unit:example.TaxRulesTest"]}`,
 `{"mode":"ALL","tests":[]}`, or `{"mode":"NONE","tests":[]}`. IDs are
 `module:suite:fully.qualified.ClassName`. The included selector exports
-`{"mode":"MODULES","modules":["checkout","pricing"]}` with diagnostic fields.
+`{"mode":"MODULES","modules":["checkout","pricing"]}` with diagnostic fields; with
+class-level selection, `SUBSET` lists binary class names, which the oracle expands to
+every inventory entry of that class in the selected modules. Names without an entry,
+such as abstract test fixtures, expand to nothing; the verifier still compares the
+executed tests with the expansion.
 The oracle expands modules using its own inventory. Default checking permits extra
 tests but requires all affected tests; `--exact` also rejects extras. Module-level
 selection intentionally does not pass every precision check (for example, unused
@@ -281,6 +352,26 @@ the span between the earliest job start and latest job completion, including fai
 jobs. This repository retains full-suite validation after the selected stage, so
 faster selected feedback does not establish faster final CI completion.
 
+## Replaying real history
+
+Fixtures are small, so JVM startup dominates their timings. `replay` measures a real
+project instead: configure it with `sieve init` (and optionally `class_level`/`ignore`),
+then replay its recent first-parent commits.
+
+```bash
+sieve replay --workspace . --commits 30 --run --output /tmp/replay.json \
+  -- -Dmaven.test.failure.ignore=true
+```
+
+Each commit is replayed in a shared clone: its parent and its tree are each committed
+with the workspace's `impact.json` (and Maven adapter), so the compared change is exactly
+the commit's. Without `--run`, only selections are recorded. With `--run`, every commit
+runs `sieve run --full` and `sieve run --base PARENT` from clean trees with the same build
+arguments. The report lists selection modes, test cases, seconds, and **missed
+failures**: tests failing in the full run that the selected run did not execute. The
+command exits with 1 when any failure was missed. Pass failure-ignore flags so full runs
+collect every failure. Logs are kept next to the `--output` file.
+
 See [coverage and remaining cases](docs/test-coverage.md) and
 [measurements](docs/performance.md) for evidence and limits.
 
@@ -290,8 +381,9 @@ This is a conservative module selector, not a soundness proof for arbitrary JVM
 builds. Explicit dependency graphs must include runtime/resource dependencies;
 unsupported custom layouts need further adapter work. The deletion fixture also
 edits its consumer, so it is not an isolated proof of previous-graph traversal.
-Class-level analysis, parallel runtime attribution, generated-code discovery, and
-selection-cache invalidation are outside the current implementation.
+Class-level analysis is static: see its section for what it cannot see. Parallel
+runtime attribution and selection-cache invalidation are outside the current
+implementation.
 
 Build integration follows the native [Maven Kotlin configuration](https://kotlinlang.org/docs/maven-configure-project.html),
 [Gradle Kotlin/JVM support](https://kotlinlang.org/docs/gradle-configure-project.html),

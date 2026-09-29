@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>shop</groupId>
+    <artifactId>webshop</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>pricing</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>shop</groupId>
+      <artifactId>common</artifactId>
+    </dependency>
+  </dependencies>
+<properties><impact.skip.pricing>false</impact.skip.pricing></properties><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><configuration><skipTests>${impact.skip.pricing}</skipTests></configuration></plugin><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId><configuration><skipTests>${impact.skip.pricing}</skipTests></configuration></plugin></plugins></build></project>

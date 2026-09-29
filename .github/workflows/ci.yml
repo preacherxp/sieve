@@ -17,6 +17,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-debug-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
       - name: Set up Rust
         run: |
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
@@ -24,22 +31,46 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+  build:
+    name: Build selector
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+      - name: Build release binary once for every Java job
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sieve
+          path: target/release/sieve
+          retention-days: 1
   selected-tests:
     name: Selected tests
-    needs: rust
+    needs: [rust, build]
     uses: ./.github/workflows/java-tests.yml
     with:
       mode: selected
   selected-variants:
     name: Selected ${{ matrix.variant }} (${{ matrix.tool }})
-    needs: rust
+    needs: [rust, build]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         tool: [maven, gradle]
-        variant: [java, kotlin, integration, edge]
+        variant: [java, kotlin, integration, edge, class-level]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,19 +78,31 @@ jobs:
       - uses: ./.github/actions/java-build
         with:
           tool: ${{ matrix.tool }}
-      - name: Build selector
-        run: |
-          rustup toolchain install 1.92.0 --profile minimal
-          cargo +1.92.0 build --locked
-      - name: Verify native dependency graph
+      - uses: actions/download-artifact@v4
+        with:
+          name: sieve
+          path: target/release
+      - run: chmod +x target/release/sieve
+      - uses: actions/cache@v4
+        if: matrix.variant == 'edge'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-debug-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+      - name: Verify native dependency graph, class-level runs and configuration cache
         if: matrix.variant == 'edge'
         env:
           IMPACT_TOOL: ${{ matrix.tool }}
-        run: cargo +1.92.0 test --locked --test native native_ -- --ignored --test-threads=1
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 test --locked --test native native_ -- --ignored --test-threads=1
       - name: Reject unsupported Gradle layouts
         if: matrix.variant == 'edge' && matrix.tool == 'gradle'
         run: cargo +1.92.0 test --locked --test native unsupported_gradle_ -- --ignored
       - name: Verify selected variants
+        if: matrix.variant != 'class-level'
         env:
           BUILD_TOOL: ${{ matrix.tool }}
           VARIANT: ${{ matrix.variant }}
@@ -72,10 +115,18 @@ jobs:
             edge) scenarios=(unused delete-class delete-test docs-only) ;;
           esac
           for scenario in "${scenarios[@]}"; do
-            target/debug/sieve fixtures verify \
+            target/release/sieve fixtures verify \
               --tool "$BUILD_TOOL" --scenario "$scenario" --selected \
               --output validation-results/selected
           done
+      - name: Verify class-level selection across every mutation
+        if: matrix.variant == 'class-level'
+        env:
+          BUILD_TOOL: ${{ matrix.tool }}
+        run: >-
+          target/release/sieve fixtures verify
+          --tool "$BUILD_TOOL" --scenario all --selected --class-level
+          --output validation-results/selected
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -84,8 +135,7 @@ jobs:
           retention-days: 14
   full-tests:
     name: All tests
-    needs: selected-tests
-    if: ${{ !cancelled() }}
+    needs: [rust, build]
     uses: ./.github/workflows/java-tests.yml
     with:
       mode: full
@@ -108,14 +158,19 @@ jobs:
       - uses: ./.github/actions/java-build
         with:
           tool: maven
-      - name: Build selector
-        run: |
-          rustup toolchain install 1.92.0 --profile minimal
-          cargo +1.92.0 build --locked
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-debug-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
       - name: Verify container selection and cleanup
         env:
           IMPACT_SERVICE: ${{ matrix.service }}
-        run: cargo +1.92.0 test --locked --test native selected_containers_ -- --ignored
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 test --locked --test native selected_containers_ -- --ignored
       - name: Run container test
         if: ${{ !cancelled() }}
         env:
