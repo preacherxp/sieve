@@ -85,8 +85,21 @@ gradle.projectsEvaluated {
                             moduleId(GradleVersion.current() >= GradleVersion.version('8.11')
                                 ? root.project(d.path) : d.dependencyProject)
                         }
-                    }.unique().sort()
-                    modules[key] = dependencies
+                    }
+                    // A source directory inside another project, such as a shared srcDir,
+                    // compiles that project's files here too.
+                    p.extensions.findByName('sourceSets')?.each { s ->
+                        s.allSource.srcDirs.each { dir ->
+                            def path = dir.toPath().normalize()
+                            def owner = root.allprojects.findAll { path.startsWith(it.projectDir.toPath()) }
+                                .max { it.projectDir.toPath().nameCount }
+                            if (owner != null && owner != p &&
+                                (owner != root || path.startsWith(root.projectDir.toPath().resolve('src')))) {
+                                dependencies << moduleId(owner)
+                            }
+                        }
+                    }
+                    modules[key] = dependencies.unique().sort()
                 }
                 if (!root.allprojects.any { p -> p.plugins.hasPlugin('java') || p.plugins.hasPlugin('org.jetbrains.kotlin.jvm') }) {
                     throw new GradleException('No Java or Kotlin/JVM projects found.')

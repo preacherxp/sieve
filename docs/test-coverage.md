@@ -115,6 +115,8 @@ Use temporary Git repositories; most of these cases need no JVM build.
 | GIT-09 | P0 | A workspace below the Git root still notices shared and sibling repository changes and selects `ALL`; recognized repository docs retain their exemption. | Implemented; see evidence below |
 | GIT-10 | P1 | Spaces, Unicode, and newlines in source filenames survive Git's NUL-delimited output; an undecodable filename causes a full fallback. Workspace paths with spaces work. | Implemented; see evidence below |
 | GIT-11 | P0 | Ignored build outputs and reports outside the repository do not change selection on a repeat run; an unignored output file selects `ALL` with a diagnostic. | Implemented; see evidence below |
+| GIT-12 | P0 | A submodule update selects `ALL` even when `.gitmodules` sets `ignore = all` or Git configuration ignores submodules. | Implemented: `ignored_submodules_still_count_as_changes` |
+| GIT-13 | P0 | Default ignore patterns never hide module sources, such as a module named `docs`; explicit patterns still apply inside modules. | Implemented: unit check in `conservative_selection_and_build_filters` |
 
 ## 3. Dependency graphs and module ownership
 
@@ -133,6 +135,20 @@ explicit graphs; a correct traversal cannot compensate for missing discovered ed
 | DEP-07 | P0 | Leave `impact.json` stale after a dependency change, commit, then change the new provider. Required safety target: detect the mismatch and select `ALL` or fail clearly before trusting a subset. | Implemented; see evidence below |
 | DEP-08 | P0 | Empty aggregator modules and a root project with its own sources/tests retain ownership and dependency edges during discovery and selection. | Implemented; see evidence below |
 | DEP-09 | P1 | Duplicate edges and a cycle terminate with a stable selected set. Test traversal directly; native build-tool rejection of an invalid cycle must still fail the run. | Implemented; see evidence below |
+| DEP-10 | P0 | Modules the build itself uses: a Maven sibling as a plugin, plugin dependency, annotation processor path, or unpacked artifact, or a sibling directory in the effective build configuration (a shared OpenAPI specification); a Gradle source directory inside another project. Setup records each as an edge. | Implemented: `maven_setup_follows_modules_the_build_itself_uses`, `native_gradle_setup_follows_shared_source_directories` |
+
+Class-level selection must find every test that can reach a change through paths other than
+bytecode references. Evidence: [class analysis](../src/classes.rs) unit tests, including
+`compiled_projects_reveal_indirect_references`, which compiles its sources with `javac`.
+
+| ID | Priority | Case and acceptance | Status |
+| --- | --- | --- | --- |
+| CLS-01 | P0 | Class names inside strings: `@MethodSource("a.B#m")`, `@EnabledIf`, SpEL `T(a.B)`, `a.B.method` references. | Implemented |
+| CLS-02 | P0 | A compile-time constant computed from a changed constant, copied onward by javac before JDK 21 or kotlinc without a reference. | Implemented |
+| CLS-03 | P0 | Tests that scan for classes (ArchUnit, Spring Modulith, JUnit package suites, Cucumber, class-path scanners) run on any change. | Implemented |
+| CLS-04 | P0 | A class named in a resource (logging, XML beans, service files of library types) keeps the module selection when it reaches a change; logger names and project service files do not; Spring factory and import files make the class a component of every context. | Implemented |
+| CLS-05 | P1 | A source whose directory differs from its declared package maps to its classes, and never to a same-named file of another package. | Implemented |
+| CLS-06 | P1 | Each selected test's `reasons` entry traces the path to the change. | Implemented |
 
 DEP-07 now uses a committed fingerprint of conventional workspace build inputs.
 Missing/stale fingerprints select `ALL`; `refresh` rediscovers and stamps the graph.

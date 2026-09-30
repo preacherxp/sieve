@@ -18,17 +18,23 @@ guide takes a service from zero to measured. The mechanics are described in the
 
 ## Switch it on
 
-There is nothing to switch on: `sieve run` in the service's directory uses local mode on any
-single-module Maven project. `scripts/setup-local-mode.sh SERVICE_DIR` checks the prerequisites
-and writes the settings into `impact.json` for the team to share:
+Local mode is opt-in. Use `sieve run --records` to try it without configuration on a
+single-module Maven project. `scripts/setup-local-mode.sh SERVICE_DIR` checks the
+prerequisites and writes `"records": true` into `impact.json` for the team to share:
 
 ```json
 { "tool": "maven", "modules": { ".": [] }, "records": true,
-  "generated": ["src/main/resources/openapi/**"] }
+  "generated": ["src/main/resources/openapi/**"],
+  "record_env": ["SPRING_PROFILES_ACTIVE"] }
 ```
 
 List the sources of generated code, such as OpenAPI specifications, under `generated`: an
 edit to them then cleans the build first, so that no stale generated class survives.
+List environment variables that affect tests under `record_env`; changing any of them
+invalidates the records. Invocation arguments and stable JVM system properties also invalidate
+records. A configured plain `sieve run` without `"records": true` uses static selection
+and runs the full suite when no base is supplied. Class selection remains a separate
+opt-in through `"class_level": true`.
 `.sieve/` ignores itself in Git; nothing else needs committing besides `impact.json`.
 
 The code must compile: Maven compiles every test before any runs. Then work as usual:
@@ -41,6 +47,16 @@ JDK_JAVA_OPTIONS="$(sieve env)" mvn verify   # the same selection, plain Maven
 
 `--output selection.json` explains every test class: which method, resource, or wiring
 change made it run, or that its record was unchanged.
+
+The unchanged-run shortcut hashes file contents, so preserving a file's size and
+modification time cannot hide an edit. Such content edits trigger a clean build to replace
+stale compiled classes. Local CLI runs hold a workspace execution lock through the build
+and reporting.
+
+The build keeps native `verify` packaging by default. Startup shortcuts are explicit:
+`--with reuse,jgitver,mvnd,repackage` enables container reuse, skipping jgitver, using the
+Maven daemon, and skipping Spring Boot repackaging respectively. Enable only the ones
+that fit the service and measure them separately.
 
 ## Measure before relying on it
 
@@ -67,7 +83,7 @@ containers and Spring contexts. Records also assume that a test does not depend 
 earlier test left behind. The usual fixes, in order of payoff:
 
 1. Start each container once per JVM (a static singleton or a shared base class) instead
-   of per test class, and declare it `withReuse(true)`: local mode sets
+   of per test class, and declare it `withReuse(true)`. Opt into `--with reuse` to set
    `TESTCONTAINERS_REUSE_ENABLE=true`, so reused containers survive between runs.
 2. Remove `@DirtiesContext` from shared base classes; reset state in the test instead.
 3. Give each test its own data: unique topic names, consumer group ids, and document ids,
@@ -79,7 +95,8 @@ Run the full suite in both test-class orders before and after each change.
 
 ## Known limits
 
-Local mode does not track environment variables, system properties, external services,
-floating Docker image tags, or dependency jars that change without a POM change. Lazily
-created beans count only for the test class that first used them. Keep the full suite in
-CI.
+Records cover observed execution paths and assume independent tests. Declare environment
+variables under `record_env`; undeclared variables, external services, floating Docker
+image tags, and dependency jars that change without a POM change remain outside that
+evidence. Lazily created beans count only for the test class that first used them. Keep
+the full suite in CI.

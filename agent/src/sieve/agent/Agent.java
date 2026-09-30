@@ -71,7 +71,8 @@ public final class Agent {
             System.err.println("sieve: cannot start the agent, every test runs: " + error);
             return;
         }
-        State.configure(Path.of(workspace), sieve, options.getProperty("mode", "select"), options.getProperty("base"));
+        State.configure(Path.of(workspace), sieve, options.getProperty("mode", "select"), options.getProperty("base"),
+                options.getProperty("context", ""), options.getProperty("session", ""), options.getProperty("record_env", ""));
         instrumentation.addTransformer(transformer, true);
         try {
             instrumentation.retransformClasses(jdk.toArray(Class<?>[]::new));

@@ -47,6 +47,28 @@ const CONTEXT_MARKERS: &[&str] = &[
     "io/micronaut/test/",
     "io/quarkus/test/",
     "org/jboss/arquillian/",
+    "org/jboss/weld/junit",
+    "io/helidon/microprofile/testing/",
+    "io/helidon/microprofile/tests/",
+    "org/springframework/modulith/test/",
+];
+
+/// Test support that finds classes by scanning packages, class paths, or directories, so a
+/// test using it leaves no reference to the classes it checks or runs: architecture rules,
+/// module verification, package suites, Cucumber glue, and class-path scanners.
+const SCANNING_MARKERS: &[&str] = &[
+    "com/tngtech/archunit/",
+    "org/springframework/modulith/core/",
+    "org/springframework/modulith/docs/",
+    "org/junit/platform/suite/api/Select",
+    "org/junit/platform/launcher/",
+    "org/junit/extensions/cpsuite/",
+    "io/cucumber/",
+    "io/github/classgraph/",
+    "org/reflections/",
+    "com/google/common/reflect/ClassPath",
+    "org/springframework/context/annotation/ClassPathScanningCandidateComponentProvider",
+    "com/openpojo/",
 ];
 
 #[derive(Debug, Default)]
@@ -121,13 +143,31 @@ fn typed(text: &str, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Adds every name a constant could denote: its typed segments, plus the whole string in
-/// internal and binary form.
+/// Adds the internal names that dotted words in a string could denote: each run of
+/// identifier characters and dots, and its leading segments. `a.B#m`, `T(a.B).m()`, and
+/// `a.B.m` all name `a/B`.
+fn dotted(text: &str, out: &mut BTreeSet<String>) {
+    let word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$' | '.');
+    for run in text.split(|c| !word(c)).filter(|run| run.contains('.')) {
+        let mut name = String::new();
+        for segment in run.split('.') {
+            if segment.is_empty() {
+                break;
+            }
+            if !name.is_empty() {
+                name.push('/');
+                out.insert(name.clone() + segment);
+            }
+            name.push_str(segment);
+        }
+    }
+}
+
+/// Adds every name a constant could denote: its typed segments, the whole string, and the
+/// class names it spells in binary form.
 fn candidates(text: &str, out: &mut BTreeSet<String>) {
     out.insert(text.to_owned());
-    if text.contains('.') && !text.contains('/') {
-        out.insert(text.replace('.', "/"));
-    }
+    dotted(text, out);
     typed(text, out);
 }
 
@@ -264,9 +304,7 @@ pub fn parse(bytes: &[u8]) -> Result<Class> {
             candidates(value, &mut class.refs);
             if signature != Some(i as u16) {
                 typed(value, &mut class.uses);
-                if value.contains('.') && !value.contains('/') {
-                    class.uses.insert(value.replace('.', "/"));
-                }
+                dotted(value, &mut class.uses);
             }
         }
     }
@@ -373,43 +411,153 @@ pub fn load(dirs: &[(PathBuf, bool)]) -> Result<Vec<Class>> {
     Ok(classes)
 }
 
-/// Java and Kotlin sources below `workspace`, relative to it, with their text.
-fn source_files(workspace: &Path) -> Result<Vec<(String, String)>> {
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String)>) -> Result<()> {
+/// Whether a directory holds build output, unless it is itself a project directory.
+fn output_dir(dir: &Path, name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".gradle" | ".idea" | ".kotlin" | ".sieve" | "node_modules"
+    ) || matches!(name, "target" | "build")
+        && !["pom.xml", "build.gradle", "build.gradle.kts"]
+            .iter()
+            .any(|file| dir.join(file).is_file())
+}
+
+/// Files below `workspace` accepted by `keep`, by workspace-relative path, with their text.
+/// `outputs` also descends into build output, where generated sources live.
+fn text_files(
+    workspace: &Path,
+    outputs: bool,
+    keep: &dyn Fn(&str) -> bool,
+) -> Result<Vec<(String, String)>> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        outputs: bool,
+        keep: &dyn Fn(&str) -> bool,
+        out: &mut Vec<(String, String)>,
+    ) -> Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if entry.file_type()?.is_dir() {
-                if !matches!(
-                    name.as_ref(),
-                    ".git" | ".gradle" | ".idea" | ".kotlin" | "node_modules"
-                ) {
-                    walk(root, &path, out)?;
+                // Below a source directory, `build` and `target` are ordinary directories.
+                let sources = path.strip_prefix(root)?.iter().any(|part| part == "src");
+                let skip = if outputs {
+                    matches!(
+                        name.as_ref(),
+                        ".git" | ".gradle" | ".idea" | ".kotlin" | "node_modules"
+                    )
+                } else {
+                    output_dir(&path, &name)
+                        && !(sources && matches!(name.as_ref(), "build" | "target"))
+                };
+                if !skip {
+                    walk(root, &path, outputs, keep, out)?;
                 }
-            } else if name.ends_with(".java") || name.ends_with(".kt") {
+            } else {
                 let relative = path
                     .strip_prefix(root)?
                     .to_string_lossy()
                     .replace('\\', "/");
-                out.push((relative, String::from_utf8_lossy(&fs::read(&path)?).into()));
+                if keep(&relative) {
+                    out.push((relative, String::from_utf8_lossy(&fs::read(&path)?).into()));
+                }
             }
         }
         Ok(())
     }
     let mut out = Vec::new();
-    walk(workspace, workspace, &mut out)?;
+    walk(workspace, workspace, outputs, keep, &mut out)?;
     Ok(out)
 }
 
-/// Whether `text` contains `word` delimited by non-identifier characters.
-fn mentions(text: &str, word: &str) -> bool {
-    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    text.match_indices(word).any(|(at, _)| {
-        !text[..at].chars().next_back().is_some_and(ident)
-            && !text[at + word.len()..].chars().next().is_some_and(ident)
+/// Java and Kotlin sources below `workspace`, relative to it, with their text.
+fn source_files(workspace: &Path) -> Result<Vec<(String, String)>> {
+    text_files(workspace, true, &|path| {
+        path.ends_with(".java") || path.ends_with(".kt")
     })
+}
+
+/// The identifiers in a source text.
+fn identifiers(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The package a Java or Kotlin source declares, in internal form (`""` for the default
+/// package), or `None` when the declaration cannot be read.
+fn declared_package(text: &str) -> Option<String> {
+    let mut rest = text.trim_start_matches('\u{feff}');
+    loop {
+        rest = rest.trim_start();
+        if let Some(comment) = rest.strip_prefix("//") {
+            rest = comment.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            rest = comment.split_once("*/")?.1;
+        } else if rest.starts_with("@file:") {
+            // Kotlin file annotations, such as `@file:JvmName("Names")`, may take arguments.
+            let end = rest.find(['\n', '('])?;
+            rest = if rest[end..].starts_with('(') {
+                rest[end..].split_once(')')?.1
+            } else {
+                &rest[end..]
+            };
+        } else if let Some(declaration) = rest.strip_prefix("package") {
+            if !declaration.starts_with(char::is_whitespace) {
+                return None;
+            }
+            let name: String = declaration
+                .trim_start()
+                .chars()
+                .take_while(|&c| c.is_alphanumeric() || matches!(c, '_' | '$' | '.' | '`'))
+                .filter(|&c| c != '`')
+                .collect();
+            return (!name.is_empty()).then(|| name.replace('.', "/"));
+        } else {
+            return Some(String::new());
+        }
+    }
+}
+
+/// Class names spelled in the text files of source directories other than Java and Kotlin
+/// sources: bean definitions, factories, service files, and logging or mapping
+/// configuration. Values of `name` attributes, such as logger names, are left out.
+fn resource_names(workspace: &Path) -> Result<Vec<(String, BTreeSet<String>)>> {
+    const LIMIT: usize = 1 << 20;
+    let files = text_files(workspace, false, &|path| {
+        path.split('/').any(|segment| segment == "src")
+            && ![".java", ".kt", ".class"].iter().any(|e| path.ends_with(e))
+    })?;
+    let word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$' | '.');
+    let mut out = Vec::new();
+    for (path, text) in files {
+        if text.len() > LIMIT || text.contains('\0') {
+            continue;
+        }
+        let mut names = BTreeSet::new();
+        let mut at = 0;
+        for run in text.split(|c| !word(c)) {
+            let before = text[..at].trim_end_matches(['"', '\'']).trim_end();
+            let attribute = before
+                .strip_suffix('=')
+                .map(str::trim_end)
+                .and_then(|b| b.strip_suffix("name"))
+                .is_some_and(|b| !b.ends_with(|c: char| c.is_alphanumeric() || c == '-'));
+            if !attribute {
+                dotted(run, &mut names);
+            }
+            at += run.len();
+            at += text[at..].chars().next().map_or(0, char::len_utf8);
+        }
+        if !names.is_empty() {
+            out.push((path, names));
+        }
+    }
+    Ok(out)
 }
 
 /// Component kinds that Spring Boot test slices load. A slice scans only the kinds it lists,
@@ -525,9 +673,13 @@ fn slice_loads(annotation: &Annotation) -> Option<u8> {
     }
 }
 
-/// Which classes are DI components and which tests start a context, given each class's
-/// resolved references (`links`) and project supertypes.
-fn flags(classes: &[Class], links: &[Vec<usize>], supers: &[Vec<usize>]) -> (Vec<bool>, Vec<bool>) {
+/// Which classes are DI components, which tests start a context, and which tests scan for
+/// classes, given each class's resolved references (`links`) and project supertypes.
+fn flags(
+    classes: &[Class],
+    links: &[Vec<usize>],
+    supers: &[Vec<usize>],
+) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
     let marked = |class: &Class, markers: &[&str]| {
         class
             .refs
@@ -550,6 +702,10 @@ fn flags(classes: &[Class], links: &[Vec<usize>], supers: &[Vec<usize>]) -> (Vec
         .iter()
         .map(|c| c.test && (marked(c, CONTEXT_MARKERS) || boot_test(c)))
         .collect();
+    let mut scanning: Vec<bool> = classes
+        .iter()
+        .map(|c| c.test && marked(c, SCANNING_MARKERS))
+        .collect();
     loop {
         let mut grew = false;
         for (i, class) in classes.iter().enumerate() {
@@ -566,12 +722,16 @@ fn flags(classes: &[Class], links: &[Vec<usize>], supers: &[Vec<usize>]) -> (Vec
                 context[i] = true;
                 grew = true;
             }
+            if class.test && !scanning[i] && via(&scanning, true) {
+                scanning[i] = true;
+                grew = true;
+            }
         }
         if !grew {
             break;
         }
     }
-    (component, context)
+    (component, context, scanning)
 }
 
 /// Per class: whether it is a DI component, and whether it is a test that starts a context.
@@ -599,15 +759,18 @@ pub fn kinds(classes: &[Class]) -> (Vec<bool>, Vec<bool>) {
                 .filter(|&j| j != i),
         );
     }
-    flags(classes, &links, &supers)
+    let (component, context, _) = flags(classes, &links, &supers);
+    (component, context)
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Impact {
-    /// Binary names of the selected and unselected top-level test classes.
+    /// Binary names of the selected and unselected top-level test classes, and for each
+    /// selected one, how it reaches a change.
     Tests {
         selected: BTreeSet<String>,
         unselected: BTreeSet<String>,
+        reasons: BTreeMap<String, String>,
     },
     Fallback(String),
 }
@@ -620,6 +783,62 @@ enum Reach {
     Dispatch,
     /// The class changed or depends on changed code.
     Full,
+}
+
+/// Workspace sources, each as the classes compiled from it and the identifiers it names, and
+/// per class whether its source was found.
+type Sources = (Vec<(Vec<usize>, BTreeSet<String>)>, Vec<bool>);
+
+/// Why a class is affected: the class it is affected through, and how.
+#[derive(Clone, Copy)]
+enum Cause {
+    Changed,
+    Calls(usize),
+    Extends(usize),
+    /// A supertype, through which callers may run the changed subtype.
+    ImplementedBy(usize),
+    CopiesConstantOf(usize),
+    /// A context test whose context loads the component.
+    Loads(usize),
+    Scans,
+}
+
+/// The path from a class to a change, such as `a.ServiceTest → a.Service → a.Tax (changed)`.
+fn explain(classes: &[Class], cause: &[Option<Cause>], mut i: usize) -> String {
+    let name = |i: usize| classes[i].name.replace('/', ".");
+    let mut text = String::new();
+    let mut seen = BTreeSet::new();
+    loop {
+        text += &name(i);
+        if !seen.insert(i) {
+            return text + " …";
+        }
+        i = match cause[i] {
+            None => return text,
+            Some(Cause::Changed) => return text + " (changed)",
+            Some(Cause::Scans) => return text + " (scans for classes)",
+            Some(Cause::Calls(j)) => {
+                text += " → ";
+                j
+            }
+            Some(Cause::Extends(j)) => {
+                text += " extends ";
+                j
+            }
+            Some(Cause::ImplementedBy(j)) => {
+                text += ", implemented by ";
+                j
+            }
+            Some(Cause::CopiesConstantOf(j)) => {
+                text += " copies a constant of ";
+                j
+            }
+            Some(Cause::Loads(j)) => {
+                text += " (context) loads ";
+                j
+            }
+        };
+    }
 }
 
 /// Selects test classes that reach the changed source files (workspace-relative paths).
@@ -700,7 +919,19 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
             }
         }
     }
-    let (component, context) = flags(classes, &links, &supers);
+    let (mut component, context, scanning) = flags(classes, &links, &supers);
+    // Spring reads its factory and import files only while it starts a context, which then
+    // loads the classes they name, whatever the slice: auto-configuration, initializers,
+    // listeners, and test context customizers.
+    let resources = resource_names(workspace)?;
+    let spring = |resource: &str| resource.contains("META-INF/spring");
+    let mut bootstrapped = vec![false; n];
+    for (_, names) in resources.iter().filter(|(resource, _)| spring(resource)) {
+        for j in names.iter().flat_map(|name| lookup(name)) {
+            component[j] = true;
+            bootstrapped[j] = true;
+        }
+    }
     // Annotations of a class, including those composed into its project annotations.
     let annotations_of = |i: usize| -> Vec<&Annotation> {
         let mut out = Vec::new();
@@ -738,7 +969,7 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
             if !component[i] {
                 return 0;
             }
-            let mut kind = 0;
+            let mut kind = if bootstrapped[i] { GLOBAL } else { 0 };
             for k in hierarchy(i, false) {
                 kind |= annotations_of(k)
                     .iter()
@@ -780,9 +1011,30 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
             loads
         })
         .collect();
+    // The classes compiled from a source file: by package-relative path, and by the package
+    // the file declares, which may differ from its directory.
+    let compiled = |path: &str, text: &str| -> Vec<usize> {
+        let mut owned = owners(path);
+        if let Some(package) = declared_package(text) {
+            let file = path.rsplit('/').next().unwrap_or(path);
+            let source = match package.as_str() {
+                "" => file.to_owned(),
+                package => format!("{package}/{file}"),
+            };
+            owned.extend(
+                by_source
+                    .get(source.as_str())
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
+        }
+        owned.sort_unstable();
+        owned.dedup();
+        owned
+    };
+    // Each item is a class, how it is affected, and whether its constants may have changed.
     let mut pending = Vec::new();
-    let mut sources = None;
-    let mut seeds = Vec::new();
     match changes {
         Changes::Sources(changed) => {
             for path in changed {
@@ -795,11 +1047,16 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
                 {
                     return Ok(Impact::Fallback(format!("{path} is not a class source")));
                 }
-                let owned = owners(path);
+                let text = String::from_utf8_lossy(&fs::read(workspace.join(path))?).into_owned();
+                let owned = compiled(path, &text);
                 if owned.is_empty() {
                     return Ok(Impact::Fallback(format!("{path} has no compiled classes")));
                 }
-                seeds.push(owned);
+                pending.extend(
+                    owned
+                        .into_iter()
+                        .map(|i| (i, Reach::Full, true, Cause::Changed)),
+                );
             }
         }
         Changes::Classes(names) => {
@@ -808,54 +1065,93 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
                 if owned.is_empty() {
                     return Ok(Impact::Fallback(format!("{name} has no compiled class")));
                 }
-                seeds.push(owned);
+                pending.extend(
+                    owned
+                        .into_iter()
+                        .map(|i| (i, Reach::Full, true, Cause::Changed)),
+                );
             }
         }
     }
-    for owned in seeds {
-        for &i in &owned {
+    // Scanning tests see every class of the packages they scan, whatever changed.
+    if !pending.is_empty() {
+        pending.extend(
+            (0..n)
+                .filter(|&j| scanning[j])
+                .map(|j| (j, Reach::Full, false, Cause::Scans)),
+        );
+    }
+    // Workspace sources with the classes compiled from them, read once a constant changes.
+    let mut sources: Option<Sources> = None;
+    let mut searched = vec![false; n];
+    let mut reach = vec![Reach::None; n];
+    let mut cause = vec![None; n];
+    // Full contexts started, and component kinds whose slices started.
+    let mut containers = false;
+    let mut started = 0u8;
+    while let Some((i, level, recomputed, why)) = pending.pop() {
+        // A changed constant may change the constants computed from it, which compilers copy
+        // onward in turn, so the search repeats for every class naming it.
+        if recomputed && level == Reach::Full && !classes[i].constants.is_empty() && !searched[i] {
+            searched[i] = true;
             let class = &classes[i];
-            if class.constants.is_empty() {
-                continue;
-            }
             let simple = class.name.rsplit('/').next().unwrap_or(&class.name);
             let words: Vec<&str> = simple
                 .split('$')
                 .chain(class.constants.iter().map(String::as_str))
                 .filter(|w| !w.is_empty())
                 .collect();
-            let sources = match &mut sources {
+            let (files, located) = match &mut sources {
                 Some(sources) => sources,
-                None => sources.insert(source_files(workspace)?),
-            };
-            let mut located = vec![false; n];
-            for (file, text) in sources.iter() {
-                let owned = owners(file);
-                for &j in &owned {
-                    located[j] = true;
+                None => {
+                    let files: Vec<_> = source_files(workspace)?
+                        .into_iter()
+                        .map(|(file, text)| (compiled(&file, &text), identifiers(&text)))
+                        .collect();
+                    let mut located = vec![false; n];
+                    for &j in files.iter().flat_map(|(owned, _)| owned) {
+                        located[j] = true;
+                    }
+                    sources.insert((files, located))
                 }
-                if words.iter().any(|w| mentions(text, w)) {
-                    pending.extend(owned.into_iter().map(|j| (j, Reach::Full)));
+            };
+            for (owned, names) in files.iter() {
+                if words.iter().any(|w| names.contains(*w)) {
+                    pending.extend(
+                        owned
+                            .iter()
+                            .map(|&j| (j, Reach::Full, true, Cause::CopiesConstantOf(i))),
+                    );
                 }
             }
             // Without its source, a class may copy the constant unseen.
-            pending.extend((0..n).filter(|&j| !located[j]).map(|j| (j, Reach::Full)));
+            pending.extend(
+                (0..n)
+                    .filter(|&j| !located[j])
+                    .map(|j| (j, Reach::Full, true, Cause::CopiesConstantOf(i))),
+            );
         }
-        pending.extend(owned.into_iter().map(|i| (i, Reach::Full)));
-    }
-    let mut reach = vec![Reach::None; n];
-    // Full contexts started, and component kinds whose slices started.
-    let mut containers = false;
-    let mut started = 0u8;
-    while let Some((i, level)) = pending.pop() {
         if reach[i] >= level {
             continue;
         }
         reach[i] = level;
-        pending.extend(callers[i].iter().map(|&j| (j, Reach::Full)));
-        pending.extend(supers[i].iter().map(|&j| (j, Reach::Dispatch)));
+        cause[i] = Some(why);
+        pending.extend(
+            callers[i]
+                .iter()
+                .map(|&j| (j, Reach::Full, false, Cause::Calls(i))),
+        );
+        pending.extend(
+            supers[i]
+                .iter()
+                .map(|&j| (j, Reach::Dispatch, false, Cause::ImplementedBy(i))),
+        );
         if level == Reach::Full {
-            pending.extend(subtypes[i].iter().map(|&j| (j, Reach::Full)));
+            pending.extend(
+                subtypes[i]
+                    .iter()
+                    .map(|&j| (j, Reach::Full, false, Cause::Extends(i))),
+            );
             if component[i] {
                 let kinds = if kind[i] & GLOBAL != 0 {
                     u8::MAX
@@ -872,17 +1168,40 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
                             None => full,
                             Some(slice) => slice & fresh != 0,
                         })
-                        .map(|j| (j, Reach::Full)),
+                        .map(|j| (j, Reach::Full, false, Cause::Loads(i))),
                 );
             }
         }
     }
+    // A class that another resource names may run wherever the resource is read, like a
+    // changed resource. Service files for project types are followed through their supertypes.
+    for (resource, names) in resources {
+        let service = resource
+            .rsplit_once("META-INF/services/")
+            .is_some_and(|(_, service)| lookup(&service.replace('.', "/")).next().is_some());
+        if service || spring(&resource) {
+            continue;
+        }
+        if let Some(name) = names
+            .iter()
+            .find(|name| lookup(name).any(|j| reach[j] == Reach::Full))
+        {
+            return Ok(Impact::Fallback(format!(
+                "{resource} names {}, which reaches the change",
+                name.replace('/', ".")
+            )));
+        }
+    }
     let mut selected = BTreeSet::new();
     let mut unselected = BTreeSet::new();
+    let mut reasons = BTreeMap::new();
     for (i, class) in classes.iter().enumerate() {
         if class.test && !class.annotation && !class.name.contains('$') {
             let name = class.name.replace('/', ".");
             if reach[i] == Reach::Full {
+                reasons
+                    .entry(name.clone())
+                    .or_insert_with(|| explain(classes, &cause, i));
                 selected.insert(name);
             } else {
                 unselected.insert(name);
@@ -894,6 +1213,7 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
     Ok(Impact::Tests {
         selected,
         unselected,
+        reasons,
     })
 }
 
@@ -945,14 +1265,22 @@ mod tests {
                 }
             }
             let changed = paths.iter().map(|p| p.to_string()).collect();
-            affected(&self.classes, &changed, self.temp.path()).unwrap()
+            without_reasons(affected(&self.classes, &changed, self.temp.path()).unwrap())
         }
+    }
+
+    fn without_reasons(mut impact: Impact) -> Impact {
+        if let Impact::Tests { reasons, .. } = &mut impact {
+            reasons.clear();
+        }
+        impact
     }
 
     fn tests(selected: &[&str], unselected: &[&str]) -> Impact {
         Impact::Tests {
             selected: selected.iter().map(|s| s.to_string()).collect(),
             unselected: unselected.iter().map(|s| s.to_string()).collect(),
+            reasons: BTreeMap::new(),
         }
     }
 
@@ -1385,8 +1713,344 @@ mod tests {
         for name in ["a/B", "java/util/List", "a/C", "a/D"] {
             assert!(out.contains(name), "{name}: {out:?}");
         }
-        assert!(mentions("x(Limits.MAX)", "MAX"));
-        assert!(!mentions("MAXIMUM", "MAX"));
-        assert!(!mentions("$MAX", "MAX"));
+        let names = identifiers("x(Limits.MAX); MAXIMUM; $MIN");
+        assert!(names.contains("MAX") && names.contains("Limits"));
+        assert!(!names.contains("MIN"));
+    }
+
+    #[test]
+    fn chained_constants_reach_the_sources_naming_them() {
+        // Before JDK 21, javac leaves no reference to a copied constant's owner.
+        let mut classes = vec![
+            class("a/Limits", "a/Limits.java", false, &[], &[]),
+            class("a/Derived", "a/Derived.java", false, &[], &[]),
+            class("t/DerivedTest", "t/DerivedTest.java", true, &[], &[]),
+            class("t/OtherTest", "t/OtherTest.java", true, &[], &[]),
+        ];
+        classes[0].constants = vec!["MAX".into()];
+        classes[1].constants = vec!["DOUBLE".into()];
+        let graph = Graph::new(classes);
+        graph.source(
+            "src/main/java/a/Limits.java",
+            "class Limits { static final int MAX = 3; }",
+        );
+        graph.source(
+            "src/main/java/a/Derived.java",
+            "class Derived { static final int DOUBLE = Limits.MAX * 2; }",
+        );
+        graph.source(
+            "src/test/java/t/DerivedTest.java",
+            "int x = Derived.DOUBLE;",
+        );
+        graph.source("src/test/java/t/OtherTest.java", "int y = 1;");
+        assert_eq!(
+            graph.impact(&["src/main/java/a/Limits.java"]),
+            tests(&["t.DerivedTest"], &["t.OtherTest"])
+        );
+    }
+
+    #[test]
+    fn resources_naming_reached_classes_keep_the_module_selection() {
+        let graph = Graph::new(vec![
+            class("a/Api", "a/Api.java", false, &[], &[]),
+            class("a/Impl", "a/Impl.java", false, &[], &["a/Api"]),
+            class("t/ApiTest", "t/ApiTest.java", true, &["a/Api"], &[]),
+            class("t/Ext", "t/Ext.java", true, &[], &[]),
+            class("t/PlainTest", "t/PlainTest.java", true, &[], &[]),
+        ]);
+        // Service files of project types are followed through the service type.
+        graph.source("src/main/resources/META-INF/services/a.Api", "a.Impl\n");
+        assert_eq!(
+            graph.impact(&["src/main/java/a/Impl.java"]),
+            tests(&["t.ApiTest"], &["t.Ext", "t.PlainTest"])
+        );
+        // A JUnit extension registered for autodetection runs around every test.
+        graph.source(
+            "src/test/resources/META-INF/services/org.junit.jupiter.api.extension.Extension",
+            "t.Ext\n",
+        );
+        assert!(matches!(
+            graph.impact(&["src/test/java/t/Ext.java"]),
+            Impact::Fallback(reason) if reason.contains("extension.Extension names t.Ext")
+        ));
+        // Resource folders may be called `build`.
+        fs::remove_dir_all(graph.temp.path().join("src/test/resources")).unwrap();
+        graph.source(
+            "src/test/resources/build/logback-test.xml",
+            "<appender class=\"t.Ext\"/>",
+        );
+        assert!(matches!(
+            graph.impact(&["src/test/java/t/Ext.java"]),
+            Impact::Fallback(reason) if reason.contains("logback-test.xml names t.Ext")
+        ));
+        // Build output is not a resource.
+        fs::remove_dir_all(graph.temp.path().join("src/test/resources")).unwrap();
+        graph.source("target/classes/copy.txt", "t.Ext");
+        assert_eq!(
+            graph.impact(&["src/test/java/t/Ext.java"]),
+            tests(&["t.Ext"], &["t.ApiTest", "t.PlainTest"])
+        );
+    }
+
+    #[test]
+    fn spring_bootstrap_files_make_the_classes_they_name_global_components() {
+        let web_test = "org/springframework/boot/webmvc/test/autoconfigure/WebMvcTest";
+        let graph = Graph::new(vec![
+            class(
+                "a/AutoConfig",
+                "a/AutoConfig.java",
+                false,
+                &["a/Helper"],
+                &[],
+            ),
+            class("a/Helper", "a/Helper.java", false, &[], &[]),
+            annotated(
+                class("t/AppIT", "t/AppIT.java", true, &[], &[]),
+                "org/springframework/boot/test/context/SpringBootTest",
+                &[],
+            ),
+            annotated(
+                class("t/WebTest", "t/WebTest.java", true, &[], &[]),
+                web_test,
+                &[],
+            ),
+            class("t/PlainTest", "t/PlainTest.java", true, &[], &[]),
+        ]);
+        graph.source(
+            "src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports",
+            "a.AutoConfig\n",
+        );
+        assert_eq!(
+            graph.impact(&["src/main/java/a/Helper.java"]),
+            tests(&["t.AppIT", "t.WebTest"], &["t.PlainTest"])
+        );
+    }
+
+    #[test]
+    fn declared_packages_are_read_past_comments_and_file_annotations() {
+        for (text, expected) in [
+            ("package a.b;\nclass A {}", Some("a/b")),
+            ("\u{feff}// c\n/* p\n*/ package a.b\n", Some("a/b")),
+            (
+                "@file:JvmName(\"Names\")\n@file:Suppress(\"x\")\npackage `a`.b",
+                Some("a/b"),
+            ),
+            ("import a.B;\nclass C {}", Some("")),
+            ("packaged", None),
+            ("/* unterminated", None),
+        ] {
+            assert_eq!(declared_package(text).as_deref(), expected, "{text}");
+        }
+    }
+
+    /// Compiles `src/main/java` and `src/test/java` below `workspace` like a build tool would,
+    /// or returns `None` without `javac`.
+    fn compile(workspace: &Path) -> Option<Vec<Class>> {
+        let sources = |dir: &str| {
+            text_files(&workspace.join(dir), true, &|p| p.ends_with(".java"))
+                .unwrap()
+                .into_iter()
+                .map(|(path, _)| workspace.join(dir).join(path))
+                .collect::<Vec<_>>()
+        };
+        let classes = workspace.join("target/classes");
+        let tests = workspace.join("target/test-classes");
+        for (dir, out) in [("src/main/java", &classes), ("src/test/java", &tests)] {
+            let status = std::process::Command::new("javac")
+                .arg("-d")
+                .arg(out)
+                .arg("-cp")
+                .arg(&classes)
+                .args(sources(dir))
+                .output()
+                .ok()?;
+            assert!(status.status.success(), "{status:?}");
+        }
+        Some(load(&[(classes, false), (tests, true)]).unwrap())
+    }
+
+    #[test]
+    fn compiled_projects_reveal_indirect_references() {
+        let graph = Graph::new(Vec::new());
+        for (path, text) in [
+            (
+                "src/main/java/a/Factory.java",
+                "package a; public class Factory { public static int[] cases() { return new int[] {1}; } }",
+            ),
+            (
+                "src/main/java/a/Masking.java",
+                "package a; public class Masking { public String mask(String s) { return s; } }",
+            ),
+            ("src/main/java/a/Quiet.java", "package a; public class Quiet {}"),
+            // javac accepts a source whose directory differs from its package.
+            (
+                "src/main/java/misplaced/Moved.java",
+                "/* moved */\npackage a;\npublic class Moved { public int value() { return 1; } }",
+            ),
+            (
+                "src/main/resources/logback.xml",
+                "<configuration><conversionRule conversionWord=\"mask\" converterClass=\"a.Masking\"/>\
+                 <logger name=\"a.Quiet\" level=\"DEBUG\"/></configuration>",
+            ),
+            ("src/test/java/t/Src.java", "package t; public @interface Src { String value(); }"),
+            (
+                "src/test/java/t/ParamTest.java",
+                "package t; public class ParamTest { @Src(\"a.Factory#cases\") void cases() {} }",
+            ),
+            (
+                "src/test/java/t/MovedTest.java",
+                "package t; public class MovedTest { int v() { return new a.Moved().value(); } }",
+            ),
+            (
+                "src/test/java/t/QuietTest.java",
+                "package t; public class QuietTest { Object quiet = new a.Quiet(); }",
+            ),
+            ("src/test/java/t/PlainTest.java", "package t; public class PlainTest {}"),
+            // An architecture test analyzes the packages it names, without references.
+            (
+                "src/test/java/com/tngtech/archunit/junit/AnalyzeClasses.java",
+                "package com.tngtech.archunit.junit; public @interface AnalyzeClasses { String[] packages(); }",
+            ),
+            (
+                "src/test/java/t/ArchTest.java",
+                "package t; @com.tngtech.archunit.junit.AnalyzeClasses(packages = \"a\") public class ArchTest {}",
+            ),
+        ] {
+            graph.source(path, text);
+        }
+        let Some(classes) = compile(graph.temp.path()) else {
+            return;
+        };
+        let all = [
+            "t.ArchTest",
+            "t.MovedTest",
+            "t.ParamTest",
+            "t.PlainTest",
+            "t.QuietTest",
+        ];
+        let explained = |path: &str| {
+            affected(
+                &classes,
+                &BTreeSet::from([path.to_owned()]),
+                graph.temp.path(),
+            )
+            .unwrap()
+        };
+        let impact = |path: &str| without_reasons(explained(path));
+        let split = |selected: &[&str]| {
+            let unselected: Vec<&str> = all
+                .iter()
+                .copied()
+                .filter(|t| !selected.contains(t))
+                .collect();
+            tests(selected, &unselected)
+        };
+        // `Class#member` strings, as in `@MethodSource`, name the class.
+        assert_eq!(
+            impact("src/main/java/a/Factory.java"),
+            split(&["t.ArchTest", "t.ParamTest"])
+        );
+        assert_eq!(
+            impact("src/main/java/misplaced/Moved.java"),
+            split(&["t.ArchTest", "t.MovedTest"])
+        );
+        // A logger name does not load the class; a converter class does.
+        assert_eq!(
+            impact("src/main/java/a/Quiet.java"),
+            split(&["t.ArchTest", "t.QuietTest"])
+        );
+        assert!(matches!(
+            impact("src/main/java/a/Masking.java"),
+            Impact::Fallback(reason) if reason.contains("logback.xml names a.Masking")
+        ));
+        assert_eq!(
+            impact("src/test/java/t/PlainTest.java"),
+            split(&["t.ArchTest", "t.PlainTest"])
+        );
+        // Each selected test says how it reaches the change.
+        let Impact::Tests { reasons, .. } = explained("src/main/java/a/Factory.java") else {
+            panic!("no selection");
+        };
+        assert_eq!(
+            reasons,
+            BTreeMap::from([
+                (
+                    "t.ArchTest".into(),
+                    "t.ArchTest → com.tngtech.archunit.junit.AnalyzeClasses (scans for classes)"
+                        .into()
+                ),
+                (
+                    "t.ParamTest".into(),
+                    "t.ParamTest → a.Factory (changed)".into()
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn reasons_trace_dispatch_contexts_and_constants() {
+        let spring = "org/springframework/boot/test/context/SpringBootTest";
+        let mut classes = vec![
+            class("a/Api", "a/Api.java", false, &[], &[]),
+            class("a/Impl", "a/Impl.java", false, &[], &["a/Api"]),
+            class(
+                "a/Service",
+                "a/Service.java",
+                false,
+                &["La/Api;", "org/springframework/stereotype/Service"],
+                &[],
+            ),
+            class(
+                "t/ServiceTest",
+                "t/ServiceTest.java",
+                true,
+                &["a/Service"],
+                &[],
+            ),
+            class("t/AppIT", "t/AppIT.java", true, &[spring], &[]),
+            class("a/Limits", "a/Limits.java", false, &[], &[]),
+            class("t/LimitsTest", "t/LimitsTest.java", true, &[], &[]),
+        ];
+        classes[5].constants = vec!["MAX".into()];
+        let graph = Graph::new(classes);
+        for source in [
+            "main/java/a/Api",
+            "main/java/a/Service",
+            "test/java/t/ServiceTest",
+        ] {
+            graph.source(&format!("src/{source}.java"), "class Plain {}");
+        }
+        graph.source("src/test/java/t/AppIT.java", "class Plain {}");
+        graph.source("src/test/java/t/LimitsTest.java", "x(Limits.MAX);");
+        let changed = BTreeSet::from([
+            "src/main/java/a/Impl.java".to_owned(),
+            "src/main/java/a/Limits.java".to_owned(),
+        ]);
+        for path in &changed {
+            graph.source(path, "");
+        }
+        let Impact::Tests { reasons, .. } =
+            affected(&graph.classes, &changed, graph.temp.path()).unwrap()
+        else {
+            panic!("no selection");
+        };
+        assert_eq!(
+            reasons,
+            BTreeMap::from([
+                (
+                    "t.AppIT".into(),
+                    "t.AppIT (context) loads a.Service → a.Api, implemented by a.Impl (changed)"
+                        .into()
+                ),
+                (
+                    "t.LimitsTest".into(),
+                    "t.LimitsTest copies a constant of a.Limits (changed)".into()
+                ),
+                (
+                    "t.ServiceTest".into(),
+                    "t.ServiceTest → a.Service → a.Api, implemented by a.Impl (changed)".into()
+                ),
+            ])
+        );
     }
 }

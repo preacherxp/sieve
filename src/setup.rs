@@ -1,7 +1,7 @@
 use crate::{Config, Result};
 use quick_xml::{events::Event, Reader};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -275,6 +275,81 @@ pub(crate) fn install_maven_adapter(xml: &str, module: &str, refresh: bool) -> R
     Ok(result)
 }
 
+/// Sibling modules that a module's build uses other than as dependencies: as a build plugin,
+/// a plugin dependency, an annotation processor path, or an unpacked artifact, and the
+/// modules whose directories its build configuration names, such as a shared OpenAPI
+/// specification. A change there changes what the module builds.
+fn build_uses(
+    model: &BTreeMap<String, Vec<String>>,
+    coordinates: &BTreeMap<String, String>,
+    workspace: &Path,
+    module: &str,
+) -> BTreeSet<String> {
+    let modules: BTreeSet<&str> = coordinates.values().map(String::as_str).collect();
+    let mut uses = BTreeSet::new();
+    // Plugin management only declares plugins; the modules' own plugin sections use them.
+    let build = model.iter().filter(|(key, _)| {
+        (key.starts_with("project/build/") || key.starts_with("project/reporting/"))
+            && !key.starts_with("project/build/pluginManagement/")
+    });
+    for (key, values) in build.clone() {
+        let Some(element) = key.strip_suffix("/artifactId") else {
+            continue;
+        };
+        let groups = model.get(&format!("{element}/groupId"));
+        for (i, artifact) in values.iter().enumerate() {
+            // Without a matching group list, any group may be meant.
+            let group = groups.filter(|g| g.len() == values.len()).map(|g| &g[i]);
+            uses.extend(
+                coordinates
+                    .iter()
+                    .filter(|(coordinate, _)| match group {
+                        Some(group) => **coordinate == format!("{group}:{artifact}"),
+                        None => coordinate.ends_with(&format!(":{artifact}")),
+                    })
+                    .map(|(_, module)| module.clone()),
+            );
+        }
+    }
+    let base = workspace.join(module);
+    let roots = [
+        workspace.to_path_buf(),
+        workspace.canonicalize().unwrap_or_default(),
+    ];
+    for value in build.flat_map(|(_, values)| values) {
+        for word in value.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';')) {
+            if !word.contains('/') {
+                continue;
+            }
+            // Lexically, as the path may not exist yet.
+            let mut path = PathBuf::new();
+            for part in base.join(word).components() {
+                match part {
+                    std::path::Component::ParentDir => {
+                        path.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    part => path.push(part),
+                }
+            }
+            let Some(relative) = roots.iter().find_map(|root| path.strip_prefix(root).ok()) else {
+                continue;
+            };
+            let mut parts = relative.iter().filter_map(|part| part.to_str());
+            match parts.next() {
+                Some(owner) if modules.contains(owner) => {
+                    uses.insert(owner.to_owned());
+                }
+                Some("src") if modules.contains(".") => {
+                    uses.insert(".".to_owned());
+                }
+                _ => {}
+            }
+        }
+    }
+    uses
+}
+
 fn maven_config(
     workspace: &Path,
     executable: &str,
@@ -336,6 +411,7 @@ fn maven_config(
         class_level: false,
         generated: Vec::new(),
         records: None,
+        record_env: Vec::new(),
     };
     let mut edits = Vec::new();
     for (module, model) in models {
@@ -350,12 +426,16 @@ fn maven_config(
         if groups.len() != artifacts.len() {
             return Err("Incomplete Maven dependency coordinates".into());
         }
-        let dependencies = groups
+        let mut dependencies: BTreeSet<String> = groups
             .iter()
             .zip(artifacts)
             .filter_map(|(g, a)| coordinates.get(&format!("{g}:{a}")).cloned())
             .collect();
-        config.modules.insert(module.clone(), dependencies);
+        dependencies.extend(build_uses(&model, &coordinates, workspace, &module));
+        dependencies.remove(&module);
+        config
+            .modules
+            .insert(module.clone(), dependencies.into_iter().collect());
         let pom = workspace.join(&module).join("pom.xml");
         let xml = fs::read_to_string(&pom)?;
         edits.push((pom, install_maven_adapter(&xml, &module, refresh)?));
@@ -464,6 +544,7 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         config.class_level = previous.class_level;
         config.generated = previous.generated;
         config.records = previous.records;
+        config.record_env = previous.record_env;
         let known: std::collections::BTreeSet<_> = config.modules.keys().cloned().collect();
         for (module, dependencies) in &mut config.modules {
             dependencies.extend(

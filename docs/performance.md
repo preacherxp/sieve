@@ -116,3 +116,59 @@ Use `--maven` and `--gradle` for explicit executables and the same JDK as CI.
 Cold dependency/image caches, native task-cache hits, larger module graphs,
 service timings, and a frequency-weighted replay of real commits remain separate
 experiments. Docker was unavailable locally; no container-time saving is claimed.
+
+## Single-module setup: reproduce no gain, then select test classes
+
+Reviewed 2026-09-30: module selection cannot skip any tests when a project has only
+one module. The bytecode selector and native test filters already support skipping
+unrelated test classes. Set `"class_level": true` for the measured workload below;
+`init` keeps it opt-in because cheap suites can become slower. `refresh` preserves
+the choice. The sample reuses the existing selector rather than introducing a second
+selection algorithm.
+
+[`samples/selective-performance`](../samples/selective-performance/README.md) has a
+fast price test and an unrelated test with a configurable delay standing in for
+expensive application/container setup. Changing `Price` selects its only module,
+so module selection executes both tests and does no less work than native full.
+Class selection executes only `PriceTest`.
+
+Measured on macOS ARM64, Java 17.0.20.1 and Maven 3.9.16, using the release build
+at `48209306b4301bbfac09acaac9293b9dd9dd917a` plus working-tree changes. Each condition
+has one warmup and five samples, with alternating execution order and warm shared
+dependencies. JVM builds ran sequentially. Seconds are **median (minimum–maximum)**:
+
+| Unrelated setup delay | Native full | Module selection | Class selection |
+| --- | ---: | ---: | ---: |
+| 6 seconds | 7.412 (7.373–7.453) | 7.457 (7.451–7.590) | 2.306 (2.179–2.325) |
+| 0 seconds | 1.377 (1.364–1.400) | 1.426 (1.411–1.468) | 2.206 (2.186–2.223) |
+
+The six-second case goes from **no useful module-level saving to 69% lower wall
+time** with class selection. Both full and module runs execute two test cases;
+class selection executes one. The zero-delay case is **60% slower than full**
+with class selection: the second build-tool startup costs more than skipping a
+trivial test saves. Leave `"class_level"` off for cheap suites. Class selection
+does not remove the two-build overhead or guarantee a performance gain.
+
+Every sample's executed test cases and failures are verified from Maven XML,
+independently of the selection report. In both workloads, an unavailable Git base
+fell back to `ALL` and executed both tests. A deliberately incorrect price calculation
+failed the same `PriceTest` in native full and selected runs; both returned a failure
+exit code. The standard Rust suite (69 tests), formatting, Clippy, and the real
+Maven/Gradle class-selection integration check passed. Gradle's wrapper needed access
+to the existing build cache outside the sandbox. No GitHub Actions execution was
+performed and no CI workflow was changed.
+
+Raw samples, test inventories, failure checks and tool versions are in
+[selective-performance-results.json](selective-performance-results.json). Logs and
+selection reports remain in the ignored `validation-results/selective-performance/`
+and `validation-results/selective-performance-zero/` directories. These synthetic
+measurements include Sieve, compilation, JVM startup and tests; they exclude setup,
+checkout, installation and later CI steps. No real service startup or cold-cache
+saving is claimed.
+
+```bash
+cargo build --release --locked
+python3 scripts/benchmark-selective-performance.py --maven /path/to/mvn
+python3 scripts/benchmark-selective-performance.py --maven /path/to/mvn \
+  --delay-ms 0 --output validation-results/selective-performance-zero
+```

@@ -6,6 +6,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -16,6 +18,8 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.TreeMap;
+import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import sieve.probe.Bucket;
 import sieve.probe.Probe;
@@ -29,6 +33,10 @@ final class State {
     private static String sieve;
     private static String mode = "off";
     private static String base;
+    private static String invocation = "";
+    private static String session = "";
+    private static String[] recordEnv = new String[0];
+    private static String context;
 
     private static final Map<String, Integer> IDS = new ConcurrentHashMap<>();
     private static final List<String> METHODS = Collections.synchronizedList(new ArrayList<>());
@@ -53,11 +61,49 @@ final class State {
 
     private State() {}
 
-    static synchronized void configure(Path workspace, String sieve, String mode, String base) {
+    static synchronized void configure(Path workspace, String sieve, String mode, String base, String invocation, String session, String recordEnv) {
         State.workspace = workspace;
         State.sieve = sieve;
         State.mode = mode;
         State.base = base;
+        State.invocation = invocation;
+        State.session = session;
+        State.recordEnv = recordEnv.split(",");
+    }
+
+    /** Freeze at discovery: Surefire applies its test properties after agent premain. */
+    private static String context() {
+        if (context != null) {
+            return context;
+        }
+        Map<String, String> values = new TreeMap<>();
+        values.put("invocation", invocation);
+        for (String name : System.getProperties().stringPropertyNames()) {
+            // Classpath and command point at fresh Surefire booter files; compressed-oops
+            // placement varies with ASLR. Project output and the JDK are checked separately.
+            if (!Set.of("java.class.path", "sun.java.command", "surefire.real.class.path", "surefire.test.class.path", "java.vm.compressedOopsMode").contains(name)) {
+                values.put("property:" + name, System.getProperty(name));
+            }
+        }
+        for (String name : recordEnv) {
+            if (!name.isEmpty()) {
+                String value = System.getenv(name);
+                values.put("env:" + name, value == null ? "absent" : "present:" + value);
+            }
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (Map.Entry<String, String> entry : values.entrySet()) {
+                for (String value : List.of(entry.getKey(), entry.getValue())) {
+                    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+                    digest.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.length).array());
+                    digest.update(bytes);
+                }
+            }
+            return context = HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     static boolean enabled() {
@@ -123,7 +169,7 @@ final class State {
     }
 
     private static Path scratch(String prefix) throws IOException {
-        Path dir = workspace.resolve(".sieve").resolve("run");
+        Path dir = workspace.resolve(".sieve").resolve(session.isEmpty() ? "env-run" : "run");
         Files.createDirectories(dir);
         return Files.createTempFile(dir, prefix + "-" + ProcessHandle.current().pid() + "-", ".tmp");
     }
@@ -159,12 +205,13 @@ final class State {
             return skip;
         }
         skip = Set.of();
+        context();
         if (!enabled() || !mode.equals("select") || explicit() || parallelConfigured()) {
             return skip;
         }
         try {
             Path out = scratch("decide");
-            List<String> arguments = new ArrayList<>(List.of("decide", "--workspace", workspace.toString(), "--jdk", jdk(), "--out", out.toString()));
+            List<String> arguments = new ArrayList<>(List.of("decide", "--workspace", workspace.toString(), "--jdk", jdk(), "--out", out.toString(), "--context", context(), "--session", session));
             if (base != null && !base.isEmpty()) {
                 arguments.addAll(List.of("--base", base));
             }
@@ -189,6 +236,7 @@ final class State {
     }
 
     static synchronized void classStarted(String name) {
+        context();
         if (active != null && !active.equals(name)) {
             parallel = true;
         }
@@ -327,6 +375,10 @@ final class State {
         }
         StringBuilder out = new StringBuilder("{\"jdk\":");
         string(out, jdk());
+        out.append(",\"context\":");
+        string(out, context());
+        out.append(",\"session\":");
+        string(out, session);
         out.append(",\"started\":").append(ProcessHandle.current().info().startInstant().map(java.time.Instant::toEpochMilli).orElse(0L));
         out.append(",\"parallel\":").append(parallel || Probe.failed || parallelConfigured());
         out.append(",\"errors\":");

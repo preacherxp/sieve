@@ -4,6 +4,49 @@ use std::{fs, path::Path};
 mod support;
 use support::*;
 
+#[cfg(unix)]
+#[test]
+fn local_records_require_explicit_adoption() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    write(&root, "pom.xml", "<project/>");
+    let workspace = root.to_str().unwrap();
+    assert!(!cli(&["run", "--workspace", workspace]).status.success());
+    assert!(!root.join(".sieve").exists());
+    write(
+        &root,
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]}}"#,
+    );
+    let build = temp.path().join("build");
+    executable(&build, "#!/bin/sh\nprintf '%s\\n' \"$@\" > argv\n");
+    let output = temp.path().join("selection.json");
+    success(&[
+        "run",
+        "--workspace",
+        workspace,
+        "--executable",
+        build.to_str().unwrap(),
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    let result: Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(result["mode"], "ALL");
+    let args = fs::read_to_string(root.join("argv")).unwrap();
+    assert!(args.lines().any(|arg| arg == "clean"), "{args}");
+    assert!(args.lines().any(|arg| arg == "verify"), "{args}");
+    assert!(!root.join(".sieve").exists());
+    assert!(!cli(&["select", "--workspace", workspace, "--records"])
+        .status
+        .success());
+    write(
+        &root,
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"record_env":["BAD=NAME"]}"#,
+    );
+    assert!(!cli(&["select", "--workspace", workspace]).status.success());
+}
+
 #[test]
 fn every_mutation_is_safe_for_both_builds() {
     let catalog: Value =
@@ -100,6 +143,56 @@ fn git_changes_and_missing_history_are_handled() {
     );
     fs::write(Path::new(workspace).join("unknown input.txt"), "changed").unwrap();
     assert_eq!(select(workspace, "HEAD")["mode"], "ALL");
+}
+
+#[test]
+fn ignored_submodules_still_count_as_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let library = temp.path().join("library");
+    let library = library.to_str().unwrap();
+    let workspace = temp.path().join("project");
+    let workspace = workspace.to_str().unwrap();
+    success(&[
+        "fixtures", "prepare", "--tool", "maven", "--dest", workspace, "--git",
+    ]);
+    git(temp.path().to_str().unwrap(), &["init", "-q", library]);
+    git(library, &["commit", "-q", "--allow-empty", "-m", "One"]);
+    git(
+        workspace,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            library,
+            "vendor/library",
+        ],
+    );
+    // A submodule set to `ignore = all` hides its commits from plain `git diff`.
+    git(
+        workspace,
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.vendor/library.ignore",
+            "all",
+        ],
+    );
+    git(workspace, &["add", "."]);
+    git(workspace, &["commit", "-qm", "Add library"]);
+    let base = git(workspace, &["rev-parse", "HEAD"]);
+    let module = Path::new(workspace).join("vendor/library");
+    git(
+        module.to_str().unwrap(),
+        &["commit", "-q", "--allow-empty", "-m", "Two"],
+    );
+    git(workspace, &["add", "vendor/library"]);
+    git(workspace, &["commit", "-qm", "Update library"]);
+    let selection = select(workspace, &base);
+    assert_eq!(selection["mode"], "ALL", "{selection}");
+    assert_eq!(selection["changed"], json!(["vendor/library"]));
 }
 
 #[test]

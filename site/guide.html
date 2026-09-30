@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sieve — architecture guide</title>
+  <meta name="description" content="How Sieve selects Java and Kotlin tests: module-level, class-level, and local-mode selection, the build adapters, the test-JVM agent, and the validation tooling.">
+  <meta name="theme-color" content="#f3efe6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%231b1f24' width='32' height='32' rx='7'/%3E%3Cpath d='M6 13h20M6 17h20M10 9v12M16 9v12M22 9v12' stroke='%23f3efe6' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='25' r='2.4' fill='%23e0562b'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+      --sans: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+      --paper: #f3efe6;
+      --paper-2: #ebe5d8;
+      --card: #fbf9f4;
+      --fig: #fdfcf8;
+      --ink: #1b1f24;
+      --ink-2: #4a525c;
+      --ink-3: #8a8f94;
+      --rule: #ddd5c4;
+      --rule-2: #c3b9a4;
+      --grid: rgba(27, 31, 36, 0.045);
+      --edge: #5d646c;
+      --code: #16191d;
+
+      --all: #d24a22;
+      --modules: #2451c7;
+      --subset: #2e7a4c;
+      --none: #b07c0c;
+      --all-t: #fbe7df;
+      --modules-t: #e4eafa;
+      --subset-t: #e2f0e6;
+      --none-t: #f7ecd0;
+      --radius: 14px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #121417;
+        --paper-2: #1a1d21;
+        --card: #1a1d22;
+        --fig: #16191d;
+        --ink: #ece7dc;
+        --ink-2: #aeb4ba;
+        --ink-3: #737a82;
+        --rule: #2b3037;
+        --rule-2: #3c434c;
+        --grid: rgba(236, 231, 220, 0.035);
+        --edge: #98a0a8;
+        --code: #0c0e10;
+        --all: #f0703f;
+        --modules: #6d93ff;
+        --subset: #58b67e;
+        --none: #dca93a;
+        --all-t: #3a2219;
+        --modules-t: #1c2641;
+        --subset-t: #19301f;
+        --none-t: #362b12;
+      }
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background-color: var(--paper);
+      background-image:
+        radial-gradient(1200px 520px at 78% -120px, color-mix(in srgb, var(--all) 13%, transparent), transparent 70%),
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: auto, 28px 28px, 28px 28px;
+      font: 15px/1.65 var(--sans);
+    }
+    ::selection { background: color-mix(in srgb, var(--all) 30%, transparent); }
+    a { color: var(--modules); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--all); }
+    :focus-visible { outline: 2px solid var(--all); outline-offset: 3px; border-radius: 4px; }
+    code, pre { font-family: var(--mono); }
+    :not(pre) > code {
+      font-size: 0.84em; padding: 0.12em 0.4em; border-radius: 5px;
+      background: var(--paper-2); border: 1px solid var(--rule); overflow-wrap: anywhere;
+    }
+    code.nw { white-space: nowrap; }
+    .skip { position: absolute; left: 12px; top: -48px; z-index: 50; background: var(--ink); color: var(--paper); padding: 6px 10px; border-radius: 6px; }
+    .skip:focus { top: 10px; }
+
+    /* top bar */
+    .progress { position: fixed; inset: 0 0 auto; height: 3px; z-index: 40; }
+    .progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--modules), var(--subset), var(--none), var(--all)); }
+    .top {
+      position: sticky; top: 0; z-index: 30;
+      backdrop-filter: saturate(1.4) blur(10px);
+      background: color-mix(in srgb, var(--paper) 82%, transparent);
+      border-bottom: 1px solid var(--rule);
+    }
+    .top-in { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; }
+    .brand svg { width: 26px; height: 26px; }
+    .brand b { font: 400 26px/1 var(--serif); letter-spacing: -0.01em; }
+    .brand span { font: 500 11px var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.12em; padding-top: 4px; }
+    .top nav { display: flex; gap: 4px; flex-wrap: wrap; }
+    .top nav a {
+      font: 500 12px var(--mono); color: var(--ink-2); text-decoration: none;
+      padding: 6px 10px; border-radius: 999px; border: 1px solid transparent;
+    }
+    .top nav a:hover { color: var(--ink); border-color: var(--rule-2); background: var(--card); }
+    .wrap { width: min(1180px, calc(100% - 40px)); margin-inline: auto; }
+
+    /* hero */
+    .hero { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr); gap: 40px; align-items: center; padding: 64px 0 48px; }
+    .hero > div > * { animation: rise .8s cubic-bezier(.2, .7, .2, 1) both; }
+    .hero > div > :nth-child(2) { animation-delay: .08s; }
+    .hero > div > :nth-child(3) { animation-delay: .16s; }
+    .hero > div > :nth-child(4) { animation-delay: .24s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+    .eyebrow { display: inline-flex; align-items: center; gap: 10px; margin: 0 0 18px; font: 500 12px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-2); }
+    .eyebrow::before { content: ""; width: 28px; height: 1px; background: var(--ink-2); }
+    h1 { margin: 0; font: 400 clamp(44px, 6.4vw, 84px)/0.98 var(--serif); letter-spacing: -0.02em; }
+    h1 em { color: var(--all); }
+    .lede { max-width: 36rem; margin: 22px 0 0; font-size: 17px; color: var(--ink-2); }
+    .lede strong { color: var(--ink); font-weight: 600; }
+    .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 26px 0 0; padding: 0; list-style: none; }
+    .facts li { margin: 0; font: 500 12px var(--mono); padding: 6px 12px; border-radius: 999px; border: 1px solid var(--rule-2); background: var(--card); }
+    .sieve-art { width: 100%; max-width: 420px; justify-self: end; }
+    .sieve-art .cap { font: 500 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; fill: var(--ink-3); }
+    .sieve-art .frame { fill: none; stroke: var(--ink); stroke-width: 1.5; }
+    .drop { animation: 3.8s cubic-bezier(.45, 0, .6, 1) var(--d, 0s) infinite both; }
+    .drop.pass { animation-name: pass; }
+    .drop.catch { animation-name: catch; fill: var(--ink-3); }
+    @keyframes pass { 0% { transform: translateY(0); opacity: 0; } 8% { opacity: 1; } 62% { transform: translateY(232px); opacity: 1; } 88%, 100% { transform: translateY(232px); opacity: 0; } }
+    @keyframes catch { 0% { transform: translateY(0); opacity: 0; } 8% { opacity: 1; } 34% { transform: translateY(96px); } 37% { transform: translateY(90px); } 41% { transform: translateY(96px); } 72% { transform: translateY(96px); opacity: 1; } 92%, 100% { transform: translateY(96px); opacity: 0; } }
+
+    /* layout */
+    .shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; align-items: start; padding-bottom: 40px; }
+    .toc { position: sticky; top: 80px; font-size: 13px; }
+    .toc > p { margin: 0 0 12px; font: 500 11px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); }
+    .toc ol { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--rule-2); }
+    .toc li { margin: 0; }
+    .toc a { display: flex; gap: 10px; padding: 5px 0 5px 14px; margin-left: -1px; border-left: 2px solid transparent; color: var(--ink-2); text-decoration: none; transition: color .2s, border-color .2s; }
+    .toc a span { font: 500 11px/1.9 var(--mono); color: var(--ink-3); }
+    .toc a:hover { color: var(--ink); }
+    .toc a[aria-current="true"] { color: var(--ink); border-left-color: var(--all); font-weight: 600; }
+    .toc a[aria-current="true"] span { color: var(--all); }
+    .toc .legend { margin-top: 26px; display: grid; gap: 7px; }
+    .toc .legend div { display: flex; align-items: center; gap: 8px; font: 500 11px var(--mono); color: var(--ink-2); }
+    .toc .legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+
+    main { min-width: 0; }
+    .sec { padding: 36px 0 48px; border-top: 1px solid var(--rule); scroll-margin-top: 64px; }
+    .sec:first-child { border-top: 0; padding-top: 0; }
+    .sec-head { display: grid; grid-template-columns: auto 1fr; gap: 4px 18px; align-items: baseline; margin-bottom: 18px; }
+    .num { font: 500 13px var(--mono); color: var(--all); letter-spacing: 0.08em; }
+    h2 { margin: 0; font: 400 clamp(32px, 3.6vw, 46px)/1.05 var(--serif); letter-spacing: -0.01em; }
+    .kicker { grid-column: 2; margin: 8px 0 0; color: var(--ink-2); max-width: 46rem; }
+    h3 { margin: 30px 0 10px; font: 600 15px var(--sans); }
+    h3 small { font: 500 11px var(--mono); color: var(--ink-3); letter-spacing: 0.08em; text-transform: uppercase; margin-left: 8px; }
+    p, li { max-width: 50rem; }
+    ul, ol { padding-left: 20px; }
+    li + li { margin-top: 4px; }
+
+    /* figures */
+    .fig { margin: 22px 0; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--fig); overflow: hidden; box-shadow: 0 18px 40px -30px rgba(27, 31, 36, 0.45); }
+    .fig-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 10px 16px; border-bottom: 1px solid var(--rule); font: 500 11px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); }
+    .fig-bar b { color: var(--ink); font-weight: 600; margin-right: 6px; }
+    .fig-body { padding: 18px; overflow-x: auto; background-image: radial-gradient(var(--grid) 1.2px, transparent 1.2px); background-size: 16px 16px; }
+    .fig-body svg { display: block; width: 100%; min-width: 720px; height: auto; }
+    .fig figcaption { padding: 10px 16px 14px; font-size: 13px; color: var(--ink-2); border-top: 1px dashed var(--rule); }
+
+    .fx { font-family: var(--sans); }
+    .fx text { fill: var(--ink); }
+    .fx .t { font-size: 13px; font-weight: 600; }
+    .fx .s { font-size: 11px; font-weight: 400; fill: var(--ink-2); }
+    .fx .m { font: 11px var(--mono); fill: var(--ink-2); }
+    .fx .cap { font: 500 10px var(--mono); letter-spacing: 0.14em; fill: var(--ink-3); }
+    .fx .box { fill: var(--card); stroke: var(--rule-2); stroke-width: 1.2; }
+    .fx .start, .fx .head { fill: var(--ink); }
+    .fx text.inv { fill: var(--paper); }
+    .fx .dec { fill: var(--fig); stroke: var(--ink); stroke-width: 1.3; }
+    .fx .grp { fill: color-mix(in srgb, var(--paper-2) 55%, transparent); stroke: var(--rule-2); stroke-dasharray: 2 4; }
+    .fx .lane { fill: none; stroke: var(--rule-2); stroke-dasharray: 5 4; }
+    .fx .hi { stroke: var(--all); stroke-width: 1.6; }
+    .fx .dash { stroke-dasharray: 4 3; }
+    .fx .chip { fill: var(--paper-2); stroke: var(--rule); }
+    .fx .e { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+    .fx .e.d { stroke-dasharray: 5 4; }
+    .fx .e.all { stroke: var(--all); }
+    .fx .e.run { stroke: var(--modules); }
+    .fx .e.ok { stroke: var(--subset); }
+    .fx .lab { font: 500 10.5px var(--mono); fill: var(--ink-2); paint-order: stroke; stroke: var(--fig); stroke-width: 5px; stroke-linejoin: round; }
+    .fx .lab.all { fill: var(--all); }
+    .fx .lab.run { fill: var(--modules); }
+    .fx .lab.ok { fill: var(--subset); }
+    .fx .term text { fill: #fff; }
+    .fx .term .tt { font: 600 13px var(--mono); letter-spacing: 0.04em; }
+    .fx .term .ts { font-size: 10.5px; fill: rgba(255, 255, 255, 0.88); }
+    .fx .T-all rect { fill: var(--all); }
+    .fx .T-mod rect { fill: var(--modules); }
+    .fx .T-sub rect { fill: var(--subset); }
+    .fx .T-none rect { fill: var(--none); }
+    .fx .T-ink rect { fill: var(--ink); }
+    .fx .T-ink text { fill: var(--paper); }
+    .fx .T-ink .ts { fill: color-mix(in srgb, var(--paper) 80%, transparent); }
+    .fx .sel { fill: var(--modules-t); stroke: var(--modules); stroke-width: 1.5; }
+    .fx .off { fill: var(--card); stroke: var(--rule-2); opacity: 0.6; }
+    .fx .fb { fill: var(--modules-t); stroke: var(--modules); stroke-dasharray: 5 4; }
+    .fx .fb-t { fill: var(--modules); }
+    .fx .life { stroke: var(--rule-2); stroke-dasharray: 2 5; }
+    .fx .act { fill: var(--modules-t); stroke: var(--modules); }
+    .fx .note { fill: var(--none-t); stroke: color-mix(in srgb, var(--none) 55%, transparent); }
+    @media (prefers-color-scheme: dark) { .fx .term text, .fx .term .ts { fill: #101215; } .fx .T-ink text { fill: var(--paper); } }
+    .ah { fill: var(--edge); } .ah-all { fill: var(--all); } .ah-run { fill: var(--modules); } .ah-ok { fill: var(--subset); }
+
+    html.js .fig .n { opacity: 0; transform: translateY(6px); transition: opacity .55s ease, transform .55s ease; }
+    html.js .fig.in .n { opacity: 1; transform: none; }
+
+    /* components */
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+    .cards.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { position: relative; padding: 18px 18px 16px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--card); transition: transform .25s, box-shadow .25s; }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 14px 30px -24px rgba(27, 31, 36, 0.6); }
+    .card h3 { margin: 0 0 8px; }
+    .card p { margin: 0; font-size: 14px; color: var(--ink-2); }
+    .card dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 13px; }
+    .card dt { font: 500 11px/1.9 var(--mono); color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.08em; }
+    .card dd { margin: 0; color: var(--ink-2); }
+    .card .idx { position: absolute; top: 12px; right: 16px; font: italic 400 30px/1 var(--serif); color: var(--rule-2); }
+    .card .tag { margin: 0 0 10px; }
+
+    .modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+    .mode { padding: 16px; border-radius: var(--radius); background: var(--t); border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); }
+    .mode b { display: flex; align-items: center; gap: 8px; font: 600 16px var(--mono); color: var(--c); letter-spacing: 0.04em; }
+    .mode b::before { content: ""; width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+    .mode p { margin: 8px 0 0; font-size: 13.5px; color: var(--ink-2); }
+    .mode small { display: block; margin-top: 10px; font: 11px/1.5 var(--mono); color: var(--ink-3); }
+    .m-all { --c: var(--all); --t: var(--all-t); } .m-mod { --c: var(--modules); --t: var(--modules-t); }
+    .m-sub { --c: var(--subset); --t: var(--subset-t); } .m-none { --c: var(--none); --t: var(--none-t); }
+
+    pre {
+      position: relative; margin: 16px 0; padding: 16px 18px; overflow-x: auto;
+      background: var(--code); color: #d8dde2; border-radius: 12px;
+      font-size: 13px; line-height: 1.6; border: 1px solid #000;
+      box-shadow: 0 18px 36px -28px rgba(0, 0, 0, 0.7);
+    }
+    pre[data-lang]::before { content: attr(data-lang); position: absolute; top: 8px; right: 12px; font: 500 10px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: #6b747d; }
+    pre .c { color: #76818c; font-style: italic; }
+    pre .s { color: #9fd3a9; }
+    pre .p { color: #8fb1ff; }
+
+    .steps { list-style: none; margin: 18px 0; padding: 0; counter-reset: s; }
+    .steps li { counter-increment: s; position: relative; display: grid; grid-template-columns: 1fr auto; gap: 2px 16px; margin: 0; padding: 12px 0 12px 46px; border-top: 1px solid var(--rule); max-width: none; }
+    .steps li::before { content: counter(s, decimal-leading-zero); position: absolute; left: 0; top: 13px; font: 500 12px var(--mono); color: var(--all); }
+    .steps b { font-weight: 600; }
+    .steps .where { font: 12px var(--mono); color: var(--ink-3); text-align: right; }
+    .steps p { grid-column: 1 / -1; margin: 0; color: var(--ink-2); font-size: 14px; }
+    .steps .tags { grid-column: 1 / -1; }
+    .tag { display: inline-block; margin: 6px 6px 0 0; padding: 1px 8px; border-radius: 999px; font: 500 11px var(--mono); background: var(--t); color: var(--c); border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); }
+
+    .callout { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: baseline; margin: 20px 0; padding: 16px 18px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--rule); border-left: 3px solid var(--all); }
+    .callout b { font: italic 400 24px/1 var(--serif); color: var(--all); }
+    .callout p { margin: 0; color: var(--ink-2); }
+
+    .table { overflow-x: auto; margin: 16px 0; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--card); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
+    tr:last-child td { border-bottom: 0; }
+    th { font: 500 11px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); background: var(--paper-2); }
+    td:first-child { white-space: nowrap; }
+    tbody tr:hover td { background: color-mix(in srgb, var(--paper-2) 50%, transparent); }
+
+    .chain { margin: 14px 0; padding: 12px 16px; border-radius: 12px; border: 1px dashed var(--rule-2); background: var(--card); font: 13px var(--mono); color: var(--ink-2); overflow-x: auto; white-space: nowrap; }
+    .chain b { color: var(--subset); font-weight: 600; } .chain i { color: var(--all); font-style: normal; }
+
+    .rules { counter-reset: r; list-style: none; margin: 18px 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .rules li { counter-increment: r; margin: 0; padding: 16px 16px 16px 58px; position: relative; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--card); max-width: none; font-size: 14px; color: var(--ink-2); }
+    .rules li b { color: var(--ink); }
+    .rules li::before { content: counter(r); position: absolute; left: 20px; top: 10px; font: italic 400 34px/1 var(--serif); color: var(--all); }
+
+    footer { margin-top: 20px; padding: 28px 0 40px; border-top: 1px solid var(--rule); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; font: 12px var(--mono); color: var(--ink-3); }
+    footer a { color: var(--ink-2); }
+
+    @media (max-width: 1000px) {
+      .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      .toc { position: static; margin-bottom: 28px; padding: 16px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--card); }
+      .toc ol { columns: 2; border: 0; }
+      .toc a { border-left: 0; padding-left: 0; }
+      .toc .legend { display: none; }
+      .hero { grid-template-columns: minmax(0, 1fr); padding-top: 40px; }
+      .sieve-art { justify-self: start; max-width: 340px; }
+      .modes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 720px) {
+      .cards, .cards.two, .rules, .modes { grid-template-columns: minmax(0, 1fr); }
+      .top nav a:not(:last-child) { display: none; }
+      .steps li { grid-template-columns: 1fr; }
+      .steps .where { text-align: left; }
+      .kicker { grid-column: 1 / -1; }
+      .toc ol { columns: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .hero > div > * { animation: none; }
+      .drop { animation: none; }
+      .drop.pass { transform: translateY(232px); }
+      .drop.catch { transform: translateY(96px); }
+      html.js .fig .n { opacity: 1; transform: none; transition: none; }
+      .card:hover { transform: none; }
+    }
+    @media print {
+      .top, .toc, .progress, .skip, .sieve-art { display: none; }
+      .shell { display: block; }
+      body { background: #fff; }
+      html.js .fig .n { opacity: 1; transform: none; }
+      .fig, .card, pre { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+  <script>document.documentElement.classList.add("js");</script>
+</head>
+<body>
+  <a class="skip" href="#content">Skip to content</a>
+  <div class="progress" aria-hidden="true"><i></i></div>
+
+  <!-- Markers and patterns shared by every diagram. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0,1 L10,5 L0,9 z"/></marker>
+      <marker id="ah-all" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-all" d="M0,1 L10,5 L0,9 z"/></marker>
+      <marker id="ah-run" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-run" d="M0,1 L10,5 L0,9 z"/></marker>
+      <marker id="ah-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah-ok" d="M0,1 L10,5 L0,9 z"/></marker>
+      <pattern id="mesh" width="10" height="10" patternUnits="userSpaceOnUse">
+        <path d="M0 5 H10 M5 0 V10" stroke="currentColor" stroke-width="1"/>
+      </pattern>
+    </defs>
+  </svg>
+
+  <header class="top">
+    <div class="wrap top-in">
+      <a class="brand" href="index.html" aria-label="Sieve home">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect fill="currentColor" width="32" height="32" rx="7"/><path d="M6 13h20M6 17h20M10 9v12M16 9v12M22 9v12" stroke="var(--paper)" stroke-width="1.6"/><circle cx="16" cy="25" r="2.4" fill="var(--all)"/></svg>
+        <b>Sieve</b><span>architecture</span>
+      </a>
+      <nav aria-label="Site">
+        <a href="index.html">Overview</a>
+        <a href="../README.md">README</a>
+        <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>
+        <a href="https://github.com/preacherxp/sieve">GitHub ↗</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <section class="hero" aria-labelledby="title">
+      <div>
+        <p class="eyebrow">Architecture guide · sieve 0.1.0</p>
+        <h1 id="title">How Sieve decides <em>which tests</em> to run.</h1>
+        <p class="lede">Sieve maps a Git change to the JVM tests it can reach and runs them through the
+          project's own Maven or Gradle build. Three selection paths share one rule:
+          <strong>when the evidence runs out, widen the selection</strong>, all the way to the full suite.</p>
+        <ul class="facts" aria-label="At a glance">
+          <li>Rust CLI</li><li>Maven · Gradle</li><li>Java · Kotlin/JVM</li><li>JUnit Platform agent</li>
+        </ul>
+      </div>
+      <svg class="sieve-art" viewBox="0 0 360 320" role="img" aria-label="Tests fall onto a sieve; most are caught, a few pass through.">
+        <text class="cap" x="20" y="20">every test in the build</text>
+        <circle class="drop catch" cx="36"  cy="46" r="6" style="--d:0s"/>
+        <circle class="drop catch" cx="62"  cy="46" r="6" style="--d:.9s"/>
+        <circle class="drop pass"  cx="88"  cy="46" r="6" style="--d:.3s; fill: var(--modules)"/>
+        <circle class="drop catch" cx="114" cy="46" r="6" style="--d:1.6s"/>
+        <circle class="drop catch" cx="140" cy="46" r="6" style="--d:.5s"/>
+        <circle class="drop catch" cx="166" cy="46" r="6" style="--d:2.2s"/>
+        <circle class="drop pass"  cx="192" cy="46" r="6" style="--d:1.2s; fill: var(--subset)"/>
+        <circle class="drop catch" cx="218" cy="46" r="6" style="--d:2.7s"/>
+        <circle class="drop catch" cx="244" cy="46" r="6" style="--d:.2s"/>
+        <circle class="drop pass"  cx="270" cy="46" r="6" style="--d:2s; fill: var(--all)"/>
+        <circle class="drop catch" cx="296" cy="46" r="6" style="--d:1.1s"/>
+        <circle class="drop catch" cx="322" cy="46" r="6" style="--d:3s"/>
+        <g style="color: var(--ink-3)"><rect x="18" y="148" width="324" height="24" rx="12" fill="url(#mesh)"/></g>
+        <rect class="frame" x="18" y="148" width="324" height="24" rx="12"/>
+        <path d="M6 160 H18 M342 160 H354" stroke="var(--ink)" stroke-width="3" stroke-linecap="round"/>
+        <path d="M20 296 H340" stroke="var(--rule-2)" stroke-dasharray="2 4"/>
+        <text class="cap" x="20" y="314">only what the change can reach</text>
+      </svg>
+    </section>
+
+    <div class="shell">
+      <aside class="toc" aria-label="Contents">
+        <p>Contents</p>
+        <ol>
+          <li><a href="#big-picture"><span>01</span>Big picture</a></li>
+          <li><a href="#modes"><span>02</span>Selection modes</a></li>
+          <li><a href="#static"><span>03</span>Static path</a></li>
+          <li><a href="#class-level"><span>04</span>Class-level analysis</a></li>
+          <li><a href="#adapters"><span>05</span>Build adapters</a></li>
+          <li><a href="#local"><span>06</span>Local mode</a></li>
+          <li><a href="#validation"><span>07</span>Validation</a></li>
+          <li><a href="#code-map"><span>08</span>Code map</a></li>
+          <li><a href="#walkthrough"><span>09</span>Walkthrough</a></li>
+          <li><a href="#invariants"><span>10</span>Invariants</a></li>
+        </ol>
+        <div class="legend" aria-label="Mode colors">
+          <div style="--c: var(--all)"><i></i>ALL</div>
+          <div style="--c: var(--modules)"><i></i>MODULES</div>
+          <div style="--c: var(--subset)"><i></i>SUBSET</div>
+          <div style="--c: var(--none)"><i></i>NONE</div>
+        </div>
+      </aside>
+
+      <main id="content">
+
+        <!-- 01 -->
+        <section class="sec" id="big-picture" aria-labelledby="h1s">
+          <div class="sec-head"><span class="num">01</span><h2 id="h1s">Big picture</h2>
+            <p class="kicker">One binary holds the selector, the build adapters, the validation tooling and,
+              by default, an embedded Java agent. It reads Git and <code>impact.json</code>, then starts the
+              native build with arguments that limit which modules build and which tests run.</p></div>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 1</b>Component map</span><span>src/ · agent/</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 400" role="img" aria-labelledby="f1t f1d">
+                <title id="f1t">Component map</title>
+                <desc id="f1d">Inputs (Git, impact.json, build files, .sieve records) feed the sieve binary. It starts Maven or Gradle, which forks the test JVM. In local mode the agent in the test JVM calls sieve decide and sieve record.</desc>
+                <text class="cap" x="20" y="20">INPUTS</text>
+                <g><rect class="box" x="20" y="34" width="170" height="62" rx="10"/><text class="t" x="34" y="58">Git</text><text class="s" x="34" y="76">merge-base, diff, staged,</text><text class="s" x="34" y="89">untracked, submodules</text></g>
+                <g><rect class="box" x="20" y="114" width="170" height="62" rx="10"/><text class="t" x="34" y="138">impact.json</text><text class="s" x="34" y="156">module graph, ignore,</text><text class="s" x="34" y="169">class_level, records</text></g>
+                <g><rect class="box" x="20" y="194" width="170" height="62" rx="10"/><text class="t" x="34" y="218">Build files</text><text class="s" x="34" y="236">POMs, Gradle scripts,</text><text class="s" x="34" y="249">.mvn/ → fingerprint</text></g>
+                <g><rect class="box" x="20" y="274" width="170" height="62" rx="10"/><text class="t" x="34" y="298">.sieve/</text><text class="s" x="34" y="316">test records, shapes,</text><text class="s" x="34" y="329">run decisions, lock</text></g>
+
+                <g><rect class="grp" x="228" y="30" width="432" height="356" rx="16"/><text class="cap" x="246" y="20">SIEVE · RUST BINARY</text></g>
+                <g><rect class="box" x="246" y="48" width="396" height="50" rx="10"/><text class="t" x="260" y="70">main.rs</text><text class="s" x="260" y="87">CLI dispatch · Config · Git diff · module selection · build args</text></g>
+                <g><rect class="box" x="246" y="110" width="192" height="50" rx="10"/><text class="t" x="260" y="132">setup.rs</text><text class="s" x="260" y="149">init / refresh, adapters</text></g>
+                <g><rect class="box" x="450" y="110" width="192" height="50" rx="10"/><text class="t" x="464" y="132">fingerprint.rs</text><text class="s" x="464" y="149">build-input hash</text></g>
+                <g><rect class="box" x="246" y="172" width="192" height="50" rx="10"/><text class="t" x="260" y="194">classes.rs</text><text class="s" x="260" y="211">bytecode impact graph</text></g>
+                <g><rect class="box" x="450" y="172" width="192" height="50" rx="10"/><text class="t" x="464" y="194">generated.rs</text><text class="s" x="464" y="211">generated-source diff</text></g>
+                <g><rect class="box" x="246" y="234" width="192" height="50" rx="10"/><text class="t" x="260" y="256">bytecode.rs</text><text class="s" x="260" y="273">method / shape digests</text></g>
+                <g><rect class="box hi" x="450" y="234" width="192" height="50" rx="10"/><text class="t" x="464" y="256">records.rs</text><text class="s" x="464" y="273">local run · decide · record</text></g>
+                <g><rect class="box dash" x="246" y="296" width="396" height="50" rx="10"/><text class="t" x="260" y="318">Validation</text><text class="s" x="260" y="335">fixtures.rs · replay.rs · catalog.rs · timing.rs</text></g>
+                <text class="m" x="246" y="372">embeds sieve-agent.jar + sieve-probe.jar (build.rs)</text>
+
+                <text class="cap" x="700" y="20">BUILD &amp; TEST</text>
+                <g><rect class="box" x="700" y="48" width="200" height="84" rx="10"/><text class="t" x="714" y="72">Maven / Gradle</text><text class="s" x="714" y="90">POM skip properties or</text><text class="s" x="714" y="103">gradle.init.gradle</text><text class="m" x="714" y="121">verify · check</text></g>
+                <g><rect class="box" x="700" y="190" width="200" height="126" rx="10"/><text class="t" x="714" y="214">Test JVM</text><text class="s" x="714" y="232">JUnit Platform</text><text class="s" x="714" y="250">+ sieve agent (local mode)</text><text class="m" x="714" y="272">Filter · Listener</text><text class="m" x="714" y="287">Transformer · Probe</text><text class="m" x="714" y="302">Spring hooks</text></g>
+
+                <g><path class="e" d="M190 65 H226" marker-end="url(#ah)"/><path class="e" d="M190 145 H226" marker-end="url(#ah)"/><path class="e" d="M190 225 H226" marker-end="url(#ah)"/><path class="e" d="M190 305 H226" marker-end="url(#ah)"/></g>
+                <g><path class="e" d="M642 73 H698" marker-end="url(#ah)"/><text class="lab" x="652" y="66">exec</text></g>
+                <g><path class="e" d="M800 132 V188" marker-end="url(#ah)"/><text class="lab" x="808" y="164">fork</text></g>
+                <g><path class="e d all" d="M700 246 H644" marker-end="url(#ah-all)"/><text class="lab all" x="652" y="239">decide</text>
+                   <path class="e d all" d="M700 270 H644" marker-end="url(#ah-all)"/><text class="lab all" x="652" y="286">record</text></g>
+              </svg>
+            </div>
+            <figcaption>Solid arrows run on every <code>sieve run</code>. The dashed calls exist only in local mode: the agent inside the test JVM starts <code>sieve decide</code> and <code>sieve record</code> as subprocesses.</figcaption>
+          </figure>
+
+          <div class="cards">
+            <article class="card"><span class="idx">i</span><h3>Module-level</h3>
+              <p>The default for every layout.</p>
+              <dl><dt>Evidence</dt><dd>Git diff + declared module graph</dd><dt>Narrows</dt><dd>Changed modules and their dependents</dd><dt>Code</dt><dd><code>main.rs</code></dd></dl></article>
+            <article class="card"><span class="idx">ii</span><h3>Class-level</h3>
+              <p>Opt-in: <code>"class_level": true</code>. The extra compile can outweigh savings in cheap suites.</p>
+              <dl><dt>Evidence</dt><dd>Bytecode of the revision under test</dd><dt>Narrows</dt><dd>Test classes</dd><dt>Code</dt><dd><code>classes.rs</code>, <code>generated.rs</code></dd></dl></article>
+            <article class="card"><span class="idx">iii</span><h3>Local mode</h3>
+              <p>Opt-in: <code>sieve run --records</code> or <code>"records": true</code>. Single-module Maven, developer machines.</p>
+              <dl><dt>Evidence</dt><dd>Runtime records of earlier passing runs</dd><dt>Narrows</dt><dd>Test classes</dd><dt>Code</dt><dd><code>records.rs</code>, <code>agent/</code></dd></dl></article>
+          </div>
+          <p>A configured <code>run</code> without a base selects <code>ALL</code> unless local mode is enabled.
+            <code>run --records</code> also works without <code>impact.json</code> on a single-module Maven project.</p>
+        </section>
+
+        <!-- 02 -->
+        <section class="sec" id="modes" aria-labelledby="h2s">
+          <div class="sec-head"><span class="num">02</span><h2 id="h2s">Selection modes</h2>
+            <p class="kicker">Every path ends in a <code>Selection</code> (<a href="../src/main.rs">src/main.rs</a>)
+              with one of four modes. <code>select</code> prints it; <code>run --output</code> writes it before the build starts.</p></div>
+          <div class="modes">
+            <div class="mode m-all"><b>ALL</b><p>Full suite, every module.</p><small>no base · no history · build input · stale fingerprint</small></div>
+            <div class="mode m-mod"><b>MODULES</b><p>Changed modules and every module that depends on them.</p><small>verify -pl … -am · :m:check</small></div>
+            <div class="mode m-sub"><b>SUBSET</b><p>Named test classes inside the selected modules.</p><small>class-level · local mode</small></div>
+            <div class="mode m-none"><b>NONE</b><p>No tests. Module-level: <code>clean</code> only. Class-level: compile and verify.</p><small>ignored paths · unreached</small></div>
+          </div>
+<pre data-lang="json"><span class="c">// sieve select --workspace projects/maven --base HEAD   (after editing TaxRules)</span>
+{
+  <span class="p">"mode"</span>: <span class="s">"MODULES"</span>,
+  <span class="p">"modules"</span>: [<span class="s">"checkout"</span>, <span class="s">"pricing"</span>],
+  <span class="p">"changed"</span>: [<span class="s">"pricing/src/main/java/example/TaxRules.java"</span>],
+  <span class="p">"reason"</span>: <span class="s">"Changed source/resource modules and their transitive dependents"</span>
+}</pre>
+          <div class="callout"><b>Rule</b><p>Uncertainty widens the selection and analysis errors fall back to the wider mode.
+            Invalid configuration and build failures fail the command instead: a fallback must never hide a broken setup.</p></div>
+        </section>
+
+        <!-- 03 -->
+        <section class="sec" id="static" aria-labelledby="h3s">
+          <div class="sec-head"><span class="num">03</span><h2 id="h3s">Static path</h2>
+            <p class="kicker"><code>sieve run --base REV</code>, used in CI and for multi-module or Gradle projects.
+              Every question that cannot be answered safely routes to <code>ALL</code>.</p></div>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 2</b>Decision flow</span><span>main_result · Config::select · Selection::refine</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 920" role="img" aria-labelledby="f2t f2d">
+                <title id="f2t">Static selection decision flow</title>
+                <desc id="f2d">Local mode branches off first. Without a base, without history, or with a changed build fingerprint the result is ALL. Each changed path is classified: ignored paths are skipped, module sources mark their module, anything else selects ALL. No marked module gives NONE. Otherwise dependents are added. Without class_level the result is MODULES. With it, run compiles and analyzes; failed analysis keeps MODULES; test classes reaching the change give SUBSET, none gives NONE.</desc>
+
+                <g><rect class="start" x="180" y="20" width="240" height="40" rx="20"/><text class="inv t" x="300" y="45" text-anchor="middle">sieve select / run</text></g>
+                <g><path class="e d" d="M180 40 H150" marker-end="url(#ah)"/><text class="lab" x="144" y="36" text-anchor="end">--records or</text><text class="lab" x="144" y="50" text-anchor="end">"records": true → §06</text></g>
+                <g><path class="e" d="M300 60 V93" marker-end="url(#ah)"/></g>
+                <g><rect class="dec" x="180" y="95" width="240" height="40" rx="20"/><text class="t" x="300" y="120" text-anchor="middle">--base REV given?</text></g>
+                <g><path class="e" d="M300 135 V168" marker-end="url(#ah)"/><text class="lab" x="308" y="156">yes</text></g>
+                <g><rect class="dec" x="180" y="170" width="240" height="40" rx="20"/><text class="t" x="300" y="195" text-anchor="middle">History + merge base found?</text></g>
+                <g><path class="e" d="M300 210 V243" marker-end="url(#ah)"/><text class="lab" x="308" y="231">yes</text></g>
+                <g><rect class="dec" x="180" y="245" width="240" height="40" rx="20"/><text class="t" x="300" y="270" text-anchor="middle">Build fingerprint matches?</text></g>
+                <g><path class="e" d="M300 285 V318" marker-end="url(#ah)"/><text class="lab" x="308" y="306">yes</text></g>
+                <g><rect class="box" x="180" y="320" width="240" height="40" rx="10"/><text class="t" x="300" y="345" text-anchor="middle">Classify each changed path</text></g>
+                <g><path class="e d" d="M180 340 H150" marker-end="url(#ah)"/><text class="lab" x="144" y="336" text-anchor="end">ignored glob</text><text class="lab" x="144" y="350" text-anchor="end">→ skip</text></g>
+                <g><path class="e" d="M300 360 V393" marker-end="url(#ah)"/><text class="lab" x="308" y="381">&lt;module&gt;/src/** → mark module</text></g>
+                <g><rect class="dec" x="180" y="395" width="240" height="40" rx="20"/><text class="t" x="300" y="420" text-anchor="middle">Any module marked?</text></g>
+                <g><path class="e" d="M300 435 V468" marker-end="url(#ah)"/><text class="lab" x="308" y="456">yes</text></g>
+                <g><rect class="box" x="180" y="470" width="240" height="40" rx="10"/><text class="t" x="300" y="495" text-anchor="middle">Add dependents until stable</text></g>
+                <g><path class="e" d="M300 510 V543" marker-end="url(#ah)"/></g>
+                <g><rect class="dec" x="180" y="545" width="240" height="40" rx="20"/><text class="t" x="300" y="570" text-anchor="middle">"class_level": true?</text></g>
+                <g><path class="e d" d="M420 565 H456"/><text class="m" x="462" y="569">sieve select stops here (never compiles)</text></g>
+                <g><path class="e" d="M300 585 V618" marker-end="url(#ah)"/><text class="lab" x="308" y="606">yes · run</text></g>
+                <g><rect class="box" x="180" y="620" width="240" height="40" rx="10"/><text class="t" x="300" y="645" text-anchor="middle">Compile · load class files</text></g>
+                <g><path class="e" d="M300 660 V693" marker-end="url(#ah)"/></g>
+                <g><rect class="dec" x="180" y="695" width="240" height="40" rx="20"/><text class="t" x="300" y="720" text-anchor="middle">Analysis succeeded?</text></g>
+                <g><path class="e" d="M300 735 V768" marker-end="url(#ah)"/><text class="lab" x="308" y="756">yes</text></g>
+                <g><rect class="dec" x="180" y="770" width="240" height="40" rx="20"/><text class="t" x="300" y="795" text-anchor="middle">Test classes reach change?</text></g>
+                <g><path class="e ok" d="M300 810 V848" marker-end="url(#ah-ok)"/><text class="lab ok" x="308" y="832">yes</text></g>
+                <g class="term T-sub"><rect x="180" y="850" width="240" height="52" rx="12"/><text class="tt" x="300" y="872" text-anchor="middle">SUBSET</text><text class="ts" x="300" y="890" text-anchor="middle">+ excludesFile / impact.testsFile</text></g>
+
+                <g><path class="e all" d="M420 115 H660"/><text class="lab all" x="436" y="109">no</text></g>
+                <g><path class="e all" d="M420 190 H660"/><text class="lab all" x="436" y="184">no</text></g>
+                <g><path class="e all" d="M420 265 H660"/><text class="lab all" x="436" y="259">changed</text></g>
+                <g><path class="e all" d="M420 340 H660"/><text class="lab all" x="436" y="334">build input / other path</text></g>
+                <g><path class="e all" d="M660 115 V340"/><path class="e all" d="M660 227 H696" marker-end="url(#ah-all)"/></g>
+                <g class="term T-all"><rect x="698" y="200" width="200" height="54" rx="12"/><text class="tt" x="798" y="223" text-anchor="middle">ALL</text><text class="ts" x="798" y="241" text-anchor="middle">clean verify · clean check</text></g>
+
+                <g><path class="e" d="M180 415 H152" marker-end="url(#ah)"/><text class="lab" x="166" y="408" text-anchor="middle">no</text></g>
+                <g class="term T-none"><rect x="20" y="390" width="130" height="50" rx="12"/><text class="tt" x="85" y="411" text-anchor="middle">NONE</text><text class="ts" x="85" y="428" text-anchor="middle">clean only</text></g>
+                <g><path class="e run" d="M180 565 H152" marker-end="url(#ah-run)"/><text class="lab run" x="166" y="558" text-anchor="middle">no</text></g>
+                <g class="term T-mod"><rect x="20" y="540" width="130" height="50" rx="12"/><text class="tt" x="85" y="561" text-anchor="middle">MODULES</text><text class="ts" x="85" y="578" text-anchor="middle">verify -pl … -am</text></g>
+                <g><path class="e run d" d="M180 715 H85 V592" marker-end="url(#ah-run)"/><text class="lab run" x="160" y="708" text-anchor="middle">no</text><text class="lab run" x="93" y="660">fallback</text></g>
+                <g><path class="e" d="M420 790 H478" marker-end="url(#ah)"/><text class="lab" x="446" y="783" text-anchor="middle">no</text></g>
+                <g class="term T-none"><rect x="480" y="765" width="190" height="50" rx="12"/><text class="tt" x="575" y="786" text-anchor="middle">NONE</text><text class="ts" x="575" y="803" text-anchor="middle">compile + verify, no tests</text></g>
+
+                <g>
+                  <text class="cap" x="698" y="640">LEGEND</text>
+                  <rect class="box" x="698" y="654" width="34" height="20" rx="5"/><text class="s" x="744" y="668">step</text>
+                  <rect class="dec" x="698" y="684" width="34" height="20" rx="10"/><text class="s" x="744" y="698">question</text>
+                  <rect x="698" y="714" width="34" height="20" rx="6" style="fill: var(--modules)"/><text class="s" x="744" y="728">selection mode</text>
+                  <path class="e d" d="M698 754 H732"/><text class="s" x="744" y="758">fallback / side exit</text>
+                </g>
+              </svg>
+            </div>
+            <figcaption>Every exit is a selection mode. Anything the selector cannot place, including build scripts, dependency versions and <code>impact.json</code> itself, routes to <code>ALL</code>.</figcaption>
+          </figure>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 3</b>Dependent closure</span><span>projects/maven</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 210" role="img" aria-labelledby="f3t f3d">
+                <title id="f3t">Module closure example</title>
+                <desc id="f3d">A change to TaxRules.java marks pricing. Checkout depends on pricing, so it is selected too. Runtime has no edge to pricing and is not built.</desc>
+                <g><rect class="chip" x="70" y="14" width="170" height="30" rx="15"/><text class="m" x="155" y="33" text-anchor="middle">✎ TaxRules.java</text></g>
+                <g><path class="e d all" d="M155 44 V72" marker-end="url(#ah-all)"/></g>
+                <g><rect class="sel" x="60" y="74" width="190" height="64" rx="12"/><text class="t" x="155" y="102" text-anchor="middle">pricing</text><text class="s" x="155" y="121" text-anchor="middle">changed · tests run</text></g>
+                <g><path class="e run" d="M250 106 H378" marker-end="url(#ah-run)"/><text class="lab run" x="314" y="98" text-anchor="middle">dependent</text><text class="lab" x="314" y="126" text-anchor="middle">checkout → pricing</text></g>
+                <g><rect class="sel" x="380" y="74" width="190" height="64" rx="12"/><text class="t" x="475" y="102" text-anchor="middle">checkout</text><text class="s" x="475" y="121" text-anchor="middle">dependent · tests run</text></g>
+                <g><rect class="off" x="700" y="74" width="190" height="64" rx="12"/><text class="t" x="795" y="102" text-anchor="middle">runtime</text><text class="s" x="795" y="121" text-anchor="middle">no edge · not built</text></g>
+                <g><text class="m" x="60" y="176">maven   clean verify -pl checkout,pricing -am -Dimpact.skip.runtime=true …</text>
+                   <text class="m" x="60" y="196">gradle  clean :checkout:check :pricing:check -Pimpact.modules=checkout,pricing</text></g>
+              </svg>
+            </div>
+            <figcaption>Selection follows declared edges in reverse: whatever depends on a changed module may break with it. <code>-am</code> still builds upstream modules, with their tests skipped.</figcaption>
+          </figure>
+
+          <h3>Step by step <small>main.rs</small></h3>
+          <ol class="steps">
+            <li><b>Read configuration</b><span class="where">Config::read</span><p>Tool, module graph, <code>ignore</code> globs, opt-ins. Unknown fields, missing modules or paths outside the workspace are errors, not fallbacks.</p></li>
+            <li><b>Collect changes</b><span class="where">changed_paths</span><p>Merge base of <code>REV</code> and HEAD; committed, staged, unstaged, deleted, renamed and untracked paths. Submodule updates count even when Git configuration ignores them.</p><span class="tags"><span class="tag m-all">no history → ALL</span></span></li>
+            <li><b>Check the fingerprint</b><span class="where">fingerprint.rs</span><p>Hash of POMs, Gradle scripts, <code>.mvn/</code>, <code>gradle/</code>, <code>buildSrc</code>. A mismatch means the declared graph may be stale.</p><span class="tags"><span class="tag m-all">mismatch → ALL · run sieve refresh</span></span></li>
+            <li><b>Classify paths</b><span class="where">Config::select</span><p>Ignored → skip. <code>&lt;module&gt;/src/**</code> → that module. Default ignore patterns never hide module sources (a module named <code>docs</code> still counts); explicit ones do.</p><span class="tags"><span class="tag m-all">other → ALL</span><span class="tag m-none">only ignored → NONE</span></span></li>
+            <li><b>Close over dependents</b><span class="where">Config::select</span><p>Repeat until stable: a module with a selected dependency becomes selected.</p><span class="tags"><span class="tag m-mod">→ MODULES</span></span></li>
+            <li><b>Refine to classes</b><span class="where">Selection::refine</span><p>Only with <code>class_level</code>, only in <code>run</code>. See section 04.</p><span class="tags"><span class="tag m-sub">→ SUBSET</span><span class="tag m-none">→ NONE</span><span class="tag m-mod">fallback keeps MODULES</span></span></li>
+            <li><b>Run the native build</b><span class="where">build_args</span><p>Write <code>--output</code>, delete stale Surefire/Failsafe reports outside the reactor, start the build, return its exit status.</p></li>
+          </ol>
+        </section>
+
+        <!-- 04 -->
+        <section class="sec" id="class-level" aria-labelledby="h4s">
+          <div class="sec-head"><span class="num">04</span><h2 id="h4s">Class-level analysis</h2>
+            <p class="kicker">Module selection runs every test of a module, and a single-module project has only one.
+              Opt in with <code>"class_level": true</code> and <code>run</code> compiles the selection, then follows
+              bytecode from changed classes to test classes.</p></div>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 4</b>Refine pipeline</span><span>classes.rs · generated.rs</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 420" role="img" aria-labelledby="f4t f4d">
+                <title id="f4t">Class-level refine pipeline</title>
+                <desc id="f4d">Changed sources are compiled, class files of every module are loaded, and a reverse-edge graph is built. Impact propagates by six rules. If test classes are reached the result is SUBSET, otherwise NONE. Optional generated inputs are compared at the merge base. Unmappable changes fall back to MODULES.</desc>
+                <g><rect class="box" x="20" y="30" width="190" height="68" rx="12"/><text class="t" x="36" y="56">Changed sources</text><text class="s" x="36" y="75">mapped to classes by</text><text class="s" x="36" y="89">declared package</text></g>
+                <g><path class="e" d="M210 64 H248" marker-end="url(#ah)"/></g>
+                <g><rect class="box" x="250" y="30" width="190" height="68" rx="12"/><text class="t" x="266" y="56">Compile selection</text><text class="m" x="266" y="75">test-compile -pl … -am</text><text class="m" x="266" y="89">:m:impactCompile</text></g>
+                <g><path class="e" d="M440 64 H478" marker-end="url(#ah)"/></g>
+                <g><rect class="box" x="480" y="30" width="190" height="68" rx="12"/><text class="t" x="496" y="56">Load class files</text><text class="s" x="496" y="75">every module, including</text><text class="s" x="496" y="89">unselected ones</text></g>
+                <g><path class="e" d="M670 64 H708" marker-end="url(#ah)"/></g>
+                <g><rect class="box" x="710" y="30" width="190" height="68" rx="12"/><text class="t" x="726" y="56">Reverse edges</text><text class="s" x="726" y="75">refs · supertypes · names in</text><text class="s" x="726" y="89">strings · Kotlin inline maps</text></g>
+
+                <g><path class="e d" d="M115 98 V120" marker-end="url(#ah)"/></g>
+                <g><rect class="lane" x="20" y="122" width="420" height="50" rx="12"/><text class="t" x="36" y="143">Generated inputs <tspan class="s">(optional, Maven)</tspan></text><text class="s" x="36" y="161">merge-base worktree runs generate-test-sources → diff</text></g>
+                <g><path class="e d" d="M440 147 H575 V100" marker-end="url(#ah)"/><text class="lab" x="452" y="164">changed generated sources</text></g>
+
+                <g><path class="e" d="M805 98 V186 H300 V208" marker-end="url(#ah)"/><text class="lab" x="560" y="180">walk from changed classes</text></g>
+                <g><rect class="box" x="20" y="210" width="560" height="134" rx="14"/><text class="t" x="36" y="233">Propagate impact</text></g>
+                <g><rect class="chip" x="36" y="244" width="262" height="24" rx="12"/><text class="s" x="48" y="260">type → its subtypes</text></g>
+                <g><rect class="chip" x="306" y="244" width="262" height="24" rx="12"/><text class="s" x="318" y="260">implementation → callers of supertypes</text></g>
+                <g><rect class="chip" x="36" y="274" width="262" height="24" rx="12"/><text class="s" x="48" y="290">static final constant → classes naming it</text></g>
+                <g><rect class="chip" x="306" y="274" width="262" height="24" rx="12"/><text class="s" x="318" y="290">DI component → context tests, slice-aware</text></g>
+                <g><rect class="chip" x="36" y="304" width="262" height="24" rx="12"/><text class="s" x="48" y="320">scanning tests (ArchUnit, suites) → always</text></g>
+                <g><rect class="chip" x="306" y="304" width="262" height="24" rx="12"/><text class="s" x="318" y="320">class named in src/ text file → fallback</text></g>
+
+                <g><path class="e" d="M580 276 H608" marker-end="url(#ah)"/></g>
+                <g><rect class="dec" x="610" y="256" width="150" height="40" rx="20"/><text class="t" x="685" y="281" text-anchor="middle">Tests reached?</text></g>
+                <g><path class="e ok" d="M760 276 H775 V234 H788" marker-end="url(#ah-ok)"/><text class="lab ok" x="769" y="252" text-anchor="end">yes</text></g>
+                <g><path class="e" d="M775 276 V318 H788" marker-end="url(#ah)"/><text class="lab" x="769" y="306" text-anchor="end">no</text></g>
+                <g class="term T-sub"><rect x="790" y="212" width="115" height="44" rx="10"/><text class="tt" x="847" y="231" text-anchor="middle">SUBSET</text><text class="ts" x="847" y="247" text-anchor="middle">+ reasons</text></g>
+                <g class="term T-none"><rect x="790" y="296" width="115" height="44" rx="10"/><text class="tt" x="847" y="315" text-anchor="middle">NONE</text><text class="ts" x="847" y="331" text-anchor="middle">compile only</text></g>
+
+                <g><path class="e d run" d="M300 344 V370" marker-end="url(#ah-run)"/></g>
+                <g><rect class="fb" x="20" y="372" width="885" height="38" rx="12"/><text class="t fb-t" x="36" y="396">Fallback · keep MODULES</text><text class="s" x="228" y="396">deleted source · package-info / module-info · non-JVM file under src/ · unreadable class · resource-named class</text></g>
+              </svg>
+            </div>
+            <figcaption>The graph spans unselected modules, because a path from a test to a change may pass through a dependency. The second build skips <code>clean</code> and reuses the compiled main classes.</figcaption>
+          </figure>
+
+          <ol class="rules">
+            <li><b>Subtypes.</b> A changed or affected type affects its subtypes.</li>
+            <li><b>Implementations.</b> A changed implementation affects callers of its interfaces and superclasses (DI, <code>ServiceLoader</code>), not sibling implementations. Decorators count as callers.</li>
+            <li><b>Inlined constants.</b> Changed non-private <code>static final</code> constants affect every class whose source names them, repeated for derived constants, plus every class without a findable source.</li>
+            <li><b>Components.</b> A reached DI component selects every context test (Spring, Micronaut, Quarkus, Helidon, Weld, Arquillian, Modulith), narrowed by Spring Boot slice rules.</li>
+            <li><b>Scanning tests.</b> ArchUnit, Modulith <code>ApplicationModules</code>, package-selecting suites, Cucumber, ClassGraph and Reflections leave no reference, so any change selects them.</li>
+            <li><b>Named in text.</b> A class named in Spring XML, logging or a library service file under <code>src/</code> that reaches a change falls back to <code>MODULES</code>; <code>spring.factories</code> and <code>*.imports</code> classes join every context instead.</li>
+          </ol>
+
+          <h3>Why a test was selected <small>reasons</small></h3>
+          <div class="chain"><b>a.ServiceTest</b> → a.Service → a.Api, implemented by <i>a.Impl (changed)</i></div>
+          <p><code>--output</code> lists one chain per selected test. Maven gets a Surefire/Failsafe excludes file with the unselected classes
+            (plus the default <code>**/*$*</code>), so POM includes and the unit/integration split survive; Gradle gets
+            <code>-Pimpact.testsFile</code>. Static analysis still cannot see reflection built from non-constant strings,
+            resources outside <code>src/</code>, context annotations composed in library jars, or unlisted frameworks.</p>
+        </section>
+
+        <!-- 05 -->
+        <section class="sec" id="adapters" aria-labelledby="h5s">
+          <div class="sec-head"><span class="num">05</span><h2 id="h5s">Build adapters</h2>
+            <p class="kicker">Sieve never replaces the build. It passes properties and scopes to the build tool it found,
+              preferring the project's wrapper.</p></div>
+          <div class="cards two">
+            <article class="card"><h3>Maven <small>setup.rs</small></h3>
+              <p><code>sieve init</code> reads effective models, writes the graph and fingerprint, and adds per-module
+                <code>impact.skip.&lt;module&gt;</code> properties wired to Surefire/Failsafe <code>skipTests</code>.
+                <code>-am</code> dependencies compile, test JARs still work, their tests stay skipped.</p>
+              <dl><dt>Edges</dt><dd>declared deps, sibling build plugins, plugin deps, processor paths, unpacked artifacts, sibling dirs in config</dd></dl></article>
+            <article class="card"><h3>Gradle <small>gradle.init.gradle</small></h3>
+              <p>A bundled init script passed with <code>--init-script</code>. No build-file edits, Groovy and Kotlin DSL,
+                configuration-cache safe, Gradle 7.6.3+.</p>
+              <dl><dt>impactInit</dt><dd>reports the project graph for <code>init</code></dd>
+                <dt>modules</dt><dd><code>-Pimpact.modules</code> disables other <code>Test</code> tasks</dd>
+                <dt>tests</dt><dd><code>-Pimpact.testsFile</code> filters to listed classes</dd>
+                <dt>classes</dt><dd><code>impactCompile</code>, <code>impactClasses</code></dd></dl></article>
+          </div>
+          <p><code>sieve refresh</code> reruns discovery after build changes and keeps extra edges between surviving modules
+            and the <code>class_level</code> choice. Setup refuses nested or custom layouts, composite builds, Android and
+            Kotlin Multiplatform rather than guessing.</p>
+        </section>
+
+        <!-- 06 -->
+        <section class="sec" id="local" aria-labelledby="h6s">
+          <div class="sec-head"><span class="num">06</span><h2 id="h6s">Local mode</h2>
+            <p class="kicker">Static analysis runs every Spring context test for any component edit. Runtime records narrow that
+              on developer machines: single-module Maven, Java 24+ test JVM, one Maven start. Opt in with
+              <code class="nw">sieve run --records</code> or <code>"records": true</code>.
+              <a href="../docs/adr/0001-record-runtime-evidence-for-context-tests.md">ADR 0001</a> ·
+              <a href="../docs/adr/0002-select-tests-inside-the-test-jvm.md">ADR 0002</a></p></div>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 5</b>Before Maven starts</span><span>records::run</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 200" role="img" aria-labelledby="f5t f5d">
+                <title id="f5t">Local run preflight</title>
+                <desc id="f5d">The run locks the workspace. If nothing changed since the last passing run the result is NONE and Maven does not start. Otherwise, if stale output is possible, Maven runs clean verify; if not, an incremental verify.</desc>
+                <g><rect class="start" x="20" y="74" width="150" height="40" rx="20"/><text class="inv t" x="95" y="99" text-anchor="middle">run --records</text></g>
+                <g><path class="e" d="M170 94 H198" marker-end="url(#ah)"/></g>
+                <g><text class="s" x="335" y="58" text-anchor="middle">lock · hash contents, inputs, command, env, version</text><rect class="dec" x="200" y="74" width="270" height="40" rx="20"/><text class="t" x="335" y="99" text-anchor="middle">Unchanged since last pass?</text></g>
+                <g><path class="e" d="M335 114 V146" marker-end="url(#ah)"/><text class="lab" x="343" y="134">yes</text></g>
+                <g class="term T-none"><rect x="245" y="148" width="180" height="44" rx="12"/><text class="tt" x="335" y="167" text-anchor="middle">NONE</text><text class="ts" x="335" y="183" text-anchor="middle">Maven not started</text></g>
+                <g><path class="e" d="M470 94 H508" marker-end="url(#ah)"/><text class="lab" x="489" y="87" text-anchor="middle">no</text></g>
+                <g><text class="s" x="640" y="58" text-anchor="middle">delete/rename · build or generated input · first run</text><rect class="dec" x="510" y="74" width="260" height="40" rx="20"/><text class="t" x="640" y="99" text-anchor="middle">Stale output possible?</text></g>
+                <g><path class="e" d="M770 94 H782 V40 H796" marker-end="url(#ah)"/><text class="lab" x="776" y="62" text-anchor="end">yes</text></g>
+                <g><path class="e" d="M782 94 V150 H796" marker-end="url(#ah)"/><text class="lab" x="776" y="132" text-anchor="end">no</text></g>
+                <g class="term T-ink"><rect x="798" y="18" width="112" height="44" rx="12"/><text class="tt" x="854" y="37" text-anchor="middle">clean verify</text><text class="ts" x="854" y="53" text-anchor="middle">+ agent</text></g>
+                <g class="term T-ink"><rect x="798" y="128" width="112" height="44" rx="12"/><text class="tt" x="854" y="147" text-anchor="middle">verify</text><text class="ts" x="854" y="163" text-anchor="middle">incremental</text></g>
+              </svg>
+            </div>
+            <figcaption>The shortcut hashes file contents as well as metadata: an edit that keeps its modification time still forces <code>clean</code>, so Maven cannot test stale classes. Concurrent runs in one workspace wait on an OS file lock.</figcaption>
+          </figure>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 6</b>One run, end to end</span><span>agent/ ↔ records.rs</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 470" role="img" aria-labelledby="f6t f6d">
+                <title id="f6t">Local mode sequence</title>
+                <desc id="f6d">sieve run starts Maven with the agent in JDK_JAVA_OPTIONS. Maven forks the test JVM. At discovery the agent's filter runs sieve decide, which reads records and returns classes to drop. Tests run while probes collect evidence. At JVM exit the agent runs sieve record, which merges evidence into records.</desc>
+                <g><rect class="head" x="20" y="12" width="150" height="36" rx="18"/><text class="inv t" x="95" y="35" text-anchor="middle">run --records</text></g>
+                <g><rect class="head" x="200" y="12" width="150" height="36" rx="18"/><text class="inv t" x="275" y="35" text-anchor="middle">Maven</text></g>
+                <g><rect class="head" x="380" y="12" width="170" height="36" rx="18"/><text class="inv t" x="465" y="35" text-anchor="middle">Test JVM + agent</text></g>
+                <g><rect class="head" x="580" y="12" width="170" height="36" rx="18"/><text class="inv t" x="665" y="35" text-anchor="middle">decide / record</text></g>
+                <g><rect class="head" x="780" y="12" width="120" height="36" rx="18"/><text class="inv t" x="840" y="35" text-anchor="middle">.sieve/</text></g>
+                <g><line class="life" x1="95" y1="48" x2="95" y2="458"/><line class="life" x1="275" y1="48" x2="275" y2="458"/><line class="life" x1="465" y1="48" x2="465" y2="458"/><line class="life" x1="665" y1="48" x2="665" y2="458"/><line class="life" x1="840" y1="48" x2="840" y2="458"/></g>
+
+                <g><rect class="note" x="20" y="62" width="330" height="40" rx="8"/><text class="s" x="32" y="79">extract embedded jars to SIEVE_CACHE_DIR,</text><text class="s" x="32" y="94">verify bytes, write agent options file</text></g>
+                <g><path class="e" d="M95 128 H267" marker-end="url(#ah)"/><text class="lab" x="103" y="121">[clean] verify</text><text class="m" x="103" y="143">JDK_JAVA_OPTIONS=-javaagent:…</text></g>
+                <g><rect class="act" x="269" y="150" width="12" height="282" rx="3"/></g>
+                <g><path class="e" d="M281 170 H457" marker-end="url(#ah)"/><text class="lab" x="289" y="163">fork test JVM</text></g>
+                <g><rect class="act" x="459" y="178" width="12" height="222" rx="3"/><text class="s" x="477" y="195">Boot (Java 8) → Agent (24+)</text><text class="s" x="477" y="209">Transformer adds probes</text></g>
+                <g><path class="e all" d="M471 232 H657" marker-end="url(#ah-all)"/><text class="lab all" x="479" y="225">discovery · Filter</text></g>
+                <g><rect class="act" x="659" y="234" width="12" height="40" rx="3"/><path class="e" d="M671 246 H832" marker-end="url(#ah)"/><text class="lab" x="679" y="239">read records</text></g>
+                <g><path class="e d" d="M659 268 H473" marker-end="url(#ah)"/><text class="lab" x="479" y="284">classes to drop</text></g>
+                <g><rect class="note" x="380" y="300" width="250" height="40" rx="8"/><text class="s" x="392" y="317">run remaining tests; probes fill buckets</text><text class="s" x="392" y="332">per class · per context startup</text></g>
+                <g><path class="e all" d="M471 368 H657" marker-end="url(#ah-all)"/><text class="lab all" x="479" y="361">JVM exit · raw evidence</text></g>
+                <g><rect class="act" x="659" y="370" width="12" height="36" rx="3"/><path class="e" d="M671 390 H832" marker-end="url(#ah)"/><text class="lab" x="679" y="383">merge into records</text></g>
+                <g><path class="e d" d="M269 438 H97" marker-end="url(#ah)"/><text class="lab" x="103" y="431">exit status</text><text class="m" x="103" y="454">--output: reasons · skipped · speedups</text></g>
+              </svg>
+            </div>
+            <figcaption>Selection rules stay in Rust; the agent only asks and reports. It reaches the test JVM through <code>JDK_JAVA_OPTIONS</code>, so POM <code>argLine</code> settings such as JaCoCo's are kept.</figcaption>
+          </figure>
+
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 7</b>Drop or run, per test class</span><span>records::decide</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 640" role="img" aria-labelledby="f7t f7d">
+                <title id="f7t">Per-test-class decision in local mode</title>
+                <desc id="f7d">A test class without a record runs, unless a base is given and static analysis shows it reaches no change. With a record, it runs if the last run failed or if the test class, JDK, build inputs, executed method bodies, read files, class shapes, Spring wiring or string-named classes changed. Otherwise it is dropped.</desc>
+                <g><rect class="start" x="290" y="20" width="240" height="40" rx="20"/><text class="inv t" x="410" y="45" text-anchor="middle">Discovered test class</text></g>
+                <g><path class="e" d="M410 60 V93" marker-end="url(#ah)"/></g>
+                <g><rect class="dec" x="240" y="95" width="340" height="40" rx="20"/><text class="t" x="410" y="120" text-anchor="middle">Record exists in .sieve/records?</text></g>
+                <g><path class="e" d="M410 135 V173" marker-end="url(#ah)"/><text class="lab" x="418" y="158">yes</text></g>
+                <g><rect class="dec" x="240" y="175" width="340" height="40" rx="20"/><text class="t" x="410" y="200" text-anchor="middle">Last recorded run passed?</text></g>
+                <g><path class="e" d="M410 215 V253" marker-end="url(#ah)"/><text class="lab" x="418" y="238">yes</text></g>
+                <g><rect class="dec" x="240" y="255" width="340" height="40" rx="20"/><text class="t" x="410" y="280" text-anchor="middle">Test class, JDK, build inputs same?</text></g>
+                <g><path class="e" d="M410 295 V333" marker-end="url(#ah)"/><text class="lab" x="418" y="318">yes</text></g>
+                <g><rect class="dec" x="240" y="335" width="340" height="40" rx="20"/><text class="t" x="410" y="360" text-anchor="middle">Executed method bodies same?</text></g>
+                <g><path class="e" d="M410 375 V413" marker-end="url(#ah)"/><text class="lab" x="418" y="398">yes</text></g>
+                <g><rect class="dec" x="240" y="415" width="340" height="40" rx="20"/><text class="t" x="410" y="440" text-anchor="middle">Read, looked-up, listed files same?</text></g>
+                <g><path class="e" d="M410 455 V493" marker-end="url(#ah)"/><text class="lab" x="418" y="478">yes</text></g>
+                <g><rect class="dec" x="240" y="495" width="340" height="40" rx="20"/><text class="t" x="410" y="520" text-anchor="middle">Shapes, wiring, named classes same?</text></g>
+                <g><path class="e ok" d="M410 535 V573" marker-end="url(#ah-ok)"/><text class="lab ok" x="418" y="558">yes</text></g>
+                <g class="term T-sub"><rect x="310" y="575" width="200" height="52" rx="12"/><text class="tt" x="410" y="597" text-anchor="middle">DROP</text><text class="ts" x="410" y="615" text-anchor="middle">unchanged test record</text></g>
+
+                <g><path class="e run" d="M240 195 H130"/><text class="lab run" x="190" y="188" text-anchor="middle">failed</text></g>
+                <g><path class="e run" d="M240 275 H130"/><text class="lab run" x="190" y="268" text-anchor="middle">changed</text></g>
+                <g><path class="e run" d="M240 355 H130"/><text class="lab run" x="190" y="348" text-anchor="middle">changed</text></g>
+                <g><path class="e run" d="M240 435 H130"/><text class="lab run" x="190" y="428" text-anchor="middle">changed</text></g>
+                <g><path class="e run" d="M240 515 H130"/><text class="lab run" x="190" y="508" text-anchor="middle">changed</text></g>
+                <g><path class="e run" d="M130 195 V573" marker-end="url(#ah-run)"/></g>
+                <g class="term T-mod"><rect x="40" y="575" width="180" height="52" rx="12"/><text class="tt" x="130" y="597" text-anchor="middle">RUN</text><text class="ts" x="130" y="615" text-anchor="middle">and extend the record</text></g>
+
+                <g><path class="e" d="M580 115 H618" marker-end="url(#ah)"/><text class="lab" x="599" y="108" text-anchor="middle">no</text></g>
+                <g><text class="s" x="760" y="84" text-anchor="middle">static class-level fallback, base assumed green</text><rect class="dec" x="620" y="95" width="280" height="40" rx="20"/><text class="t" x="760" y="120" text-anchor="middle">--base: reaches no change?</text></g>
+                <g><path class="e ok" d="M760 135 V150 H676 V173" marker-end="url(#ah-ok)"/><text class="lab ok" x="700" y="146">yes</text></g>
+                <g><path class="e run" d="M760 150 H837 V173" marker-end="url(#ah-run)"/><text class="lab run" x="806" y="146">no</text></g>
+                <g class="term T-sub"><rect x="596" y="175" width="160" height="48" rx="12"/><text class="tt" x="676" y="195" text-anchor="middle">DROP</text><text class="ts" x="676" y="212" text-anchor="middle">reaches no change</text></g>
+                <g class="term T-mod"><rect x="770" y="175" width="135" height="48" rx="12"/><text class="tt" x="837" y="195" text-anchor="middle">RUN</text><text class="ts" x="837" y="212" text-anchor="middle">then record</text></g>
+
+                <g>
+                  <text class="cap" x="620" y="290">ALWAYS RUN · DROP NOTHING</text>
+                  <text class="s" x="620" y="314">• -Dtest / -Dit.test always run</text>
+                  <text class="s" x="620" y="334">• failed classes run until they pass</text>
+                  <text class="s" x="620" y="354">• parallel test JVM: no records kept</text>
+                  <text class="s" x="620" y="374">• probe error or no instrumented class</text>
+                  <text class="s" x="620" y="394">• class files changed mid-run</text>
+                </g>
+              </svg>
+            </div>
+            <figcaption>“Same” compares change-insensitive digests from <a href="../src/bytecode.rs">bytecode.rs</a>: bodies hashed without debug information and with constant-pool references resolved, so comment edits and renumbered constants change nothing.</figcaption>
+          </figure>
+
+          <h3>Agent pieces <small>agent/src/sieve</small></h3>
+          <div class="table"><table>
+            <thead><tr><th>Class</th><th>Role</th></tr></thead>
+            <tbody>
+              <tr><td><code>Boot</code></td><td>Entry point compiled for Java 8, since <code>JDK_JAVA_OPTIONS</code> reaches every <code>java</code> launch. Hands off on Java 24+.</td></tr>
+              <tr><td><code>Agent</code></td><td>Reads the options file written by <code>sieve</code>; stays inactive in the build tool's own JVM.</td></tr>
+              <tr><td><code>Transformer</code></td><td>Class-File API: method-entry probes on project classes, file probes on JDK file APIs.</td></tr>
+              <tr><td><code>Probe</code> · <code>Bucket</code></td><td>Bootstrap-loaded sinks: methods and files per test class, per context startup, and the rest. Never touch files.</td></tr>
+              <tr><td><code>Filter</code></td><td>JUnit <code>PostDiscoveryFilter</code>: drops the classes <code>sieve decide</code> lists, prunes emptied containers.</td></tr>
+              <tr><td><code>Listener</code></td><td>Attributes probe hits to the running top-level class, records outcomes, detects parallel execution.</td></tr>
+              <tr><td><code>spring/*</code></td><td><code>ContextHook</code>, <code>ContextUse</code>, <code>BootRun</code>: startup work counts for every class using the context, cached or not.</td></tr>
+              <tr><td><code>State</code></td><td>Per-JVM state and the subprocess conversation with the binary.</td></tr>
+            </tbody>
+          </table></div>
+          <p>Native <code>verify</code> packaging stays enabled. The <code>reuse</code>, <code>jgitver</code>, <code>mvnd</code> and
+            <code>repackage</code> speed-ups are opt-in through <code>--with</code>. Records still assume observed paths cover test
+            behavior and tests are independent; environment inputs, external services, floating image tags and jars changed
+            without a build-input change need full-suite validation.</p>
+          <p><a href="../build.rs">build.rs</a> compiles the agent against API stubs in three layers (<code>Boot</code> for Java 8,
+            most classes for 17, <code>Transformer</code> for 24) and embeds both jars with <code>include_bytes!</code>, so binary
+            and agent cannot drift. <code>--no-default-features</code> leaves the agent and local mode out.</p>
+        </section>
+
+        <!-- 07 -->
+        <section class="sec" id="validation" aria-labelledby="h7s">
+          <div class="sec-head"><span class="num">07</span><h2 id="h7s">Validation</h2>
+            <p class="kicker">The oracle is independent: selector code never reads expectations, and expectations are never
+              weakened to make a selector pass.</p></div>
+          <figure class="fig">
+            <div class="fig-bar"><span><b>Fig. 8</b>Oracle loop</span><span>fixtures.rs · replay.rs · catalog.rs</span></div>
+            <div class="fig-body">
+              <svg class="fx" viewBox="0 0 920 250" role="img" aria-labelledby="f8t f8d">
+                <title id="f8t">Validation oracle loop</title>
+                <desc id="f8d">Scenario expectations and a mutation are applied to an isolated fixture. A selected run and a full run produce JUnit XML, which is compared against the expectations. A test that fails in the full run but did not run in the selected run is a missed failure.</desc>
+                <g transform="translate(0 30)">
+                  <g><path class="e d all" d="M100 60 V-14 H715 V58" marker-end="url(#ah-all)"/><text class="lab all" x="408" y="-18" text-anchor="middle">expectations bypass the selector</text></g>
+                  <g><rect class="box" x="20" y="60" width="160" height="60" rx="12"/><text class="t" x="36" y="84">scenarios.json</text><text class="s" x="36" y="102">mutation + expected tests</text></g>
+                  <g><path class="e" d="M180 90 H213" marker-end="url(#ah)"/></g>
+                  <g><rect class="box" x="215" y="60" width="170" height="60" rx="12"/><text class="t" x="231" y="84">Isolated fixture</text><text class="s" x="231" y="102">prepare · apply mutation</text></g>
+                  <g><path class="e" d="M385 90 H405 V30 H423" marker-end="url(#ah)"/><path class="e" d="M405 90 V160 H423" marker-end="url(#ah)"/></g>
+                  <g><rect class="sel" x="425" y="0" width="180" height="60" rx="12"/><text class="t" x="441" y="24">Selected run</text><text class="m" x="441" y="42">sieve run --base HEAD</text></g>
+                  <g><rect class="box" x="425" y="130" width="180" height="60" rx="12"/><text class="t" x="441" y="154">Full run</text><text class="m" x="441" y="172">native verify / check</text></g>
+                  <g><path class="e" d="M605 30 H625 V78 H643" marker-end="url(#ah)"/><path class="e" d="M605 160 H625 V102 H643" marker-end="url(#ah)"/></g>
+                  <g><rect class="box" x="645" y="60" width="140" height="60" rx="12"/><text class="t" x="661" y="84">JUnit XML</text><text class="s" x="661" y="102">executed + failures</text></g>
+                  <g><path class="e ok" d="M785 90 H798 V52 H811" marker-end="url(#ah-ok)"/><path class="e all" d="M798 90 V128 H811" marker-end="url(#ah-all)"/></g>
+                  <g class="term T-sub"><rect x="813" y="30" width="95" height="44" rx="10"/><text class="tt" x="860" y="50" text-anchor="middle">PASS</text><text class="ts" x="860" y="65" text-anchor="middle">oracle met</text></g>
+                  <g class="term T-all"><rect x="813" y="106" width="95" height="44" rx="10"/><text class="tt" x="860" y="126" text-anchor="middle">MISSED</text><text class="ts" x="860" y="141" text-anchor="middle">exit 1</text></g>
+                </g>
+              </svg>
+            </div>
+            <figcaption>A <b>missed failure</b> is a test that fails in the full run but did not run in the selected one. <code>SIEVE_BROKEN_SELECTOR=1</code> makes both selectors drop everything; planted bugs must catch it.</figcaption>
+          </figure>
+          <div class="table"><table>
+            <thead><tr><th>Command</th><th>What it proves</th></tr></thead>
+            <tbody>
+              <tr><td><code>fixtures verify</code></td><td>Each mutation in <code>scenarios.json</code> on <code>projects/maven</code> and <code>projects/gradle</code>: executed JUnit XML covers the required tests and expected failures.</td></tr>
+              <tr><td><code>fixtures benchmark</code></td><td>Alternates native, <code>--full</code> and selected runs; every sample must pass the oracle before timing counts.</td></tr>
+              <tr><td><code>replay</code></td><td>Real first-parent history: selection per commit; with <code>--run</code>, missed failures against the full suite; <code>--walk</code> for local mode.</td></tr>
+              <tr><td><code>catalog</code></td><td>Feedback time per edit kind; <code>--plant</code> injects bugs into changed bodies and fails on any missed failure.</td></tr>
+              <tr><td><code>classify</code></td><td>Weights edit kinds by recent commits.</td></tr>
+            </tbody>
+          </table></div>
+<pre data-lang="shell">cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+target/debug/sieve fixtures verify --tool both --scenario all --selected --class-level \
+  --output validation-results/class-level</pre>
+        </section>
+
+        <!-- 08 -->
+        <section class="sec" id="code-map" aria-labelledby="h8s">
+          <div class="sec-head"><span class="num">08</span><h2 id="h8s">Code map</h2>
+            <p class="kicker">Where to start reading, by concern.</p></div>
+          <div class="table"><table>
+            <thead><tr><th>Where</th><th>Responsibility</th><th>Entry points</th></tr></thead>
+            <tbody>
+              <tr><td><a href="../src/main.rs">src/main.rs</a></td><td>CLI, <code>Config</code>, <code>Selection</code>, Git diff, module selection, build commands</td><td><code>main_result</code> · <code>Config::select</code> · <code>Selection::refine</code> · <code>build_args</code></td></tr>
+              <tr><td><a href="../src/setup.rs">src/setup.rs</a></td><td><code>init</code> / <code>refresh</code>, tool detection, Maven POM adapter</td><td><code>init</code> · <code>install_maven_adapter</code> · <code>gradle_script</code></td></tr>
+              <tr><td><a href="../src/fingerprint.rs">src/fingerprint.rs</a></td><td>Hash of conventional build inputs</td><td><code>build_inputs</code></td></tr>
+              <tr><td><a href="../src/classes.rs">src/classes.rs</a></td><td>Class-file parser, impact graph, DI, slice and scanning rules</td><td><code>parse</code> · <code>load</code> · <code>affected</code></td></tr>
+              <tr><td><a href="../src/generated.rs">src/generated.rs</a></td><td>Generated-source diff at the merge base</td><td><code>Base::start</code> · <code>Base::changes</code></td></tr>
+              <tr><td><a href="../src/records.rs">src/records.rs</a></td><td>Local run, <code>decide</code>, <code>record</code>, <code>env</code>, speed-ups</td><td><code>run</code> · <code>decide</code> · <code>record</code> · <code>agent_jar</code></td></tr>
+              <tr><td><a href="../src/bytecode.rs">src/bytecode.rs</a></td><td>Method-body and class-shape digests</td><td><code>digest</code> · <code>hash</code></td></tr>
+              <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code></td></tr>
+              <tr><td><a href="../agent/">agent/</a> · <a href="../build.rs">build.rs</a></td><td>Test-JVM agent and its build</td><td><code>Boot</code> · <code>Filter</code> · <code>State</code></td></tr>
+              <tr><td>fixtures · replay · catalog · timing</td><td>Validation and measurement</td><td><code>fixtures::main</code> · <code>replay::main</code> · <code>catalog::main</code></td></tr>
+              <tr><td><a href="../projects/">projects/</a> · <a href="../samples/">samples/</a></td><td>Fixtures (<code>maven</code>/<code>gradle</code> parity pair, <code>single-*</code>, <code>records</code>, <code>containers</code>) and demos (<code>bookstore</code>, <code>webshop</code>, <code>selective-performance</code>)</td><td><a href="../scenarios.json">scenarios.json</a></td></tr>
+            </tbody>
+          </table></div>
+        </section>
+
+        <!-- 09 -->
+        <section class="sec" id="walkthrough" aria-labelledby="h9s">
+          <div class="sec-head"><span class="num">09</span><h2 id="h9s">One change, three outcomes</h2>
+            <p class="kicker">Edit <code>pricing/src/main/java/example/TaxRules.java</code> in <code>projects/maven</code>,
+              where <code>checkout</code> depends on <code>pricing</code> and <code>runtime</code> stands alone.</p></div>
+          <div class="cards">
+            <article class="card"><span class="idx">i</span><h3>Module-level</h3><span class="tag m-mod">MODULES</span>
+              <p>The path marks <code>pricing</code>; closure adds <code>checkout</code>. 10 test classes, 12 invocations. The 5 <code>runtime</code> integration tests are skipped.</p></article>
+            <article class="card"><span class="idx">ii</span><h3>Class-level</h3><span class="tag m-sub">SUBSET</span>
+              <p>Both modules compile; only test classes whose bytecode leads to <code>TaxRules</code> run, each with a reason chain.</p></article>
+            <article class="card"><span class="idx">iii</span><h3>Plus a POM edit</h3><span class="tag m-all">ALL</span>
+              <p>Add a dependency to <code>pricing/pom.xml</code> in the same change: the fingerprint no longer matches and the path is a build input.</p></article>
+          </div>
+<pre data-lang="shell"><span class="c"># try it</span>
+sieve fixtures prepare --tool maven --dest /tmp/impact-tax --git
+sieve fixtures apply tax-transitive --workspace /tmp/impact-tax
+sieve select --workspace /tmp/impact-tax --base HEAD
+sieve run    --workspace /tmp/impact-tax --base HEAD   <span class="c"># fails on purpose: the mutation breaks tax tests</span></pre>
+        </section>
+
+        <!-- 10 -->
+        <section class="sec" id="invariants" aria-labelledby="h10s">
+          <div class="sec-head"><span class="num">10</span><h2 id="h10s">Invariants worth keeping</h2>
+            <p class="kicker">A change that breaks one of these needs a new decision, not a patch.</p></div>
+          <ol class="rules">
+            <li>Unknown or unclassified change → <code>ALL</code>; analysis error → the wider selection.</li>
+            <li>Build and test failures propagate. Only fixture mutation runs ignore test failures.</li>
+            <li>Selection JSON is written before tests run, outside the workspace or in an ignored folder.</li>
+            <li><code>scenarios.json</code> stays independent of selector code.</li>
+            <li>Probes never change observed behavior; a possibly unrecorded read discards the run's records.</li>
+            <li>Local mode is for developer machines. CI keeps static selection and a full-suite job.</li>
+          </ol>
+        </section>
+
+        <footer>
+          <span>sieve 0.1.0 · architecture guide</span>
+          <span>Java · Kotlin · Maven · Gradle</span>
+          <a href="https://github.com/preacherxp/sieve">github.com/preacherxp/sieve</a>
+        </footer>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    // Staggered reveal of diagram parts as each figure scrolls into view.
+    const figs = document.querySelectorAll(".fig");
+    figs.forEach((fig) => {
+      const svg = fig.querySelector("svg.fx");
+      const root = svg.querySelector(":scope > g[transform]") || svg;
+      [...root.children]
+        .filter((el) => !["title", "desc", "defs"].includes(el.tagName))
+        .forEach((el, i) => {
+          el.classList.add("n");
+          el.style.transitionDelay = Math.min(i * 28, 900) + "ms";
+        });
+    });
+    const reveal = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("in");
+        reveal.unobserve(entry.target);
+      });
+    }, { rootMargin: "0px 0px -12% 0px" });
+    figs.forEach((fig) => reveal.observe(fig));
+    addEventListener("beforeprint", () => figs.forEach((fig) => fig.classList.add("in")));
+
+    // Contents highlight and reading progress.
+    const links = [...document.querySelectorAll(".toc a")];
+    const byId = new Map(links.map((a) => [a.hash.slice(1), a]));
+    const spy = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        links.forEach((a) => a.removeAttribute("aria-current"));
+        byId.get(entry.target.id)?.setAttribute("aria-current", "true");
+      });
+    }, { rootMargin: "-80px 0px -70% 0px" });
+    document.querySelectorAll("section.sec").forEach((s) => spy.observe(s));
+    const bar = document.querySelector(".progress i");
+    const progress = () => {
+      const max = document.documentElement.scrollHeight - innerHeight;
+      bar.style.width = (max > 0 ? (scrollY / max) * 100 : 0) + "%";
+    };
+    addEventListener("scroll", progress, { passive: true });
+    progress();
+  </script>
+</body>
+</html>

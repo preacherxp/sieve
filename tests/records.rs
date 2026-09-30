@@ -251,6 +251,8 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         (code, names(&selection["tests"])),
         (0, set(&["FormatterTest"]))
     );
+    // Restoring the default invocation reruns records made under different Maven properties.
+    p.expect("default invocation after explicit selection", ALL);
 
     // Framework dispatch, context startup, and resources read at startup.
     p.edit(
@@ -323,7 +325,7 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "{selection:#}"
     );
     p.edit(formatter, "\"!\" + value", "\"#\" + value");
-    let selection = p.expect("after an ignored failure", &["FormatterTest"]);
+    let selection = p.expect("after an ignored failure", &with(ALL, &["ExtraTest"]));
     assert_eq!(
         selection["reasons"]["example.FormatterTest"],
         "Failed last time"
@@ -449,6 +451,105 @@ fn extracted_agent_is_verified_and_replaced() {
 }
 
 #[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the sample's dependencies"]
+fn local_records_invalidate_properties_environment_and_preserved_metadata_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    copy(
+        &Path::new(ROOT).join("samples/selective-performance"),
+        &root,
+    );
+    write(
+        &root,
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true,"record_env":["SIEVE_SAMPLE_ENV"]}"#,
+    );
+    let test = root.join("src/test/java/example/PriceTest.java");
+    let text = fs::read_to_string(&test).unwrap();
+    assert!(text.contains("assertEquals(12, new Price().total(10, 2));"));
+    fs::write(&test, text.replace("assertEquals(12, new Price().total(10, 2));", "assertEquals(12, new Price().total(10, 2));\n        org.junit.jupiter.api.Assertions.assertNotEquals(\"unsafe\", System.getProperty(\"sample.flavor\"));\n        org.junit.jupiter.api.Assertions.assertNotEquals(\"unsafe\", System.getenv(\"SIEVE_SAMPLE_ENV\"));")).unwrap();
+    git(root.to_str().unwrap(), &["init", "-q"]);
+    commit(&root, "base");
+    let maven = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
+    let run = |flavor: &str, environment: &str, options: &[&str]| {
+        let selection = temp.path().join("selection.json");
+        let output = Command::new(BIN)
+            .args([
+                "run",
+                "--workspace",
+                root.to_str().unwrap(),
+                "--executable",
+                &maven,
+                "--output",
+                selection.to_str().unwrap(),
+            ])
+            .args(options)
+            .args([
+                "--",
+                "-q",
+                "-Dsample.delay.ms=0",
+                &format!("-Dsample.flavor={flavor}"),
+            ])
+            .args(std::env::var_os("IMPACT_OFFLINE").map(|_| "-o"))
+            .env("SIEVE_SAMPLE_ENV", environment)
+            .env("SIEVE_CACHE_DIR", temp.path().join("cache"))
+            .output()
+            .unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&selection).unwrap_or_default())
+            .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)));
+        (output.status.code().unwrap(), value)
+    };
+    let (code, first) = run("safe", "safe", &[]);
+    assert_eq!(code, 0, "{first:#}");
+    let (code, unchanged) = run("safe", "safe", &[]);
+    assert_eq!(code, 0, "{unchanged:#}");
+    assert_eq!(unchanged["mode"], "NONE");
+    assert!(unchanged["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no build started"));
+    let (code, properties) = run("unsafe", "safe", &[]);
+    assert_eq!(code, 1, "{properties:#}");
+    assert!(names(&properties["tests"]).contains("PriceTest"));
+    assert_eq!(run("safe", "safe", &[]).0, 0);
+    fs::remove_dir_all(root.join(".sieve/records")).unwrap();
+    let (code, absent_records) = run("unsafe", "safe", &["--base", "HEAD"]);
+    assert_eq!(code, 1, "{absent_records:#}");
+    assert!(names(&absent_records["tests"]).contains("PriceTest"));
+    assert_eq!(run("safe", "safe", &[]).0, 0);
+    let (code, environment) = run("safe", "unsafe", &[]);
+    assert_eq!(code, 1, "{environment:#}");
+    assert!(names(&environment["tests"]).contains("PriceTest"));
+    assert_eq!(run("safe", "safe", &[]).0, 0);
+    // Old record schemas cannot authorize dropping a test, even when its bytecode matches.
+    let record = root.join(".sieve/records/example.PriceTest.json");
+    let mut old: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    old.as_object_mut().unwrap().remove("context");
+    fs::write(&record, serde_json::to_vec(&old).unwrap()).unwrap();
+    fs::write(&test, fs::read(&test).unwrap()).unwrap();
+    let (code, migrated) = run("safe", "safe", &[]);
+    assert_eq!(code, 0, "{migrated:#}");
+    assert!(names(&migrated["tests"]).contains("PriceTest"));
+    let source = root.join("src/main/java/example/Price.java");
+    let metadata = fs::metadata(&source).unwrap();
+    let text = fs::read_to_string(&source).unwrap();
+    fs::write(&source, text.replace("price + tax", "price - tax")).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(source)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
+        .unwrap();
+    let (code, content) = run("safe", "safe", &[]);
+    assert_eq!(code, 1, "{content:#}");
+    assert!(content["reason"]
+        .as_str()
+        .unwrap()
+        .contains("unchanged metadata"));
+    assert!(names(&content["tests"]).contains("PriceTest"));
+}
+
+#[test]
 #[ignore = "requires Docker, a Java 24+ JDK, and Maven"]
 fn container_reuse_keeps_containers_between_runs() {
     let temp = tempfile::tempdir().unwrap();
@@ -484,8 +585,8 @@ fn container_reuse_keeps_containers_between_runs() {
             String::from_utf8_lossy(&output.stderr)
         );
     };
-    run(&[]);
-    run(&[]);
+    run(&["--with", "reuse"]);
+    run(&["--with", "reuse"]);
     run(&["--without", "reuse"]);
     let ids = ids();
     for id in BTreeSet::<&String>::from_iter(&ids) {

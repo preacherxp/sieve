@@ -5,9 +5,10 @@ It supports Java, Kotlin/JVM, and mixed projects using Maven or Gradle. The sele
 fixture manager, validation oracle, and tests are Rust; an optional test-JVM agent for
 local mode is Java.
 
-Selection is conservative and module-level by default, and builds only the selected
-modules and what they depend on. Projects can opt into class-level selection from
-compiled bytecode. Single-module Maven projects can also opt into local mode, which keeps
+Selection is conservative and builds only the selected modules and what they depend on.
+Setup uses module selection by default; projects can opt into class-level selection
+from compiled bytecode after measuring their test costs.
+Single-module Maven projects can also opt into local mode, which keeps
 per-test runtime records and skips tests whose records show no change (see
 [Local mode](#local-mode-test-records)). Build configuration changes or uncertain Git
 history trigger the full suite.
@@ -71,7 +72,11 @@ forces `ALL` when the graph may be stale, including after the build edit was
 committed. It cannot detect changes to external models, environment variables,
 or undeclared runtime dependencies.
 Custom dependency substitution and dependencies introduced through external artifacts
-need manual graph review; automatic setup collects declared inter-project edges.
+need manual graph review. Automatic setup collects declared inter-project edges, and also
+edges the build itself creates: for Maven, a sibling module used as a build plugin, a plugin
+dependency, an annotation processor path, or an unpacked artifact, and a sibling directory
+named in the effective build configuration (such as a shared OpenAPI specification); for
+Gradle, a source set directory inside another project.
 
 Prerequisites: Rust 1.92+ and a JDK 24+ `javac` to install/build the CLI, Git for change
 detection, and the JDK/build tool required by your project. `build.rs` compiles the
@@ -122,11 +127,13 @@ paths inside module source directories such as `src/site/**`. Patterns are relat
 the workspace; a leading `/` anchors them at the repository root.
 `*` and `?` stay within one path segment and `**` crosses segments. Without `ignore`,
 the default is `["README.md", "docs/**", "/README.md", "/docs/**"]`; an explicit list
-replaces it. The samples also ignore the repository's `VALIDATION.md`. Other changes
+replaces it. The default never hides module sources, such as those of a module named
+`docs`. The samples also ignore the repository's `VALIDATION.md`. Other changes
 outside recognized source directories, including build scripts, dependency versions,
 configuration, and shared repository inputs, select ALL. Do not ignore build scripts,
 `impact.json`, or other test inputs: ignored changes never trigger tests. An unavailable base or Git
-history also selects ALL. Invalid configuration fails explicitly.
+history also selects ALL. Invalid configuration fails explicitly. Submodule updates count
+as changes even when `.gitmodules` or Git configuration ignores them.
 
 ```bash
 # Preview a selection without executing tests.
@@ -152,27 +159,32 @@ needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 ### Class-level selection
 
 Module-level selection runs every test of a selected module, and a single-module
-project has only one. Add `"class_level": true` to `impact.json` to narrow a module
-selection to test classes. `run` first compiles the selected modules
+project has only one. Add `"class_level": true` to narrow a module selection to test
+classes. It is opt-in because the extra compilation invocation can outweigh the time
+saved in cheap suites; `refresh` preserves that choice.
+`run` first compiles the selected modules
 (`clean test-compile -pl <selected> -am` on Maven, `clean :<module>:impactCompile` on
 Gradle), then reads the class files of every module:
 
 - Edges follow constant-pool references (class entries, descriptors, generic signatures,
-  annotations), superclasses and interfaces, dotted string constants such as
-  `Class.forName("a.B")` arguments, and Kotlin inline-function source maps. Paths may
-  cross unselected modules.
+  annotations), superclasses and interfaces, class names spelled in string constants
+  (`Class.forName("a.B")`, `@MethodSource("a.B#cases")`, `T(a.B)` in SpEL), and Kotlin
+  inline-function source maps. Paths may cross unselected modules. A source maps to the
+  classes of the package it declares, even when its directory differs.
 - A changed or affected type affects its subtypes. A changed implementation affects
   callers of its interfaces and superclasses, because they may run it through DI or
   `ServiceLoader`, but not the other implementations. A subtype that also calls through
   its supertype (a decorator) is a caller.
 - Compilers copy non-private `static final` constants into callers without a reference.
   When a changed class declares one, every class whose source names the constant or its
-  class is affected, and so is every class whose source cannot be found.
+  class is affected, and so is every class whose source cannot be found. The search
+  repeats for the constants of those classes, which may be computed from the changed one.
 - Classes annotated for dependency-injection scanning (Spring stereotypes and
   configuration, Spring Data, JPA, JAX-RS, Jakarta/`javax` inject and CDI, Micronaut,
   Quarkus) are components. When an affected class is a component, every context test
   (one that starts an application context: Spring TestContext and Boot test annotations, `@MicronautTest`,
-  `@QuarkusTest`, Arquillian, including composed annotations and inherited
+  `@QuarkusTest`, Arquillian, Weld JUnit, `@HelidonTest`, Spring Modulith
+  `@ApplicationModuleTest`, including composed annotations and inherited
   configuration, or a test that boots one itself through `SpringApplication`,
   `SpringApplicationBuilder`, a Spring application context, or Micronaut's
   `ApplicationContext`) is selected in the modules that run, since component scanning
@@ -188,14 +200,26 @@ Gradle), then reads the class files of every module:
   `useDefaultFilters`, other slices, and every slice when the application declares its
   own `@ComponentScan` count as full context tests. Both the Spring Boot 3 and Spring
   Boot 4 annotation packages are recognized.
-- Test classes reaching a change emit `SUBSET` with their binary names in `tests`. None
-  reaching it emits `NONE` with the selected modules: the build compiles and verifies
-  without executing tests.
+- Tests that find classes by scanning (ArchUnit, Spring Modulith `ApplicationModules`,
+  JUnit suites selecting packages or class-path resources, Cucumber, ClassGraph,
+  Reflections) leave no reference to what they check, so any change selects them.
+- A class named in a text file under `src/` (Spring XML, logging or mapping configuration,
+  a service file of a library type such as a JUnit extension) may run wherever the file is
+  read. When such a class reaches a change, selection falls back to `MODULES`, as for a
+  changed resource. `name` attributes such as logger names do not count, and service files
+  of project types are followed through their supertypes. Classes named in Spring's
+  `META-INF/spring.factories` and `META-INF/spring/*.imports` join every context and slice
+  instead.
+- Test classes reaching a change emit `SUBSET` with their binary names in `tests`, and
+  `reasons` shows how each reaches it, such as
+  `a.ServiceTest → a.Service → a.Api, implemented by a.Impl (changed)`. None reaching it
+  emits `NONE` with the selected modules: the build compiles and verifies without
+  executing tests.
 
 Selection falls back to `MODULES` for a changed non-Java/Kotlin file under `src/`
 (resources included), a deleted source, `package-info.java`/`module-info.java`, a source
-with no compiled class (such as a Kotlin file whose directory differs from its package),
-or unreadable class files. Build inputs still select `ALL`.
+with no compiled class, a class named in a resource that reaches the change, or unreadable
+class files. Build inputs still select `ALL`.
 
 Resources that tests reach only through the code generated from them, such as OpenAPI
 specifications, can be declared as workspace-relative globs (Maven only):
@@ -223,14 +247,18 @@ classes from a file (`-Pimpact.testsFile`) and filters every `Test` task to them
 their nested classes. `select` stays module-level because it does not compile;
 `--output` receives the refined decision. `refresh` preserves the flag.
 
-Static analysis still cannot see classes named only in resources, reflection built from
-non-constant strings, or scanning by frameworks not listed above. A Spring application
+Static analysis still cannot see classes named in resources outside `src/`, reflection
+built from non-constant strings, context tests whose composed annotation lives in a
+library jar, or scanning by frameworks not listed above. A Spring application
 change usually reaches a component, so context tests are selected together with the
 unit tests that reach it. Keep full-suite runs on the default branch.
 [`samples/bookstore`](samples/bookstore/README.md) demonstrates the savings: an edit
 selects 1–3 of its 10 test classes. [`samples/webshop`](samples/webshop/README.md) applies
 both levels to five Spring WebFlux services and an end-to-end module, and replays a
 history of breaking and fixing commits against the full suite.
+[`samples/selective-performance`](samples/selective-performance/README.md) reproduces
+the single-module case where module selection saves no work, then measures the
+opt-in class selection against native full and module-selected runs.
 
 ## Local mode: test records
 
@@ -238,29 +266,31 @@ For developers on a single-module Maven project whose test JVM runs Java 24+, lo
 replaces static selection with evidence from earlier runs. It pays off most for Spring
 context tests: framework dispatch (Kafka listeners, HTTP handlers) leaves no bytecode edge
 from a test to the code it runs, so static analysis runs all of them for any component
-edit. It is one command, run from the project directory before and after every edit:
+edit. Opt in explicitly, then run from the project directory before and after every edit:
 
 ```bash
-sieve run          # first time: every test runs and leaves a record; then only what edits affect
+sieve run --records  # first time: every test runs and leaves a record; then only what edits affect
 ```
 
-`sieve run` without `--base` or `--full` uses local mode on any single-module Maven project,
-with or without `impact.json`; without one it uses defaults and treats OpenAPI
-specifications (`<inputSpec>`) as generated inputs. `"records": true` in `impact.json` also
-applies local mode to `--base` and `--full` runs, and `"records": false` switches it off:
+`--records` enables local mode with or without `impact.json`; without one it uses
+defaults and treats OpenAPI specifications (`<inputSpec>`) as generated inputs.
+Alternatively, commit `"records": true` in `impact.json` to enable it for subsequent
+`run` commands, including `--base` and `--full`. Without either opt-in, selection is
+static and requires `impact.json`. For a configured local project:
 
 ```bash
-sieve run --base origin/main   # also use static analysis for tests without a record
+sieve run --base origin/main   # static fallback after a green run with the same invocation
 sieve run --full               # run everything, still recording
 ```
 
-`sieve run` starts Maven once: an incremental `verify` with Spring Boot `repackage` skipped
-(`build-info` still runs, because applications read it; its timestamp is not hashed). It
+`sieve run` starts Maven once with an incremental `verify`. It
 adds `clean` only when stale output is possible (a file deleted
 or renamed since the last run, a build input edit, a `generated` input edit, or no
-earlier run). When nothing changed since the last passing run, including the command,
+earlier run). A content edit that preserves file metadata also cleans to prevent stale
+compiler output. When nothing changed since the last passing run, including the command,
 environment, and Sieve version, it reports `NONE` without starting Maven. Build arguments
 after `--` are appended; if they name goals or phases, they replace `verify`.
+Concurrent wrapper runs in one workspace are serialized through an OS file lock.
 
 The embedded agent reaches every test JVM through `JDK_JAVA_OPTIONS`, so POM `argLine`
 settings (including JaCoCo's) are kept; the agent ignores Maven's own JVM. At JUnit
@@ -280,6 +310,8 @@ A test class is dropped when its last run passed and none of the following chang
 
 - the test class, its nested classes, the JDK, or build inputs (including parent POMs
   outside the workspace);
+- Maven invocation arguments, stable JVM system properties, or declared environment inputs
+  (`"record_env": ["SERVICE_MODE"]` in `impact.json`);
 - a method it executed (bodies are hashed without debug information, with constant-pool
   references resolved, so comment edits and renumbered constants change nothing);
 - a file it read, looked up, or listed;
@@ -290,8 +322,9 @@ A test class is dropped when its last run passed and none of the following chang
   as class-level selection, including added and removed components;
 - an added class named by a string constant in a class it executed.
 
-Without a passing record, a test class runs, unless `--base` is given and class-level
-static analysis shows it reaches no change since that base, which is assumed green.
+Without a passing record, a test class runs. After a passing wrapper run under the same
+invocation, `--base` can use class-level analysis to drop unrecorded tests that reach
+no change since that base, which is assumed green. New or changed invocations run them.
 Tests that failed run until they pass. Explicitly requested tests (`-Dtest`,
 `-Dit.test`) always run. A JVM that runs test classes in parallel keeps no records and
 drops nothing; so does a run in which a probe failed, no project class was instrumented,
@@ -306,12 +339,15 @@ Plain Maven gets the same selection with the agent option:
 JDK_JAVA_OPTIONS="$(sieve env --workspace .)" mvn verify
 ```
 
+Plain Maven runs unrecorded tests; it has no known previous wrapper invocation for
+static fallback. Its agent files are isolated from wrapper run state.
+
 [docs/local-mode-adoption.md](docs/local-mode-adoption.md) walks a service through
 adoption, measurement, and the test-setup changes that pay off most.
 
 Records assume that every path a test can take has shown up in one of its passing runs
 since the test class last changed, and that tests do not depend on what earlier tests
-left behind. Not tracked: environment variables, system properties, external services,
+left behind. Not tracked: undeclared environment variables, external services,
 floating Docker image tags, dependency jars changed without a POM change, and lazily
 created beans, whose startup counts only for the test class that first used them. JVMs
 older than Java 24 (back to Java 8) load the agent but keep it inactive, so every test
@@ -331,14 +367,16 @@ cargo test --locked --test records -- --include-ignored --test-threads=1
 
 ### Local speed-ups
 
-`sieve run` in local mode switches these on, and `--without NAME[,NAME]` switches them off;
+Local speed-ups are opt-in with `--with NAME[,NAME]`; `--without` overrides them.
 `--output` lists each one's state under `speedups`:
 
 - `reuse`: `TESTCONTAINERS_REUSE_ENABLE=true`, so containers declared `withReuse(true)`
   survive between runs.
 - `jgitver`: `-Djgitver.skip=true` when `.mvn/extensions.xml` loads jgitver. Filtered
   resources that embed the version change, and so rerun their readers.
-- `mvnd` is opt-in (`--with mvnd`): the daemon forks test JVMs with its own environment,
+- `repackage`: skip Spring Boot packaging with `-Dspring-boot.repackage.skip=true`.
+  `build-info` still runs because applications read it; its timestamp is not hashed.
+- `mvnd`: the daemon forks test JVMs with its own environment,
   which may not carry the agent option. It applies only without `--executable`.
 
 A JDK AOT class cache for the test JVM is not offered: JDK 25 refuses to create one while

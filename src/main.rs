@@ -7,6 +7,7 @@ mod fixtures;
 mod generated;
 mod records;
 mod replay;
+mod reports;
 mod setup;
 mod timing;
 use std::{
@@ -40,9 +41,12 @@ struct Config {
     generated: Vec<String>,
     /// Local mode for single-module Maven projects: `run` loads the agent into the test JVM,
     /// which keeps test records and drops the test classes whose records are unchanged.
-    /// Unset, `run` without `--base` uses it on single-module Maven projects.
+    /// Enabled only by `"records": true` or an explicit `run --records`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     records: Option<bool>,
+    /// Environment variables that local test records depend on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    record_env: Vec<String>,
 }
 
 const DEFAULT_IGNORE: &[&str] = &["README.md", "docs/**", "/README.md", "/docs/**"];
@@ -84,7 +88,8 @@ struct Selection {
     /// Local mode: test classes dropped at discovery.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     skipped: BTreeSet<String>,
-    /// Local mode: why each test class ran or was dropped.
+    /// Why each test class ran: how it reaches a change (class level), or why it ran or was
+    /// dropped (local mode).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     reasons: BTreeMap<String, String>,
     /// Local mode: the state of each speed-up.
@@ -135,10 +140,17 @@ impl Config {
         {
             return Err(format!("Invalid generated pattern: {pattern:?}").into());
         }
+        if let Some(name) = self.record_env.iter().find(|name| {
+            name.is_empty()
+                || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                || name.starts_with(|c: char| c.is_ascii_digit())
+        }) {
+            return Err(format!("Invalid record_env variable: {name:?}").into());
+        }
         Ok(())
     }
 
-    /// The configuration `run` uses on a single-module Maven project without `impact.json`:
+    /// The configuration `run --records` uses without `impact.json`:
     /// local mode, with OpenAPI specifications as generated inputs.
     fn local_default(workspace: &Path) -> Option<Self> {
         let pom = fs::read_to_string(workspace.join("pom.xml")).ok()?;
@@ -159,10 +171,6 @@ impl Config {
             "tool": "maven", "modules": {".": []}, "records": true, "generated": generated,
         }))
         .ok()
-    }
-
-    fn single_module_maven(&self) -> bool {
-        self.tool == "maven" && self.modules.keys().eq(["."])
     }
 
     fn generated_input(&self, path: &str) -> bool {
@@ -208,22 +216,25 @@ impl Config {
         let mut selected = BTreeSet::new();
         let mut sources = BTreeSet::new();
         for path in &changed {
-            if self.ignored(path, prefix) {
+            let module = if self.modules.contains_key(".") && path.starts_with("src/") {
+                Some(".")
+            } else {
+                path.split_once('/')
+                    .filter(|(module, rest)| {
+                        self.modules.contains_key(*module) && rest.starts_with("src/")
+                    })
+                    .map(|(module, _)| module)
+            };
+            // The default patterns never hide module sources, such as a `docs` module's.
+            if self.ignored(path, prefix) && (self.ignore.is_some() || module.is_none()) {
                 continue;
             }
-            if self.modules.contains_key(".") && path.starts_with("src/") {
-                selected.insert(".".into());
+            if let Some(module) = module {
+                selected.insert(module.to_owned());
                 sources.insert(path.clone());
                 continue;
             }
             // Build/configuration changes may alter the module graph or test discovery.
-            if let Some((module, rest)) = path.split_once('/') {
-                if self.modules.contains_key(module) && rest.starts_with("src/") {
-                    selected.insert(module.to_owned());
-                    sources.insert(path.clone());
-                    continue;
-                }
-            }
             let mut result = self.all(format!("Unclassified or build input changed: {path}"));
             result.changed = changed;
             return result;
@@ -286,6 +297,7 @@ impl Selection {
                 classes::Impact::Tests {
                     mut selected,
                     unselected,
+                    mut reasons,
                 } => {
                     if maven {
                         // `-am` also compiles the tests of upstream modules, which stay skipped.
@@ -308,6 +320,8 @@ impl Selection {
                         "Test classes whose bytecode reaches the changed classes"
                     }
                     .into();
+                    reasons.retain(|test, _| selected.contains(test));
+                    self.reasons = reasons;
                     self.tests = selected;
                     unselected
                 }
@@ -352,6 +366,8 @@ fn changed_paths(workspace: &Path, base: &str) -> Result<(BTreeSet<String>, Stri
             "--name-only",
             "-z",
             "--no-renames",
+            // `submodule.<name>.ignore` and `diff.ignoreSubmodules` would hide gitlink changes.
+            "--ignore-submodules=none",
             merge_base.trim(),
             "--",
         ],
@@ -554,16 +570,16 @@ fn main_result() -> Result<u8> {
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "sieve <select|run> [--workspace PATH] [--base REV | --full]\n\
-                  [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
+                  [--records] [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
                   sieve <init|refresh> [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
                   sieve env [--workspace PATH] [--base REV]\n\
                   sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
                   sieve classify --workspace PATH [--commits N]\n\
                   sieve replay --workspace PATH [--commits N] [--run] [-- BUILD_ARGS...]\n\
                   sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\n\
-                  On a single-module Maven project, `sieve run` alone runs the tests your edits\n\
-                  can affect (local mode; the first run records every test). Other projects need\n\
-                  impact.json and the build adapters documented in README.md; there, no base or\n\
+                  Local mode requires `run --records` or impact.json with records: true\n\
+                  (single-module Maven, Java 24+; the first run records every test).\n\
+                  Static selection requires impact.json and the build adapters in README.md; no base or\n\
                   unavailable Git history selects ALL. run propagates build failures."
         );
         return Ok(0);
@@ -574,6 +590,7 @@ fn main_result() -> Result<u8> {
     let mut workspace = None;
     let mut base = None;
     let mut full = false;
+    let mut records = false;
     let mut output = None;
     let mut executable = None;
     let mut levers = records::Levers::default();
@@ -585,6 +602,10 @@ fn main_result() -> Result<u8> {
         }
         if arg == "--full" {
             full = true;
+            continue;
+        }
+        if arg == "--records" {
+            records = true;
             continue;
         }
         let value = args
@@ -604,20 +625,18 @@ fn main_result() -> Result<u8> {
     if full && base.is_some() {
         return Err("Use either --base or --full".into());
     }
+    if records && command != "run" {
+        return Err("--records is supported only by run".into());
+    }
     let workspace = workspace
         .unwrap_or_else(|| PathBuf::from("."))
         .canonicalize()?;
-    let local_default = command == "run" && !workspace.join("impact.json").exists();
+    let local_default = records && !workspace.join("impact.json").exists();
     let config = match Config::read(&workspace) {
         Err(error) if local_default => Config::local_default(&workspace).ok_or(error)?,
         config => config?,
     };
-    // One command for developers: plain `run` on a single-module Maven project uses local mode
-    // unless `impact.json` says `"records": false`. `--base` and `--full`, as CI passes them,
-    // keep the configured selection.
-    let local = config
-        .records
-        .unwrap_or(base.is_none() && !full && config.single_module_maven());
+    let local = records || config.records == Some(true);
     if local && command == "run" {
         if local_default {
             eprintln!("No impact.json: local mode with defaults, records in .sieve/");
@@ -907,6 +926,20 @@ mod tests {
         );
         assert_eq!(select("pom.xml").mode, "ALL");
         assert_eq!(select("impact.json").mode, "ALL");
+        // Default ignore patterns yield to module sources; explicit ones do not.
+        let mut docs: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"docs": [], "app": ["docs"]}
+        }))
+        .unwrap();
+        let path = || BTreeSet::from(["docs/src/test/java/SnippetTest.java".into()]);
+        assert_eq!(docs.select(path(), "").modules.len(), 2);
+        assert_eq!(
+            docs.select(BTreeSet::from(["docs/guide.md".into()]), "")
+                .mode,
+            "NONE"
+        );
+        docs.ignore = Some(vec!["docs/**".into()]);
+        assert_eq!(docs.select(path(), "").mode, "NONE");
         assert_eq!(select("removed/src/main/java/Old.java").mode, "ALL");
         let docs = select("README.md");
         assert_eq!(docs.mode, "NONE");

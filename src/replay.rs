@@ -1,20 +1,14 @@
 //! Replays recent history: selects tests for each commit against its parent and, with
 //! `--run`, compares the selected run with the full suite on the same revision.
-use crate::{Config, Result};
+use crate::{timing, timing::Timed, Config, Result};
 use serde_json::{json, Value};
-use std::{
-    collections::BTreeSet,
-    env, fs,
-    path::Path,
-    process::{Command, Stdio},
-    time::Instant,
-};
+use std::{env, fs, path::Path, process::Command};
 
 const USAGE: &str = "sieve replay --workspace PATH [--commits N] [--run | --walk [--plant]]\n\
     [--executable PATH] [--output FILE] [-- BUILD_ARGS]\n\n\
     Uses the workspace's impact.json for each of the last N first-parent commits.\n\
     --run executes the full suite and the selection on every commit from clean trees and\n\
-    reports failures the selection missed.\n\
+    reports missed failures and inconclusive builds (exit 1).\n\
     --walk (local mode, single-module Maven) applies the commits in order to one working\n\
     tree, carrying test records and build output forward, and compares `sieve run` with a\n\
     native full build; --plant also plants a bug in each commit's changed code.";
@@ -84,26 +78,20 @@ fn execute(
     selection: &[&str],
     extra: &[String],
     log: &Path,
-) -> Result<Value> {
+) -> Result<Timed> {
     git(clone, &["clean", "-fdxq"])?;
-    let log_file = fs::File::create(log)?;
-    let started = Instant::now();
-    let status = Command::new(env::current_exe()?)
-        .arg("run")
-        .arg("--workspace")
-        .arg(workspace)
-        .args(selection)
-        .arg("--")
-        .args(extra)
-        .stdout(Stdio::from(log_file.try_clone()?))
-        .stderr(Stdio::from(log_file))
-        .status()?;
-    let seconds = started.elapsed().as_secs_f64();
-    let reports = crate::fixtures::read_reports(workspace, &config.tool)?;
-    Ok(json!({
-        "exit": status.code(), "seconds": seconds, "cases": reports.cases,
-        "executed": reports.executed, "failed": reports.failed, "log": log,
-    }))
+    timing::run(
+        Command::new(env::current_exe()?)
+            .arg("run")
+            .arg("--workspace")
+            .arg(workspace)
+            .args(selection)
+            .arg("--")
+            .args(extra),
+        log,
+        workspace,
+        &config.tool,
+    )
 }
 
 pub fn main(args: Vec<String>) -> Result<u8> {
@@ -235,41 +223,33 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         if run {
             let mut full_args = vec!["--full"];
             full_args.extend(&executable_args);
+            let full_log = logs.join(format!("{short}-full.log"));
             let full = execute(
                 &clone,
                 &clone_workspace,
                 &config,
                 &full_args,
                 &extra,
-                &logs.join(format!("{short}-full.log")),
+                &full_log,
             )?;
             selected_args.extend(["--output", selection_arg]);
+            let selected_log = logs.join(format!("{short}-selected.log"));
             let selected = execute(
                 &clone,
                 &clone_workspace,
                 &config,
                 &selected_args,
                 &extra,
-                &logs.join(format!("{short}-selected.log")),
+                &selected_log,
             )?;
             // Refined by class-level analysis during the run.
             record["selection"] = serde_json::from_slice(&fs::read(&selection_path)?)?;
-            let ids = |run: &Value, key: &str| -> BTreeSet<String> {
-                run[key]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|v| v.as_str().map(str::to_owned))
-                    .collect()
-            };
-            let executed = ids(&selected, "executed");
-            let missed: BTreeSet<_> = ids(&full, "failed")
-                .into_iter()
-                .filter(|test| !executed.contains(test))
-                .collect();
-            record["missed"] = json!(missed);
-            record["full"] = full;
-            record["selected"] = selected;
+            record["missed"] = json!(timing::missed(&full, &selected));
+            record["inconclusive"] = json!(full.inconclusive() || selected.inconclusive());
+            record["full"] = json!(full);
+            record["full"]["log"] = json!(full_log);
+            record["selected"] = json!(selected);
+            record["selected"]["log"] = json!(selected_log);
         }
         records.push(record);
     }
@@ -300,6 +280,10 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         summary["full_cases"] = json!(sum("full", "cases"));
         summary["selected_cases"] = json!(sum("selected", "cases"));
         summary["missed_failures"] = json!(missed);
+        summary["inconclusive_runs"] = json!(replayed
+            .iter()
+            .filter(|r| r["inconclusive"] == true)
+            .count());
     }
     let report = json!({
         "workspace": workspace, "tool": config.tool, "class_level": config.class_level,
@@ -455,11 +439,12 @@ fn walk(
             serde_json::from_slice(&fs::read(&selection_file).unwrap_or_default())
                 .unwrap_or(Value::Null);
         let native = runner.native(&format!("{short}-native"))?;
-        let missed = crate::catalog::missed(&native, &selected);
+        let missed = timing::missed(&native, &selected);
         let mut record = json!({
             "commit": commit, "subject": subject,
             "selection": {"mode": selection["mode"], "tests": selection["tests"], "reason": selection["reason"]},
             "clean": selection["reason"].as_str().is_some_and(|r| r.contains("clean:")),
+            "inconclusive": native.inconclusive() || selected.inconclusive(),
             "selected": selected, "native": native, "missed": missed,
         });
         if plant {
@@ -536,6 +521,7 @@ fn walk(
         "native_seconds": sum("native"),
         "planted_detected": records.iter().filter(|r| r["planted"]["detected"] == true).count(),
         "missed_failures": missed,
+        "inconclusive_runs": records.iter().filter(|r| r["inconclusive"] == true).count(),
     });
     let report = json!({
         "workspace": workspace, "mode": "walk", "extra_build_args": extra,

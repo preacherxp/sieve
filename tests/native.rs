@@ -588,6 +588,53 @@ org.junit.jupiter.api.Assertions.assertEquals(1, Provider.value());
 
 #[test]
 #[ignore = "requires Java 17 and Gradle; run by fixture CI"]
+fn native_gradle_setup_follows_shared_source_directories() {
+    let executable = std::env::var("IMPACT_GRADLE").unwrap_or_else(|_| "gradle".into());
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "settings.gradle",
+        "rootProject.name = 'shared'\ninclude 'common', 'app', 'fixtures'",
+    );
+    write(root, "build.gradle", "");
+    for module in ["common", "fixtures"] {
+        write(
+            root,
+            &format!("{module}/build.gradle"),
+            "plugins { id 'java' }",
+        );
+    }
+    // Neither directory is a declared dependency, but app compiles and reads their files.
+    write(
+        root,
+        "app/build.gradle",
+        "plugins { id 'java' }\n\
+         sourceSets.main.java.srcDir(\"$rootDir/common/src/main/java\")\n\
+         sourceSets.test.resources.srcDir(file('../fixtures/src/test/resources'))",
+    );
+    let result = cli(&[
+        "init",
+        "--workspace",
+        root.to_str().unwrap(),
+        "--executable",
+        &executable,
+    ]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+    assert_eq!(
+        config["modules"],
+        serde_json::json!({".": [], "app": ["common", "fixtures"], "common": [], "fixtures": []})
+    );
+}
+
+#[test]
+#[ignore = "requires Java 17 and Gradle; run by fixture CI"]
 fn unsupported_gradle_layouts_fail_without_configuration() {
     let executable = std::env::var("IMPACT_GRADLE").unwrap_or_else(|_| "gradle".into());
     for (settings, expected) in [

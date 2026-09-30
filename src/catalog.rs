@@ -5,7 +5,7 @@ use crate::{timing, timing::Timed, Config, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     process::Command,
@@ -420,37 +420,19 @@ pub fn plant(
         let result = chosen.and_then(|chosen| Ok((chosen, full(&tag)?)));
         done(journal)?;
         let (chosen, reference) = result?;
-        let missed = missed(&reference, &chosen);
+        let missed = timing::missed(&reference, &chosen);
         return Ok(json!({
             "mutant": tag,
             "not_compiling": tried,
             "full_failed": reference.failed,
             "selected_failed": chosen.failed,
-            "detected": !reference.failed.is_empty() || reference.exit != Some(0),
+            "detected": !reference.failed.is_empty(),
+            "inconclusive": reference.inconclusive() || chosen.inconclusive(),
             "missed": missed,
         }));
     }
     done(journal)?;
     Ok(json!({"mutant": null, "not_compiling": tried}))
-}
-
-/// Tests failing in the reference run but not in the selected one. A reference build that
-/// failed while the selected one passed, or unreadable reports, count as a missed failure too.
-pub(crate) fn missed(reference: &Timed, selected: &Timed) -> BTreeSet<String> {
-    let mut missed: BTreeSet<String> = reference
-        .failed
-        .difference(&selected.failed)
-        .cloned()
-        .collect();
-    if reference.exit != Some(0) && selected.exit == Some(0) {
-        missed.insert("<the reference build failed; the selected build passed>".into());
-    }
-    for (run, timed) in [("reference", reference), ("selected", selected)] {
-        if let Some(error) = &timed.report_error {
-            missed.insert(format!("<unreadable {run} reports: {error}>"));
-        }
-    }
-    missed
 }
 
 /// Kinds of the commits' changed paths, one kind per commit: the most expensive one, and

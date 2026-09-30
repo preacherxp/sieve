@@ -23,6 +23,9 @@ struct Record {
     test: String,
     passed: bool,
     jdk: String,
+    /// Invocation, test-JVM properties and declared environment inputs.
+    #[serde(default)]
+    context: String,
     /// Ran against a Spring test context, whose startup work is included.
     #[serde(default)]
     spring: bool,
@@ -50,6 +53,10 @@ type Snapshot = BTreeMap<String, Shape>;
 #[derive(Deserialize)]
 struct Raw {
     jdk: String,
+    #[serde(default)]
+    context: String,
+    #[serde(default)]
+    session: String,
     /// When the test JVM started, in epoch milliseconds.
     #[serde(default)]
     started: u64,
@@ -112,34 +119,36 @@ fn workspace_option(options: &BTreeMap<String, String>) -> Result<PathBuf> {
     .canonicalize()?)
 }
 
-/// Serializes `record` calls from concurrently forked test JVMs.
-struct Lock(PathBuf);
+/// Native locks are released on process exit, including crashes.
+struct Lock(fs::File);
 
 impl Lock {
-    fn acquire(dir: &Path) -> Result<Self> {
-        let path = dir.join("lock");
+    fn open(dir: &Path, name: &str) -> Result<Self> {
+        Ok(Self(
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(dir.join(name))?,
+        ))
+    }
+
+    fn acquire(dir: &Path, name: &str) -> Result<Self> {
+        let lock = Self::open(dir, name)?;
         let start = Instant::now();
         loop {
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(_) => return Ok(Self(path)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let stale = fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > Duration::from_secs(300));
-                    if stale {
-                        let _ = fs::remove_file(&path);
-                    } else if start.elapsed() > Duration::from_secs(600) {
-                        return Err(format!("Timed out waiting for {}", path.display()).into());
+            match lock.0.try_lock() {
+                Ok(()) => return Ok(lock),
+                Err(fs::TryLockError::WouldBlock) => {
+                    if start.elapsed() > Duration::from_secs(600) {
+                        return Err(
+                            format!("Timed out waiting for {}", dir.join(name).display()).into(),
+                        );
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(error) => return Err(error.into()),
+                Err(fs::TryLockError::Error(error)) => return Err(error.into()),
             }
         }
     }
@@ -147,8 +156,32 @@ impl Lock {
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = self.0.unlock();
     }
+}
+
+/// Wrapper forks share its session. An unrelated `sieve env` invocation fails open while
+/// that wrapper owns the workspace; it must neither select nor write its shared run state.
+fn execution_guard(dir: &Path, session: &str) -> Result<Option<Lock>> {
+    let lock = Lock::open(dir, "execution.lock")?;
+    match lock.0.try_lock() {
+        Ok(()) if session.is_empty() => Ok(Some(lock)),
+        Ok(()) => Err("The managed test JVM outlived its Sieve run; no records kept".into()),
+        Err(fs::TryLockError::WouldBlock)
+            if !session.is_empty()
+                && fs::read_to_string(dir.join("execution.lock"))? == session =>
+        {
+            Ok(None)
+        }
+        Err(fs::TryLockError::WouldBlock) => {
+            Err("Another Sieve run owns this workspace; running without record selection".into())
+        }
+        Err(fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+fn run_dir(dir: &Path, session: &str) -> PathBuf {
+    dir.join(if session.is_empty() { "env-run" } else { "run" })
 }
 
 fn outputs(workspace: &Path) -> [(PathBuf, bool); 2] {
@@ -432,7 +465,8 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     let raw_path = PathBuf::from(options.get("--raw").ok_or("--raw is required")?);
     let raw: Raw = serde_json::from_slice(&fs::read(&raw_path)?)?;
     let dir = prepare(&workspace)?;
-    let _lock = Lock::acquire(&dir)?;
+    let _execution = execution_guard(&dir, &raw.session)?;
+    let _lock = Lock::acquire(&dir, "lock")?;
     let mut summary = Summary {
         ran: raw.tests.iter().map(|t| t.name.clone()).collect(),
         dropped: raw.dropped.iter().cloned().collect(),
@@ -440,7 +474,12 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     };
     // Without complete evidence only failures are kept; older records stay as they were, and
     // their hashes no longer match whatever changed since.
-    let trusted = !raw.parallel && raw.errors.is_empty();
+    let trusted = !raw.parallel && raw.errors.is_empty() && !raw.context.is_empty();
+    if raw.context.is_empty() {
+        summary
+            .notes
+            .push("Agent supplied no invocation context; no records kept".into());
+    }
     if raw.parallel {
         summary
             .notes
@@ -466,7 +505,8 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     for test in &raw.tests {
         let path = record_path(&dir, &test.name);
         let hash = current.test_hash(&test.name);
-        let kept = read_json::<Record>(&path).filter(|r| r.test == hash);
+        let kept =
+            read_json::<Record>(&path).filter(|r| r.test == hash && r.context == raw.context);
         if !test.passed {
             let mut record = kept.unwrap_or_else(|| Record {
                 test: hash,
@@ -515,6 +555,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
             test: hash,
             passed: true,
             jdk: raw.jdk.clone(),
+            context: raw.context.clone(),
             spring,
             build: current.build.clone(),
             resources: current.resources.clone(),
@@ -547,7 +588,9 @@ pub fn record(args: Vec<String>) -> Result<u8> {
         .and_then(|s| s.to_str())
         .unwrap_or("raw")
         .replacen("raw", "summary", 1);
-    write_json(&dir.join("run").join(format!("{name}.json")), &summary)?;
+    let run = run_dir(&dir, &raw.session);
+    fs::create_dir_all(&run)?;
+    write_json(&run.join(format!("{name}.json")), &summary)?;
     Ok(0)
 }
 
@@ -670,13 +713,16 @@ struct Decider<'a> {
 
 impl Decider<'_> {
     /// Why the test must run, or `None` when its record shows that nothing it used changed.
-    fn check(&mut self, test: &str, record: &Record, jdk: &str) -> Option<String> {
+    fn check(&mut self, test: &str, record: &Record, jdk: &str, context: &str) -> Option<String> {
         let current = &self.current;
         if !record.passed {
             return Some("Failed last time".into());
         }
         if record.jdk != jdk {
             return Some(format!("JDK changed from {}", record.jdk));
+        }
+        if context.is_empty() || record.context != context {
+            return Some("Invocation, JVM properties or declared environment changed".into());
         }
         if record.test != current.test_hash(test) {
             return Some("Test class changed".into());
@@ -804,11 +850,24 @@ fn statically_unreached(
 /// `sieve decide --workspace PATH --jdk JDK --out FILE [--base REV]`: writes the top-level
 /// test classes that may be dropped, one per line.
 pub fn decide(args: Vec<String>) -> Result<u8> {
-    let options = options(args, &["--workspace", "--jdk", "--out", "--base"])?;
+    let options = options(
+        args,
+        &[
+            "--workspace",
+            "--jdk",
+            "--out",
+            "--base",
+            "--context",
+            "--session",
+        ],
+    )?;
     let workspace = workspace_option(&options)?;
     let jdk = options.get("--jdk").ok_or("--jdk is required")?;
     let out = PathBuf::from(options.get("--out").ok_or("--out is required")?);
     let dir = prepare(&workspace)?;
+    let session = options.get("--session").map_or("", String::as_str);
+    let _execution = execution_guard(&dir, session)?;
+    let context = options.get("--context").map_or("", String::as_str);
     let current = Current::load(&workspace)?;
     let now = current.snapshot();
     let tests = current.tests();
@@ -831,7 +890,7 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
             continue;
         }
         let reason = match read_json::<Record>(&record_path(&dir, test)) {
-            Some(record) => match decider.check(test, &record, jdk) {
+            Some(record) => match decider.check(test, &record, jdk, context) {
                 Some(reason) => reason,
                 None => {
                     skip.insert(test.clone());
@@ -863,7 +922,9 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
         skip.iter().map(|t| format!("{t}\n")).collect::<String>(),
     )?;
     let name = format!("decisions-{}.json", std::process::id());
-    write_json(&dir.join("run").join(name), &reasons)?;
+    let run = run_dir(&dir, session);
+    fs::create_dir_all(&run)?;
+    write_json(&run.join(name), &reasons)?;
     Ok(0)
 }
 
@@ -928,9 +989,16 @@ pub fn agent_jar() -> Result<PathBuf> {
 /// Writes the agent options and returns the `-javaagent` option that loads the agent. It
 /// reaches test JVMs through `JDK_JAVA_OPTIONS`, which every `java` launch reads whatever the
 /// POM's `argLine` says; the agent ignores the build tool's own JVM.
-fn agent_option(workspace: &Path, dir: &Path, mode: &str, base: Option<&str>) -> Result<String> {
+fn agent_option(
+    workspace: &Path,
+    dir: &Path,
+    mode: &str,
+    base: Option<&str>,
+    context: &str,
+    session: &str,
+    record_env: &[String],
+) -> Result<String> {
     let jar = agent_jar()?;
-    let file = dir.join("agent.properties");
     let exe = env::current_exe()?.canonicalize()?;
     let mut props = String::new();
     let outputs: Vec<String> = outputs(workspace).iter().map(|(d, _)| plain(d)).collect();
@@ -941,10 +1009,22 @@ fn agent_option(workspace: &Path, dir: &Path, mode: &str, base: Option<&str>) ->
         ("outputs", outputs.join(separator)),
         ("mode", mode.into()),
         ("base", base.unwrap_or_default().into()),
+        ("context", context.into()),
+        ("session", session.into()),
+        ("record_env", record_env.join(",")),
     ] {
         // Properties files treat backslashes as escapes.
         props += &format!("{key}={}\n", value.replace('\\', "\\\\"));
     }
+    // Printed env options remain valid after a wrapper run writes its own options.
+    let file = if session.is_empty() {
+        dir.join(format!(
+            "env-agent-{}.properties",
+            bytecode::hash(props.as_bytes())
+        ))
+    } else {
+        dir.join("agent.properties")
+    };
     fs::write(&file, props)?;
     let option = format!("-javaagent:{}={}", jar.display(), file.display());
     if option.chars().any(char::is_whitespace) {
@@ -985,15 +1065,25 @@ pub fn env_command(args: Vec<String>) -> Result<u8> {
     };
     single_module_maven(&config)?;
     let dir = prepare(&workspace)?;
-    let base = options.get("--base").map(String::as_str);
+    let _execution = execution_guard(&dir, "")?;
     println!(
         "{}",
-        java_options(&agent_option(&workspace, &dir, "select", base)?)
+        // A plain Maven launch has no previously validated wrapper invocation. Its absent
+        // records must run even when the caller supplies a green Git base.
+        java_options(&agent_option(
+            &workspace,
+            &dir,
+            "select",
+            None,
+            "",
+            "",
+            &config.record_env
+        )?)
     );
     Ok(0)
 }
 
-/// Files that can affect a build, with size and modification time, relative to the workspace.
+/// Files that can affect a build, with metadata and content, relative to the workspace.
 fn tree(config: &Config, workspace: &Path) -> Result<BTreeMap<String, String>> {
     let listed = Command::new("git")
         .current_dir(workspace)
@@ -1047,7 +1137,11 @@ fn tree(config: &Config, workspace: &Path) -> Result<BTreeMap<String, String>> {
                     .ok()
                     .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
                     .map_or(0, |d| d.as_nanos());
-                format!("{}:{modified}", meta.len())
+                format!(
+                    "{}:{modified}:{}",
+                    meta.len(),
+                    file_hash(&workspace.join(&path))
+                )
             }
             Err(_) => "-".into(),
         };
@@ -1061,6 +1155,8 @@ fn tree(config: &Config, workspace: &Path) -> Result<BTreeMap<String, String>> {
 struct LastRun {
     key: String,
     passed: bool,
+    #[serde(default)]
+    context: String,
     build: String,
     tree: BTreeMap<String, String>,
 }
@@ -1082,6 +1178,16 @@ fn clean_reason(
     for (path, stamp) in &last.tree {
         if stamp != "-" && tree.get(path).is_none_or(|s| s == "-") {
             return Some(format!("Deleted or renamed: {path}"));
+        }
+        // Maven's incremental compiler can miss a body edit whose size and timestamp were
+        // preserved. Such an edit must compile before bytecode records may decide tests.
+        if let Some(now) = tree.get(path) {
+            if stamp != now
+                && stamp.rsplit_once(':').map(|(meta, _)| meta)
+                    == now.rsplit_once(':').map(|(meta, _)| meta)
+            {
+                return Some(format!("Content changed with unchanged metadata: {path}"));
+            }
         }
     }
     tree.iter()
@@ -1118,7 +1224,7 @@ fn mark_failures(
     reported: &BTreeSet<String>,
     success: bool,
 ) -> Result<BTreeSet<String>> {
-    let reports = match crate::fixtures::read_reports(workspace, "maven") {
+    let reports = match crate::reports::read_reports(workspace, "maven") {
         Ok(reports) => reports,
         Err(error) if success => return Err(error),
         Err(_) => Default::default(),
@@ -1140,7 +1246,7 @@ fn mark_failures(
     if failed.is_empty() {
         return Ok(failed);
     }
-    let _lock = Lock::acquire(dir)?;
+    let _lock = Lock::acquire(dir, "lock")?;
     for test in &failed {
         let path = record_path(dir, test);
         if let Some(mut record) = read_json::<Record>(&path) {
@@ -1234,9 +1340,8 @@ pub struct Levers {
     pub off: BTreeSet<String>,
 }
 
-/// `reuse` and `jgitver` are on unless switched off; `mvnd` is opt-in, because the daemon
-/// forks test JVMs with its own environment rather than the client's.
-pub const LEVERS: &[&str] = &["reuse", "jgitver", "mvnd"];
+/// Every speed-up changes native build behavior and must be requested explicitly.
+pub const LEVERS: &[&str] = &["reuse", "jgitver", "mvnd", "repackage"];
 
 impl Levers {
     pub fn validate(&self) -> Result<()> {
@@ -1253,8 +1358,8 @@ impl Levers {
         }
     }
 
-    fn enabled(&self, name: &str, default: bool) -> bool {
-        !self.off.contains(name) && (default || self.on.contains(name))
+    fn enabled(&self, name: &str) -> bool {
+        !self.off.contains(name) && self.on.contains(name)
     }
 
     /// Switches the levers on for `command`, returning each lever's state for `--output`.
@@ -1267,7 +1372,7 @@ impl Levers {
         args: &mut Vec<String>,
     ) -> BTreeMap<String, String> {
         let mut states = BTreeMap::new();
-        let reuse = if !self.enabled("reuse", true) {
+        let reuse = if !self.enabled("reuse") {
             "off".to_owned()
         } else if env::var_os("TESTCONTAINERS_REUSE_ENABLE").is_some() {
             "as set in the environment".to_owned()
@@ -1281,7 +1386,7 @@ impl Levers {
             fs::read_to_string(workspace.join(".mvn/extensions.xml")).unwrap_or_default();
         let jgitver = if !extensions.contains("jgitver") {
             "not used".to_owned()
-        } else if self.enabled("jgitver", true) {
+        } else if self.enabled("jgitver") {
             // Filtered resources that embed the version change and rerun their readers.
             args.push("-Djgitver.skip=true".into());
             "on".to_owned()
@@ -1289,7 +1394,14 @@ impl Levers {
             "off".to_owned()
         };
         states.insert("jgitver".into(), jgitver);
-        let mvnd = if !self.enabled("mvnd", false) {
+        let repackage = if self.enabled("repackage") {
+            args.push("-Dspring-boot.repackage.skip=true".into());
+            "on"
+        } else {
+            "off"
+        };
+        states.insert("repackage".into(), repackage.into());
+        let mvnd = if !self.enabled("mvnd") {
             "off".to_owned()
         } else if explicit {
             "off: --executable given".to_owned()
@@ -1318,6 +1430,71 @@ pub struct Run {
     pub extra: Vec<String>,
 }
 
+fn invocation(
+    config: &Config,
+    executable: &str,
+    extra: &[String],
+    levers: &Levers,
+) -> Result<String> {
+    let mut h = bytecode::Hasher::default();
+    h.field(executable.as_bytes())
+        .field(&serde_json::to_vec(extra)?)
+        .field(format!("{levers:?}").as_bytes());
+    let mut names: BTreeSet<&str> = [
+        "JAVA_HOME",
+        "JDK_JAVA_OPTIONS",
+        "JAVA_TOOL_OPTIONS",
+        "MAVEN_ARGS",
+        "MAVEN_OPTS",
+        "TESTCONTAINERS_REUSE_ENABLE",
+        "PATH",
+    ]
+    .into_iter()
+    .collect();
+    names.extend(config.record_env.iter().map(String::as_str));
+    for name in names {
+        h.field(name.as_bytes())
+            .field(&serde_json::to_vec(&env::var(name).ok())?);
+    }
+    let java_home = env::var_os("JAVA_HOME").map(PathBuf::from).or_else(|| {
+        env::var_os("PATH").and_then(|path| {
+            env::split_paths(&path).find_map(|dir| {
+                let java = dir
+                    .join(if cfg!(windows) { "java.exe" } else { "java" })
+                    .canonicalize()
+                    .ok()?;
+                Some(java.parent()?.parent()?.to_owned())
+            })
+        })
+    });
+    if let Some(home) = java_home {
+        h.field(file_hash(&home.join("release")).as_bytes());
+    }
+    Ok(h.finish())
+}
+
+fn output_state(workspace: &Path) -> Result<String> {
+    fn collect(dir: &Path, files: &mut BTreeMap<PathBuf, String>) -> Result<()> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                collect(&entry.path(), files)?;
+            } else {
+                files.insert(entry.path(), file_hash(&entry.path()));
+            }
+        }
+        Ok(())
+    }
+    let mut files = BTreeMap::new();
+    for (dir, _) in outputs(workspace) {
+        collect(&dir, &mut files)?;
+    }
+    Ok(bytecode::hash(&serde_json::to_vec(&files)?))
+}
+
 /// `sieve run` in local mode: one incremental Maven build with the agent.
 pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let Run {
@@ -1333,6 +1510,16 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         executable.unwrap_or_else(|| crate::setup::default_executable(workspace, &config.tool));
     single_module_maven(config)?;
     let dir = prepare(workspace)?;
+    let mut execution = Lock::acquire(&dir, "execution.lock")?;
+    let session = format!(
+        "{}:{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_nanos()
+    );
+    execution.0.set_len(0)?;
+    execution.0.write_all(session.as_bytes())?;
     let write = |selection: &Selection| -> Result<()> {
         let json = serde_json::to_string_pretty(selection)? + "\n";
         if let Some(path) = &output {
@@ -1347,34 +1534,28 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let goals = has_goals(&extra);
     let tree = tree(config, workspace)?;
     let build = build_inputs(workspace)?;
+    let context = invocation(config, &executable, &extra, &levers)?;
     let mut key = bytecode::Hasher::default();
     key.field(&serde_json::to_vec(&tree)?)
         .field(build.as_bytes())
         .field(executable.as_bytes())
         .field(&serde_json::to_vec(&extra)?)
         .field(base.as_deref().unwrap_or_default().as_bytes())
+        .field(context.as_bytes())
         .field(env!("CARGO_PKG_VERSION").as_bytes());
     for (_, bytes) in JARS {
         key.field(bytes);
     }
-    for var in [
-        "JAVA_HOME",
-        "JDK_JAVA_OPTIONS",
-        "MAVEN_ARGS",
-        "MAVEN_OPTS",
-        "PATH",
-    ] {
-        key.field(env::var(var).unwrap_or_default().as_bytes());
-    }
-    key.field(format!("{levers:?}").as_bytes());
     // The files that records list, as they are now; stored with what this run recorded.
-    let keyed = |key: &bytecode::Hasher| {
+    let keyed = |key: &bytecode::Hasher| -> Result<String> {
         let mut key = key.clone();
         key.field(recorded_files(&dir, workspace).as_bytes());
-        key.finish()
+        // IDE and plain Maven builds can change bytecode without changing workspace sources.
+        key.field(output_state(workspace)?.as_bytes());
+        Ok(key.finish())
     };
     let base_key = key;
-    let key = keyed(&base_key);
+    let key = keyed(&base_key)?;
     let state = dir.join("last-run.json");
     let last: Option<LastRun> = read_json(&state);
     let mut selection = config.all("Test records decide inside the test JVM");
@@ -1403,12 +1584,27 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         &LastRun {
             key: String::new(),
             passed: false,
+            context: context.clone(),
             build: last.as_ref().map_or_else(String::new, |l| l.build.clone()),
             tree: seen,
         },
     )?;
     let mode = if full { "record" } else { "select" };
-    let option = agent_option(workspace, &dir, mode, base.as_deref())?;
+    // The base can substitute for missing records only under an invocation already shown
+    // green. Git alone says nothing about changed -D properties or environment inputs.
+    let fallback_base = base.as_deref().filter(|_| {
+        last.as_ref()
+            .is_some_and(|l| l.passed && l.context == context)
+    });
+    let option = agent_option(
+        workspace,
+        &dir,
+        mode,
+        fallback_base,
+        &context,
+        &session,
+        &config.record_env,
+    )?;
     let run_dir = dir.join("run");
     fs::remove_dir_all(&run_dir)?;
     fs::create_dir_all(&run_dir)?;
@@ -1419,8 +1615,6 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     if !goals {
         args.push("verify".into());
     }
-    // No test uses the executable archive. Build information stays: applications read it.
-    args.push("-Dspring-boot.repackage.skip=true".into());
     let mut command = Command::new("");
     selection.speedups = levers.apply(
         workspace,
@@ -1458,8 +1652,9 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     write_json(
         &state,
         &LastRun {
-            key: keyed(&base_key),
+            key: keyed(&base_key)?,
             passed,
+            context,
             build,
             tree,
         },
@@ -1565,6 +1760,7 @@ mod tests {
         let last = LastRun {
             key: String::new(),
             passed: true,
+            context: String::new(),
             build: "b".into(),
             tree: tree(&[
                 ("src/A.java", "1:1"),
@@ -1590,5 +1786,83 @@ mod tests {
         assert!(clean_reason(&config, Some(&last), &generated, "b")
             .unwrap()
             .contains("Generated"));
+    }
+
+    #[test]
+    fn preserved_metadata_edits_change_the_key_and_clean_before_deciding() {
+        let temp = tempfile::tempdir().unwrap();
+        let config: Config =
+            serde_json::from_value(serde_json::json!({"tool": "maven", "modules": {".": []}}))
+                .unwrap();
+        let source = temp.path().join("src/A.java");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "return a + b;").unwrap();
+        let last = LastRun {
+            key: String::new(),
+            passed: true,
+            context: String::new(),
+            build: "b".into(),
+            tree: tree(&config, temp.path()).unwrap(),
+        };
+        let metadata = fs::metadata(&source).unwrap();
+        fs::write(&source, "return a - b;").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
+            .unwrap();
+        let now = tree(&config, temp.path()).unwrap();
+        assert_ne!(last.tree, now);
+        assert!(clean_reason(&config, Some(&last), &now, "b")
+            .unwrap()
+            .contains("unchanged metadata"));
+        let output = temp.path().join("target/classes/A.class");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, "old bytecode").unwrap();
+        let before = output_state(temp.path()).unwrap();
+        fs::write(&output, "new bytecode").unwrap();
+        assert_ne!(before, output_state(temp.path()).unwrap());
+    }
+
+    #[test]
+    fn execution_lock_allows_only_its_session_and_releases_without_deleting() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = Lock::acquire(temp.path(), "execution.lock").unwrap();
+        owner.0.write_all(b"session").unwrap();
+        assert!(execution_guard(temp.path(), "session").unwrap().is_none());
+        assert!(execution_guard(temp.path(), "").is_err());
+        assert!(execution_guard(temp.path(), "old-session").is_err());
+        drop(owner);
+        assert!(temp.path().join("execution.lock").is_file());
+        assert!(execution_guard(temp.path(), "session").is_err());
+        assert!(execution_guard(temp.path(), "").unwrap().is_some());
+    }
+
+    #[test]
+    fn build_behavior_levers_require_explicit_adoption() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join(".mvn")).unwrap();
+        fs::write(temp.path().join(".mvn/extensions.xml"), "jgitver").unwrap();
+        let apply = |levers: Levers| {
+            let mut command = Command::new("mvn");
+            let mut executable = "mvn".to_owned();
+            let mut args = Vec::new();
+            let states = levers.apply(temp.path(), &mut executable, true, &mut command, &mut args);
+            (states, args)
+        };
+        let (states, args) = apply(Levers::default());
+        assert!(states.values().all(|s| s == "off"));
+        assert!(args.is_empty());
+        let (states, args) = apply(Levers {
+            on: BTreeSet::from(["jgitver".into(), "repackage".into()]),
+            off: BTreeSet::new(),
+        });
+        assert_eq!(states["jgitver"], "on");
+        assert_eq!(states["repackage"], "on");
+        assert_eq!(
+            args,
+            ["-Djgitver.skip=true", "-Dspring-boot.repackage.skip=true"]
+        );
     }
 }

@@ -1,0 +1,409 @@
+{
+  "measured_date": "2026-09-30",
+  "source_head": "48209306b4301bbfac09acaac9293b9dd9dd917a",
+  "source_has_working_tree_changes": true,
+  "workloads": {
+    "unrelated_setup_6000_ms": {
+      "delay_ms": 6000,
+      "runs": 5,
+      "maven": "Apache Maven 3.9.16 (2bdd9fddda4b155ebf8000e807eb73fd829a51d5)\nMaven home: /Users/prchr/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f\nJava version: 17.0.20.1, vendor: Eclipse Adoptium, runtime: /Users/prchr/.gradle/jdks/eclipse_adoptium-17-aarch64-os_x.2/jdk-17.0.20.1+1/Contents/Home\nDefault locale: en_US, platform encoding: UTF-8\nOS name: \"mac os x\", version: \"26.6.2\", arch: \"aarch64\", family: \"mac\"\n",
+      "sieve": "/Users/prchr/Documents/ai/java-test-impact-samples/target/release/sieve",
+      "samples": {
+        "native_full": [
+          {
+            "seconds": 7.452593125053681,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.413263624999672,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.37889724993147,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.373347874963656,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.412359042093158,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          }
+        ],
+        "module_selected": [
+          {
+            "seconds": 7.455506500089541,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.590304540935904,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.472891250043176,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.45063504204154,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 7.457179250079207,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          }
+        ],
+        "class_selected": [
+          {
+            "seconds": 2.3118029580218717,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.2779737079981714,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.3248963750666007,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.3060609999811277,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.1793159579392523,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          }
+        ]
+      },
+      "median_seconds": {
+        "native_full": 7.412359042093158,
+        "module_selected": 7.457179250079207,
+        "class_selected": 2.3060609999811277
+      },
+      "class_saving_vs_native_percent": 68.88897330950222,
+      "class_saving_vs_module_percent": 69.07596126301196,
+      "missing_base": {
+        "seconds": 7.372748334077187,
+        "mode": "ALL",
+        "executed": [
+          "example.PriceTest#totalIncludesTax",
+          "example.SlowUnrelatedTest#expensiveIndependentSetup"
+        ],
+        "failed": [],
+        "exit": 0
+      },
+      "failure_checks": {
+        "native_full": {
+          "seconds": 7.2876487920293584,
+          "mode": "ALL",
+          "executed": [
+            "example.PriceTest#totalIncludesTax",
+            "example.SlowUnrelatedTest#expensiveIndependentSetup"
+          ],
+          "failed": [
+            "example.PriceTest#totalIncludesTax"
+          ],
+          "exit": 1
+        },
+        "class_selected": {
+          "seconds": 2.144250415964052,
+          "mode": "SUBSET",
+          "executed": [
+            "example.PriceTest#totalIncludesTax"
+          ],
+          "failed": [
+            "example.PriceTest#totalIncludesTax"
+          ],
+          "exit": 1
+        }
+      }
+    },
+    "unrelated_setup_0_ms": {
+      "delay_ms": 0,
+      "runs": 5,
+      "maven": "Apache Maven 3.9.16 (2bdd9fddda4b155ebf8000e807eb73fd829a51d5)\nMaven home: /Users/prchr/.m2/wrapper/dists/apache-maven-3.9.16/56ba1f9f\nJava version: 17.0.20.1, vendor: Eclipse Adoptium, runtime: /Users/prchr/.gradle/jdks/eclipse_adoptium-17-aarch64-os_x.2/jdk-17.0.20.1+1/Contents/Home\nDefault locale: en_US, platform encoding: UTF-8\nOS name: \"mac os x\", version: \"26.6.2\", arch: \"aarch64\", family: \"mac\"\n",
+      "sieve": "/Users/prchr/Documents/ai/java-test-impact-samples/target/release/sieve",
+      "samples": {
+        "native_full": [
+          {
+            "seconds": 1.4000987500185147,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.368189958971925,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.3636159159941599,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.3765923749888316,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.3793896660208702,
+            "mode": "ALL",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          }
+        ],
+        "module_selected": [
+          {
+            "seconds": 1.4147442920366302,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.426146624959074,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.4114462920697406,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.4679659580579028,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 1.4275569580495358,
+            "mode": "MODULES",
+            "executed": [
+              "example.PriceTest#totalIncludesTax",
+              "example.SlowUnrelatedTest#expensiveIndependentSetup"
+            ],
+            "failed": [],
+            "exit": 0
+          }
+        ],
+        "class_selected": [
+          {
+            "seconds": 2.2183780419873074,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.1855599579866976,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.1942314580082893,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.205651249969378,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          },
+          {
+            "seconds": 2.22333108400926,
+            "mode": "SUBSET",
+            "executed": [
+              "example.PriceTest#totalIncludesTax"
+            ],
+            "failed": [],
+            "exit": 0
+          }
+        ]
+      },
+      "median_seconds": {
+        "native_full": 1.3765923749888316,
+        "module_selected": 1.426146624959074,
+        "class_selected": 2.205651249969378
+      },
+      "class_saving_vs_native_percent": -60.22544436854611,
+      "class_saving_vs_module_percent": -54.65809835876263,
+      "missing_base": {
+        "seconds": 1.390640415949747,
+        "mode": "ALL",
+        "executed": [
+          "example.PriceTest#totalIncludesTax",
+          "example.SlowUnrelatedTest#expensiveIndependentSetup"
+        ],
+        "failed": [],
+        "exit": 0
+      },
+      "failure_checks": {
+        "native_full": {
+          "seconds": 1.2818359170341864,
+          "mode": "ALL",
+          "executed": [
+            "example.PriceTest#totalIncludesTax",
+            "example.SlowUnrelatedTest#expensiveIndependentSetup"
+          ],
+          "failed": [
+            "example.PriceTest#totalIncludesTax"
+          ],
+          "exit": 1
+        },
+        "class_selected": {
+          "seconds": 2.1424511250806972,
+          "mode": "SUBSET",
+          "executed": [
+            "example.PriceTest#totalIncludesTax"
+          ],
+          "failed": [
+            "example.PriceTest#totalIncludesTax"
+          ],
+          "exit": 1
+        }
+      }
+    }
+  }
+}

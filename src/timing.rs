@@ -24,12 +24,42 @@ pub struct Timed {
     /// Sum of the test suite times in the XML reports.
     pub reported_test_seconds: f64,
     pub cases: usize,
+    pub executed: BTreeSet<String>,
     pub failed: BTreeSet<String>,
     /// Reports that could not be read, so that `failed` may be incomplete.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_error: Option<String>,
     #[serde(skip)]
     pub compile_error: bool,
+}
+
+impl Timed {
+    pub fn inconclusive(&self) -> bool {
+        self.report_error.is_some() || self.exit != Some(0) && self.failed.is_empty()
+    }
+}
+
+/// Failures absent from the selected run, plus build/report failures that prevent validation.
+pub(crate) fn missed(reference: &Timed, selected: &Timed) -> BTreeSet<String> {
+    let mut missed: BTreeSet<String> = reference
+        .failed
+        .difference(&selected.failed)
+        .cloned()
+        .collect();
+    if reference.exit != Some(0) && selected.exit == Some(0) {
+        missed.insert("<the reference build failed; the selected build passed>".into());
+    }
+    for (run, timed) in [("reference", reference), ("selected", selected)] {
+        if let Some(error) = &timed.report_error {
+            missed.insert(format!("<unreadable {run} reports: {error}>"));
+        }
+        if timed.exit != Some(0) && timed.failed.is_empty() {
+            missed.insert(format!(
+                "<inconclusive {run} build: failed without test failures>"
+            ));
+        }
+    }
+    missed
 }
 
 /// Phase names in order, each ending at the next marker.
@@ -200,7 +230,7 @@ pub fn run(command: &mut Command, log: &Path, workspace: &Path, tool: &str) -> R
         writeln!(file, "{at:9.3} {line}")?;
     }
     let (context_seconds, container_seconds) = startups(&lines);
-    let (reports, report_error) = match crate::fixtures::read_reports(workspace, tool) {
+    let (reports, report_error) = match crate::reports::read_reports(workspace, tool) {
         Ok(reports) => (reports, None),
         Err(error) => (Default::default(), Some(error.to_string())),
     };
@@ -212,6 +242,7 @@ pub fn run(command: &mut Command, log: &Path, workspace: &Path, tool: &str) -> R
         container_seconds,
         reported_test_seconds: reported_seconds(workspace),
         cases: reports.cases,
+        executed: reports.executed,
         failed: reports.failed,
         report_error,
         compile_error: lines.iter().any(|(_, l)| l.contains("COMPILATION ERROR")),
@@ -282,5 +313,22 @@ mod tests {
         assert_eq!(suite_time(xml), Some(1234.5));
         assert_eq!(suite_time("<testsuites/>"), None);
         assert_eq!(stats(&[3.0, 1.0, 2.0])["median"], 2.0);
+    }
+
+    #[test]
+    fn failed_builds_without_test_failures_cannot_validate_a_selection() {
+        let failed = Timed {
+            exit: Some(1),
+            ..Default::default()
+        };
+        assert!(failed.inconclusive());
+        assert!(!missed(&failed, &failed).is_empty());
+        let unreadable = Timed {
+            exit: Some(0),
+            report_error: Some("truncated XML".into()),
+            ..Default::default()
+        };
+        assert!(unreadable.inconclusive());
+        assert!(!missed(&unreadable, &unreadable).is_empty());
     }
 }
