@@ -16,6 +16,14 @@ public final class Listener implements TestExecutionListener {
     @Override
     public void testPlanExecutionStarted(TestPlan testPlan) {
         plan = testPlan;
+        try {
+            // Parallelism set through the build's configuration parameters, not system properties.
+            if (testPlan.getConfigurationParameters().getBoolean("junit.jupiter.execution.parallel.enabled").orElse(false)) {
+                State.parallel();
+            }
+        } catch (LinkageError | RuntimeException error) {
+            // JUnit Platform before 1.8 exposes no configuration parameters here.
+        }
     }
 
     @Override
@@ -23,9 +31,8 @@ public final class Listener implements TestExecutionListener {
         if (!State.enabled()) {
             return;
         }
-        String name = className(id.getSource());
-        if (name != null && id.isContainer()) {
-            State.classStarted(State.top(name));
+        if (id.getSource().orElse(null) instanceof ClassSource c && id.isContainer()) {
+            State.classStarted(State.top(c.getClassName()));
         }
     }
 
@@ -38,9 +45,9 @@ public final class Listener implements TestExecutionListener {
         if (result.getStatus() != TestExecutionResult.Status.SUCCESSFUL) {
             State.failed(name == null ? null : State.top(name));
         }
-        String own = className(id.getSource());
-        if (own != null && id.isContainer() && own.indexOf('$') < 0) {
-            State.classFinished(own);
+        // Parameterized and repeated tests are containers too, with a method source.
+        if (id.getSource().orElse(null) instanceof ClassSource c && c.getClassName().indexOf('$') < 0) {
+            State.classFinished(c.getClassName());
         }
     }
 

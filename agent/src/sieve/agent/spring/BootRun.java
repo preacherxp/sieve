@@ -2,6 +2,7 @@ package sieve.agent.spring;
 
 import java.time.Duration;
 import org.springframework.boot.ConfigurableBootstrapContext;
+import org.springframework.boot.SpringApplication;
 import org.springframework.boot.SpringApplicationRunListener;
 import org.springframework.context.ConfigurableApplicationContext;
 import sieve.agent.Contexts;
@@ -11,6 +12,9 @@ import sieve.agent.Contexts;
  * before any context customizer runs, and calls runners after the context has refreshed.
  */
 public final class BootRun implements SpringApplicationRunListener {
+    /** Spring Boot 2 instantiates run listeners with exactly these arguments. */
+    public BootRun(SpringApplication application, String[] args) {}
+
     @Override
     public void starting(ConfigurableBootstrapContext bootstrapContext) {
         Contexts.bootStarting();

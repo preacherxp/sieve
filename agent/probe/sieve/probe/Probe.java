@@ -16,10 +16,25 @@ public final class Probe {
     /** Absolute workspace path ending in a separator; file reads elsewhere are ignored. */
     public static volatile String root;
 
+    /** The workspace's real path, when a symlink or another spelling leads to it. */
+    public static volatile String realRoot;
+
     /** Set when a read may have gone unrecorded; the run then keeps no records. */
     public static volatile boolean failed;
 
     private Probe() {}
+
+    public static void roots(Path workspace) {
+        String absolute = workspace.toAbsolutePath().toString();
+        String real = absolute;
+        try {
+            real = workspace.toRealPath().toString();
+        } catch (java.io.IOException ignored) {
+            // The absolute path is all there is.
+        }
+        realRoot = real.endsWith(File.separator) ? real : real + File.separator;
+        root = absolute.endsWith(File.separator) ? absolute : absolute + File.separator;
+    }
 
     public static void hit(int id) {
         current.hit(id);
@@ -44,7 +59,9 @@ public final class Probe {
             } else {
                 return;
             }
-            if (path.startsWith(root) && !path.endsWith(".class")) {
+            String real = realRoot;
+            boolean inside = path.startsWith(root) || real != null && path.startsWith(real);
+            if (inside && !path.endsWith(".class")) {
                 current.file(path);
             }
         } catch (Throwable error) {

@@ -15,9 +15,10 @@ import java.util.Set;
 import sieve.probe.Probe;
 
 /**
- * Entry point of {@code -javaagent:sieve-agent.jar=<options file>}, which {@code sieve} passes
- * through {@code JDK_JAVA_OPTIONS}. The options file is written by the {@code sieve} binary;
- * without it the agent does nothing.
+ * Starts the agent on a Java 24+ JVM, called by {@link Boot} for
+ * {@code -javaagent:sieve-agent.jar=<options file>}, which {@code sieve} passes through
+ * {@code JDK_JAVA_OPTIONS}. The options file is written by the {@code sieve} binary; without it
+ * the agent does nothing.
  */
 public final class Agent {
     private Agent() {}
@@ -27,12 +28,7 @@ public final class Agent {
             return;
         }
         // JDK_JAVA_OPTIONS also reaches the build tool's own JVM, which runs no tests.
-        String command = System.getProperty("sun.java.command", "");
-        if (command.startsWith("org.codehaus.plexus.classworlds.launcher.Launcher") || command.startsWith("org.mvndaemon.")) {
-            return;
-        }
-        if (Runtime.version().feature() < 24) {
-            System.err.println("sieve: test records need a Java 24+ test JVM, not " + Runtime.version() + "; every test runs");
+        if (Boot.isBuildTool()) {
             return;
         }
         Properties options = new Properties();
@@ -55,7 +51,7 @@ public final class Agent {
             }
         }
         // File reads count when they go through the JDK's file APIs, which are already loaded.
-        List<Class<?>> jdk = new ArrayList<>(List.of(java.io.FileInputStream.class, java.io.RandomAccessFile.class));
+        List<Class<?>> jdk = new ArrayList<>(List.of(java.io.File.class, java.io.FileInputStream.class, java.io.RandomAccessFile.class));
         for (Class<?> c = FileSystems.getDefault().provider().getClass();
                 c != null && c != java.nio.file.spi.FileSystemProvider.class;
                 c = c.getSuperclass()) {
@@ -82,7 +78,6 @@ public final class Agent {
         } catch (Throwable error) {
             State.error("retransform: " + error);
         }
-        String root = Path.of(workspace).toAbsolutePath().toString();
-        Probe.root = root.endsWith(java.io.File.separator) ? root : root + java.io.File.separator;
+        Probe.roots(Path.of(workspace));
     }
 }

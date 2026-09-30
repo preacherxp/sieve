@@ -28,14 +28,31 @@ final class Transformer implements ClassFileTransformer {
     private static final ClassDesc PROBE = ClassDesc.of("sieve.probe.Probe");
     private static final MethodTypeDesc HIT = MethodTypeDesc.of(ConstantDescs.CD_void, ConstantDescs.CD_int);
     private static final MethodTypeDesc FILE = MethodTypeDesc.of(ConstantDescs.CD_void, ConstantDescs.CD_Object);
-    private static final Set<String> FILE_METHODS = Set.of("newByteChannel", "newFileChannel", "newAsynchronousFileChannel");
+    /** File-system provider methods whose first parameter is the path they open, list, or probe. */
+    private static final Set<String> FILE_METHODS = Set.of("newByteChannel", "newFileChannel", "newAsynchronousFileChannel",
+            "newDirectoryStream", "copy", "checkAccess", "readAttributes", "readAttributesIfExists", "exists",
+            "isDirectory", "isRegularFile");
+    /** {@code java.io.File} methods that look at the file they are called on. */
+    private static final Set<String> SELF_METHODS = Set.of("exists", "isFile", "isDirectory", "length", "list", "listFiles");
 
-    private final List<Path> outputs;
+    private final Set<Path> outputs = new java.util.HashSet<>();
     private final Set<String> jdk;
+    private final java.util.Map<String, java.util.Optional<Path>> locations = new java.util.concurrent.ConcurrentHashMap<>();
 
     Transformer(List<Path> outputs, Set<String> jdk) {
-        this.outputs = List.copyOf(outputs);
+        // Real paths, so that a symlinked or differently spelled checkout still matches.
+        for (Path output : outputs) {
+            this.outputs.add(real(output));
+        }
         this.jdk = Set.copyOf(jdk);
+    }
+
+    private static Path real(Path path) {
+        try {
+            return path.toRealPath();
+        } catch (java.io.IOException error) {
+            return path.toAbsolutePath().normalize();
+        }
     }
 
     @Override
@@ -52,7 +69,9 @@ final class Transformer implements ClassFileTransformer {
             if (dir == null || !Files.isRegularFile(dir.resolve(name + ".class"))) {
                 return null;
             }
-            return methodProbes(loader, name, bytes);
+            byte[] probed = methodProbes(loader, name, bytes);
+            State.instrumented();
+            return probed;
         } catch (Throwable error) {
             State.error(name + ": " + error);
             return null;
@@ -65,8 +84,14 @@ final class Transformer implements ClassFileTransformer {
         if (location == null || !"file".equals(location.getProtocol())) {
             return null;
         }
-        Path path = Path.of(location.toURI()).toAbsolutePath().normalize();
-        return outputs.contains(path) ? path : null;
+        return locations.computeIfAbsent(location.toString(), key -> {
+            try {
+                Path path = real(Path.of(location.toURI()));
+                return java.util.Optional.ofNullable(outputs.contains(path) ? path : null);
+            } catch (java.net.URISyntaxException | RuntimeException error) {
+                return java.util.Optional.empty();
+            }
+        }).orElse(null);
     }
 
     private static ClassFile classFile(ClassLoader loader) {
@@ -91,14 +116,18 @@ final class Transformer implements ClassFileTransformer {
         });
     }
 
-    /** Reports the {@code File}, {@code String}, or {@code Path} that the first parameter opens. */
+    /**
+     * Reports the {@code File}, {@code String}, or {@code Path} that a method opens, lists, or
+     * probes: the first parameter, or the {@code File} itself.
+     */
     private static byte[] fileProbes(byte[] bytes) {
         ClassFile file = classFile(null);
         ClassModel model = file.parse(bytes);
         return file.transformClass(model, (builder, element) -> {
-            if (element instanceof MethodModel method && method.code().isPresent() && opens(method)) {
-                builder.transformMethod(method, MethodTransform.transformingCode(new Prologue(b -> {
-                    b.aload(1);
+            int slot = element instanceof MethodModel method && method.code().isPresent() ? slot(model, method) : -1;
+            if (slot >= 0) {
+                builder.transformMethod((MethodModel) element, MethodTransform.transformingCode(new Prologue(b -> {
+                    b.aload(slot);
                     b.invokestatic(PROBE, "file", FILE);
                 })));
             } else {
@@ -107,16 +136,20 @@ final class Transformer implements ClassFileTransformer {
         });
     }
 
-    private static boolean opens(MethodModel method) {
+    /** The local variable slot holding the file a method uses, or -1. */
+    private static int slot(ClassModel model, MethodModel method) {
         if ((method.flags().flagsMask() & ClassFile.ACC_STATIC) != 0) {
-            return false;
+            return -1;
         }
         String name = method.methodName().stringValue();
         String type = method.methodType().stringValue();
-        if (name.equals("<init>")) {
-            return type.startsWith("(Ljava/io/File;");
+        if (model.thisClass().asInternalName().equals("java/io/File")) {
+            return SELF_METHODS.contains(name) ? 0 : -1;
         }
-        return FILE_METHODS.contains(name) && type.startsWith("(Ljava/nio/file/Path;");
+        if (name.equals("<init>")) {
+            return type.startsWith("(Ljava/io/File;") ? 1 : -1;
+        }
+        return FILE_METHODS.contains(name) && type.startsWith("(Ljava/nio/file/Path;") ? 1 : -1;
     }
 
     private record Prologue(java.util.function.Consumer<CodeBuilder> start) implements CodeTransform {

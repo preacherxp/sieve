@@ -26,6 +26,7 @@ public final class ContextHook implements ContextCustomizerFactory {
         @Override
         public void customizeContext(ConfigurableApplicationContext context, MergedContextConfiguration config) {
             Contexts.starting(context);
+            Contexts.propertySources(config);
             context.addApplicationListener(new Refreshed(context));
         }
 

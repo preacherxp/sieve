@@ -42,7 +42,9 @@ final class State {
     }
 
     private static final Map<String, Run> RUNS = new LinkedHashMap<>();
-    private static final Map<Object, Bucket> CONTEXTS = new IdentityHashMap<>();
+    /** Weak, so that contexts the cache evicts can be collected; contexts use identity equality. */
+    private static final Map<Object, Bucket> CONTEXTS = new java.util.WeakHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicInteger INSTRUMENTED = new java.util.concurrent.atomic.AtomicInteger();
     private static final Set<String> DROPPED = new TreeSet<>();
     private static final Set<String> FLUSHED = new LinkedHashSet<>();
     private static String active;
@@ -73,6 +75,14 @@ final class State {
 
     static void error(String message) {
         ERRORS.add(message);
+    }
+
+    static void instrumented() {
+        INSTRUMENTED.incrementAndGet();
+    }
+
+    static synchronized void parallel() {
+        parallel = true;
     }
 
     /** {@code a.B$C} and {@code a.B} both belong to the record of {@code a.B}. */
@@ -310,11 +320,17 @@ final class State {
         synchronized (METHODS) {
             names = METHODS.toArray(String[]::new);
         }
+        List<String> errors = new ArrayList<>(ERRORS);
+        if (INSTRUMENTED.get() == 0 && !RUNS.isEmpty()) {
+            // Tests ran, yet no project class was probed: the output directories did not match.
+            errors.add("no project class was instrumented");
+        }
         StringBuilder out = new StringBuilder("{\"jdk\":");
         string(out, jdk());
+        out.append(",\"started\":").append(ProcessHandle.current().info().startInstant().map(java.time.Instant::toEpochMilli).orElse(0L));
         out.append(",\"parallel\":").append(parallel || Probe.failed || parallelConfigured());
         out.append(",\"errors\":");
-        strings(out, new ArrayList<>(ERRORS));
+        strings(out, errors);
         out.append(",\"dropped\":");
         strings(out, new ArrayList<>(DROPPED));
         out.append(",\"tests\":[");
