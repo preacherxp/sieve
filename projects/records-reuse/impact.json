@@ -1,0 +1,7 @@
+{
+  "tool": "maven",
+  "modules": {
+    ".": []
+  },
+  "records": true
+}

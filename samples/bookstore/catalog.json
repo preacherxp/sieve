@@ -1,0 +1,42 @@
+{
+  "samples": 3,
+  "build_args": [
+    "-Dbookstore.setupMillis=200"
+  ],
+  "edits": [
+    {
+      "name": "Inventory reserve body",
+      "kind": "body",
+      "file": "src/main/java/bookstore/orders/Inventory.java",
+      "search": "        int available = stock.getOrDefault(isbn, 0);\n        if (available < quantity) {",
+      "replace": "        int available = stock.getOrDefault(isbn, 0);\n        boolean lacking = available < quantity;\n        if (available < quantity) {"
+    },
+    {
+      "name": "Tax rounding body",
+      "kind": "body",
+      "file": "src/main/java/bookstore/pricing/TaxRules.java",
+      "search": "        return net.add(net.multiply(rate)).setScale(2, RoundingMode.HALF_UP);",
+      "replace": "        BigDecimal gross = net.add(net.multiply(rate));\n        return gross.setScale(2, RoundingMode.HALF_UP);"
+    },
+    {
+      "name": "Inventory new field",
+      "kind": "structural",
+      "file": "src/main/java/bookstore/orders/Inventory.java",
+      "search": "    private final Map<String, Integer> stock = new HashMap<>();",
+      "replace": "    private final Map<String, Integer> stock = new HashMap<>();\n    private int reservations;"
+    },
+    {
+      "name": "New inventory test",
+      "kind": "new-test",
+      "file": "src/test/java/bookstore/orders/InventoryRestockTest.java",
+      "content": "package bookstore.orders;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport org.junit.jupiter.api.Test;\n\nclass InventoryRestockTest {\n    @Test\n    void restocksAdd() {\n        Inventory inventory = new Inventory();\n        inventory.restock(\"x\", 2);\n        inventory.restock(\"x\", 3);\n        assertEquals(5, inventory.available(\"x\"));\n    }\n}\n"
+    },
+    {
+      "name": "README note",
+      "kind": "docs",
+      "file": "README.md",
+      "search": "\n",
+      "replace": "\n\n"
+    }
+  ]
+}

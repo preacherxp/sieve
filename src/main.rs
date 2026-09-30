@@ -1,9 +1,14 @@
 use serde::{Deserialize, Serialize};
+mod bytecode;
+mod catalog;
 mod classes;
 mod fingerprint;
 mod fixtures;
+mod generated;
+mod records;
 mod replay;
 mod setup;
+mod timing;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -28,6 +33,15 @@ struct Config {
     /// classes whose bytecode reaches a changed class.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     class_level: bool,
+    /// Globs for build inputs, such as OpenAPI specifications, that reach tests only
+    /// through the sources generated from them. Class-level selection compares those
+    /// sources with the ones generated at the comparison base (Maven only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    generated: Vec<String>,
+    /// Local mode for single-module Maven projects: `run` loads the agent into the test JVM,
+    /// which keeps test records and drops the test classes whose records are unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    records: bool,
 }
 
 const DEFAULT_IGNORE: &[&str] = &["README.md", "docs/**", "/README.md", "/docs/**"];
@@ -63,6 +77,18 @@ struct Selection {
     /// Changed paths inside module source directories, which class-level selection maps.
     #[serde(skip)]
     sources: BTreeSet<String>,
+    /// Generated sources that differ from the comparison base's.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    generated: BTreeSet<String>,
+    /// Local mode: test classes dropped at discovery.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    skipped: BTreeSet<String>,
+    /// Local mode: why each test class ran or was dropped.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    reasons: BTreeMap<String, String>,
+    /// Local mode: the state of each speed-up.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    speedups: BTreeMap<String, String>,
     reason: String,
 }
 
@@ -101,7 +127,20 @@ impl Config {
         {
             return Err(format!("Invalid ignore pattern: {pattern:?}").into());
         }
+        if let Some(pattern) = self
+            .generated
+            .iter()
+            .find(|p| p.is_empty() || p.starts_with('/'))
+        {
+            return Err(format!("Invalid generated pattern: {pattern:?}").into());
+        }
         Ok(())
+    }
+
+    fn generated_input(&self, path: &str) -> bool {
+        self.generated
+            .iter()
+            .any(|pattern| glob(pattern.as_bytes(), path.as_bytes()))
     }
 
     /// `prefix` is the workspace path below the repository root, used by `/` patterns.
@@ -129,6 +168,10 @@ impl Config {
             tests: BTreeSet::new(),
             changed: BTreeSet::new(),
             sources: BTreeSet::new(),
+            generated: BTreeSet::new(),
+            skipped: BTreeSet::new(),
+            reasons: BTreeMap::new(),
+            speedups: BTreeMap::new(),
             reason: reason.into(),
         }
     }
@@ -189,6 +232,10 @@ impl Config {
             reason: reason.into(),
             changed,
             sources,
+            generated: BTreeSet::new(),
+            skipped: BTreeSet::new(),
+            reasons: BTreeMap::new(),
+            speedups: BTreeMap::new(),
         }
     }
 }
@@ -257,8 +304,8 @@ fn git(workspace: &Path, args: &[&str]) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-/// Returns changed paths and the workspace prefix below the repository root.
-fn changed_paths(workspace: &Path, base: &str) -> Result<(BTreeSet<String>, String)> {
+/// Returns changed paths, the workspace prefix below the repository root, and the merge base.
+fn changed_paths(workspace: &Path, base: &str) -> Result<(BTreeSet<String>, String, String)> {
     // Resolve revisions separately, so user input cannot become a Git option/pathspec.
     let revision = format!("{base}^{{commit}}");
     let base = String::from_utf8(git(
@@ -299,7 +346,7 @@ fn changed_paths(workspace: &Path, base: &str) -> Result<(BTreeSet<String>, Stri
         })
         .collect::<Result<_>>()?;
     let prefix = prefix.to_str().ok_or("Non-UTF-8 path")?.replace('\\', "/");
-    Ok((changed, prefix))
+    Ok((changed, prefix, merge_base.trim().to_owned()))
 }
 
 /// The goal or task limited to `modules`. Maven also builds the modules they depend on;
@@ -362,6 +409,11 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
                 if module == "." { "root" } else { module },
                 compile_only || !selection.modules.contains(module)
             ));
+        }
+        // The compile step just built these main classes from the same sources; generated
+        // sources may be rewritten, which would otherwise recompile everything.
+        if filter.is_some() {
+            args.push("-Dmaven.main.skip=true".into());
         }
         // Excludes keep the POM's includes and suite assignment.
         if let Some(excludes) = filter.filter(|_| subset) {
@@ -463,11 +515,22 @@ fn main_result() -> Result<u8> {
     if command == "init" || command == "refresh" {
         return setup::init(args.collect(), command == "refresh");
     }
+    match command.as_str() {
+        "record" => return records::record(args.collect()),
+        "decide" => return records::decide(args.collect()),
+        "env" => return records::env_command(args.collect()),
+        "catalog" => return catalog::main(args.collect()),
+        "classify" => return catalog::classify_main(args.collect()),
+        _ => {}
+    }
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "sieve <select|run> --workspace PATH [--base REV | --full]\n\
-                  [--output FILE] [--executable PATH] [-- BUILD_ARGS...]\n\n\
+                  [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
                   sieve <init|refresh> [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
+                  sieve env --workspace PATH [--base REV]\n\
+                  sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
+                  sieve classify --workspace PATH [--commits N]\n\
                   sieve replay --workspace PATH [--commits N] [--run] [-- BUILD_ARGS...]\n\
                   sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\n\
                   Requires impact.json and the build adapters documented in README.md.\n\
@@ -483,6 +546,7 @@ fn main_result() -> Result<u8> {
     let mut full = false;
     let mut output = None;
     let mut executable = None;
+    let mut levers = records::Levers::default();
     let mut extra = Vec::new();
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -501,19 +565,36 @@ fn main_result() -> Result<u8> {
             "--base" => base = Some(value),
             "--output" => output = Some(PathBuf::from(value)),
             "--executable" => executable = Some(value),
+            "--with" => levers.on.extend(value.split(',').map(str::to_owned)),
+            "--without" => levers.off.extend(value.split(',').map(str::to_owned)),
             _ => return Err(format!("Unknown option: {arg}").into()),
         }
     }
+    levers.validate()?;
     if full && base.is_some() {
         return Err("Use either --base or --full".into());
     }
     let workspace = workspace.ok_or("--workspace is required")?.canonicalize()?;
     let config = Config::read(&workspace)?;
+    if config.records && command == "run" {
+        let run = records::Run {
+            base,
+            full,
+            output,
+            executable,
+            levers,
+            extra,
+        };
+        return records::run(&config, &workspace, run);
+    }
+    let mut comparison = None;
     let mut selection = match base {
         Some(base) => match changed_paths(&workspace, &base) {
-            Ok((changed, prefix)) => match fingerprint::build_inputs(&workspace) {
+            Ok((changed, prefix, merge_base)) => match fingerprint::build_inputs(&workspace) {
                 Ok(current) if config.build_fingerprint.as_ref() == Some(&current) => {
-                    config.select(changed, &prefix)
+                    let selection = config.select(changed, &prefix);
+                    comparison = Some((prefix, merge_base));
+                    selection
                 }
                 Ok(_) => {
                     let mut selection = config.all("Build inputs changed or no fingerprint exists; run sieve refresh and review impact.json");
@@ -530,6 +611,15 @@ fn main_result() -> Result<u8> {
         },
         None => config.all("Full run requested or no comparison base supplied"),
     };
+    // Test hook: a selector that drops everything, which planted bugs must catch.
+    if command == "run"
+        && env::var_os("SIEVE_BROKEN_SELECTOR").is_some()
+        && selection.mode != "NONE"
+    {
+        selection.mode = "NONE";
+        selection.modules.clear();
+        selection.reason = "SIEVE_BROKEN_SELECTOR drops every test".into();
+    }
     let write = |selection: &Selection| -> Result<String> {
         let json = serde_json::to_string_pretty(selection)? + "\n";
         if let Some(path) = &output {
@@ -561,6 +651,27 @@ fn main_result() -> Result<u8> {
     let mut filter = None;
     if config.class_level && selection.mode == "MODULES" {
         eprintln!("{json}Compiling for class-level selection");
+        // The comparison base generates its sources while the workspace compiles.
+        let inputs: BTreeSet<String> = selection
+            .sources
+            .iter()
+            .filter(|path| config.generated_input(path))
+            .cloned()
+            .collect();
+        let base = match &comparison {
+            Some((prefix, merge_base)) if !inputs.is_empty() && config.tool == "maven" => {
+                Some(generated::Base::start(
+                    &config,
+                    &selection.modules,
+                    &workspace,
+                    prefix,
+                    merge_base,
+                    &executable,
+                    &extra,
+                ))
+            }
+            _ => None,
+        };
         let listing = temp.path().join("classes.json");
         let status = Command::new(&executable)
             .current_dir(&workspace)
@@ -572,7 +683,18 @@ fn main_result() -> Result<u8> {
             return Ok(1);
         }
         // Analysis problems keep the module selection instead of failing the build.
-        let unselected = class_dirs(&config, &workspace, &listing)
+        let unselected = base
+            .map(|base| base.and_then(|base| base.changes(&selection.modules, &workspace)))
+            .transpose()
+            .and_then(|generated| {
+                // Generated inputs are replaced by the generated sources they changed.
+                if let Some(generated) = generated {
+                    selection.sources.retain(|path| !inputs.contains(path));
+                    selection.sources.extend(generated.iter().cloned());
+                    selection.generated = generated;
+                }
+                class_dirs(&config, &workspace, &listing)
+            })
             .and_then(|dirs| classes::load(&dirs))
             .and_then(|classes| selection.refine(&classes, &workspace, config.tool == "maven"))
             .unwrap_or_else(|error| {
@@ -875,6 +997,7 @@ mod tests {
                 "-Dimpact.skip.app=false",
                 "-Dimpact.skip.core=false",
                 "-Dimpact.skip.other=true",
+                "-Dmaven.main.skip=true",
                 "-Dsurefire.excludesFile=/tmp/tests.txt",
                 "-Dfailsafe.excludesFile=/tmp/tests.txt"
             ]
@@ -926,7 +1049,8 @@ mod tests {
         assert!(build_args(&config, &selection, Some(filter)).ends_with(&[
             "-Dimpact.skip.app=true".into(),
             "-Dimpact.skip.core=true".into(),
-            "-Dimpact.skip.other=true".into()
+            "-Dimpact.skip.other=true".into(),
+            "-Dmaven.main.skip=true".into()
         ]));
         // Fallbacks keep the module selection.
         let mut selection = config.select(

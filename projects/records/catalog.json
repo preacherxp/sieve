@@ -1,0 +1,47 @@
+{
+  "samples": 3,
+  "edits": [
+    {
+      "name": "Calculator add body",
+      "kind": "body",
+      "file": "src/main/java/example/Calculator.java",
+      "search": "        return a + b;",
+      "replace": "        int sum = a + b;\n        return sum;"
+    },
+    {
+      "name": "Order listener body",
+      "kind": "listener-body",
+      "file": "src/main/java/example/OrderListener.java",
+      "search": "        log.add(\"placed \" + event.id());",
+      "replace": "        String entry = \"placed \" + event.id();\n        log.add(entry);"
+    },
+    {
+      "name": "Greeting service constructor",
+      "kind": "body",
+      "file": "src/main/java/example/GreetingService.java",
+      "search": "        this.prefix = prefix;",
+      "replace": "        this.prefix = prefix + \"\";"
+    },
+    {
+      "name": "Application property",
+      "kind": "config",
+      "file": "src/main/resources/application.properties",
+      "search": "app.greeting.prefix=Hello",
+      "replace": "app.greeting.prefix=Hello\napp.unused=1"
+    },
+    {
+      "name": "Price fixture",
+      "kind": "fixture",
+      "file": "src/test/resources/prices.json",
+      "search": "\"pear\": 4",
+      "replace": "\"pear\": 5"
+    },
+    {
+      "name": "Greeter override",
+      "kind": "structural",
+      "file": "src/main/java/example/LoudGreeter.java",
+      "search": "public class LoudGreeter extends Greeter {",
+      "replace": "public class LoudGreeter extends Greeter {\n    @Override\n    public String greet(String name) {\n        return super.greet(name);\n    }\n"
+    }
+  ]
+}
