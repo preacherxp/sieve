@@ -28,6 +28,7 @@ final class Transformer implements ClassFileTransformer {
     private static final ClassDesc PROBE = ClassDesc.of("sieve.probe.Probe");
     private static final MethodTypeDesc HIT = MethodTypeDesc.of(ConstantDescs.CD_void, ConstantDescs.CD_int);
     private static final MethodTypeDesc FILE = MethodTypeDesc.of(ConstantDescs.CD_void, ConstantDescs.CD_Object);
+    private static final Set<String> LISTINGS = Set.of("list", "listFiles", "newDirectoryStream");
     /** File-system provider methods whose first parameter is the path they open, list, or probe. */
     private static final Set<String> FILE_METHODS = Set.of("newByteChannel", "newFileChannel", "newAsynchronousFileChannel",
             "newDirectoryStream", "copy", "checkAccess", "readAttributes", "readAttributesIfExists", "exists",
@@ -126,9 +127,10 @@ final class Transformer implements ClassFileTransformer {
         return file.transformClass(model, (builder, element) -> {
             int slot = element instanceof MethodModel method && method.code().isPresent() ? slot(model, method) : -1;
             if (slot >= 0) {
+                String probe = LISTINGS.contains(((MethodModel) element).methodName().stringValue()) ? "list" : "file";
                 builder.transformMethod((MethodModel) element, MethodTransform.transformingCode(new Prologue(b -> {
                     b.aload(slot);
-                    b.invokestatic(PROBE, "file", FILE);
+                    b.invokestatic(PROBE, probe, FILE);
                 })));
             } else {
                 builder.with(element);

@@ -1,5 +1,7 @@
 # 05 Structural changes invalidate records per class
 
+Closed 2026-09-30: implemented; the remaining oracle scenarios moved to [TODO.md](TODO.md).
+
 Type: AFK
 
 Status (2026-09-30): implemented (shape and hierarchy check against a per-record class

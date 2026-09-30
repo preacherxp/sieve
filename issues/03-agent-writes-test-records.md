@@ -1,5 +1,7 @@
 # 03 Agent writes test records
 
+Closed 2026-09-30: implemented; the CI job still needs a GitHub run ([TODO.md](TODO.md)).
+
 Type: AFK
 
 Status (2026-09-30): implemented. `agent/` (probe, agent, API stubs), `build.rs`, the `agent`

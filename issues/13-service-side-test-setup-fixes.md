@@ -1,5 +1,7 @@
 # 13 Service-side test setup fixes
 
+Closed 2026-09-30: per-service audits are done and kept privately; applying them in the service repositories moved to [TODO.md](TODO.md).
+
 Type: HITL. The work happens in the services' own repositories, not here.
 
 ## Parent PRD

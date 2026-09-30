@@ -1,5 +1,7 @@
 # PRD: Local-first test selection with test records
 
+Closed 2026-09-30: issues 01 and 03–12 are implemented; 02 is measured, and 13 and 14 are handed over. Open follow-ups are in [TODO.md](TODO.md).
+
 Status: agreed in the design session of 2026-09-30. Decisions:
 [ADR 0001](../docs/adr/0001-record-runtime-evidence-for-context-tests.md),
 [ADR 0002](../docs/adr/0002-select-tests-inside-the-test-jvm.md). Terms: [CONTEXT.md](../CONTEXT.md).

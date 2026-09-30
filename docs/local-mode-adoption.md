@@ -18,7 +18,9 @@ guide takes a service from zero to measured. The mechanics are described in the
 
 ## Switch it on
 
-Add the flag to `impact.json`, or create the file if the service has none yet:
+There is nothing to switch on: `sieve run` in the service's directory uses local mode on any
+single-module Maven project. `scripts/setup-local-mode.sh SERVICE_DIR` checks the prerequisites
+and writes the settings into `impact.json` for the team to share:
 
 ```json
 { "tool": "maven", "modules": { ".": [] }, "records": true,
@@ -29,13 +31,12 @@ List the sources of generated code, such as OpenAPI specifications, under `gener
 edit to them then cleans the build first, so that no stale generated class survives.
 `.sieve/` ignores itself in Git; nothing else needs committing besides `impact.json`.
 
-Run once from a clean state to record every test, then work as usual:
+The code must compile: Maven compiles every test before any runs. Then work as usual:
 
 ```bash
-sieve run --workspace .                     # first run: every test, records written
-sieve run --workspace .                     # nothing changed: no build
-sieve run --workspace . -- -Dtest=MyTest    # explicit tests always run
-JDK_JAVA_OPTIONS="$(sieve env --workspace .)" mvn verify   # the same selection, plain Maven
+sieve run                      # first run: every test, records written; later: what edits affect
+sieve run -- -Dtest=MyTest     # explicit tests always run
+JDK_JAVA_OPTIONS="$(sieve env)" mvn verify   # the same selection, plain Maven
 ```
 
 `--output selection.json` explains every test class: which method, resource, or wiring

@@ -1,5 +1,7 @@
 # 10 Local speed-ups
 
+Closed 2026-09-30: `reuse` and `jgitver` are on, `mvnd` is opt-in, and the AOT cache is dropped; `mvnd` checks moved to [TODO.md](TODO.md).
+
 Type: AFK
 
 Status (2026-09-30): `reuse` and `jgitver` are on by default and `mvnd` is opt-in (its daemon

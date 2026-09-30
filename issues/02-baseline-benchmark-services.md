@@ -1,5 +1,7 @@
 # 02 Baseline the benchmark services
 
+Closed 2026-09-30: all four services run green locally with Docker; private catalogs, results, and a summary are kept outside this repository.
+
 Type: HITL
 
 ## Parent PRD

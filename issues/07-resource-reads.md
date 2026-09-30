@@ -1,5 +1,7 @@
 # 07 Record classpath resource reads
 
+Closed 2026-09-30: implemented with dynamic probes instead of a static path-reader rule.
+
 Type: AFK
 
 Status (2026-09-30): implemented dynamically. The agent probes `FileInputStream`,

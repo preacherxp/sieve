@@ -1,5 +1,7 @@
 # 06 Context startup and Spring wiring
 
+Closed 2026-09-30: implemented; the test-class order check moved to [TODO.md](TODO.md).
+
 Type: AFK
 
 Status (2026-09-30): implemented with a `ContextCustomizerFactory`, a Spring

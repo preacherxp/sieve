@@ -184,7 +184,7 @@ For new or deleted tests, the post-mutation inventory remains independent of sel
 output: `required` adds tests, `removed_tests` removes them, and `invocations` records
 per-class invocation counts. The `delete-test` case exercises removal directly.
 
-## 6. Container and service integration
+## 6. Testcontainers and service integration
 
 The current Kafka and Redis smoke jobs establish service connectivity. They run
 Maven directly from [projects/containers](../projects/containers/pom.xml), so they
@@ -196,7 +196,7 @@ is unavailable, so those new executions still require CI confirmation.
 | ID | Priority | Case and acceptance | Status |
 | --- | --- | --- | --- |
 | INT-01 | P1 | Baseline Kafka produce/consume and Redis SET/GET succeed using mapped ports, bounded waits, and cleanup on success/failure. | Existing standalone tests |
-| INT-02 | P0 | Put a service-backed consumer in a supported module graph. Change a declared provider and assert the consumer's container tests are selected and its deliberate failure is detected. | Implemented in Docker CI; local execution unavailable |
+| INT-02 | P0 | Put a service-backed consumer in a supported module graph. Change a declared provider and assert the consumer's Testcontainers tests are selected and its deliberate failure is detected. | Implemented in Docker CI; local execution unavailable |
 | INT-03 | P1 | Change an independent module. Exclude the service module, execute its selected peers, and prove that no Kafka/Redis container starts. Empty test XML alone is insufficient evidence of avoided startup. | Implemented in Docker CI; local execution unavailable |
 | INT-04 | P0 | Change service configuration under module resources versus container image/version configuration in a build file. Select the owning module/dependents in the first case and `ALL` in the second. | Implemented in Docker CI; local execution unavailable |
 | INT-05 | P0 | Docker unavailable, image pull failure, service startup timeout, or a failing assertion returns failure with usable logs and cleans up created containers. Distinguish infrastructure failure from a fixture's expected assertion failure. | Implemented image-pull/timeout/assertion failure and cleanup; requires Docker execution |
@@ -274,7 +274,7 @@ for parallel CI. No speed percentage should be inferred from test counts alone.
   fixtures with bytecode selection; required tests, expected failures, and the exact
   executed inventory are checked by the independent oracle.
 - `src/classes.rs` unit tests: supertype dispatch without sibling implementations,
-  decorators, constant users found by source names, DI components reaching container
+  decorators, constant users found by source names, DI components reaching context
   tests through composed annotations and inherited configuration.
   Unsupported layout checks exercise real Gradle with local placeholder plugin IDs;
   they do not build Android/KMP applications.

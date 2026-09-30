@@ -1,5 +1,7 @@
 # 12 Commit walk
 
+Closed 2026-09-30: implemented; the commons-text walk moved to [TODO.md](TODO.md).
+
 Type: AFK
 
 Status (2026-09-30): implemented as `sieve replay --walk [--plant]`. Tested on a local history of

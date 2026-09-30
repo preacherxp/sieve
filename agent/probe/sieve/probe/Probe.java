@@ -41,6 +41,18 @@ public final class Probe {
     }
 
     public static void file(Object target) {
+        record(target, "");
+    }
+
+    /** A directory listing, whose entries count rather than the directory's existence. */
+    public static void list(Object target) {
+        record(target, LISTED);
+    }
+
+    /** Marks listed directories in the recorded paths. */
+    public static final String LISTED = "ls:";
+
+    private static void record(Object target, String kind) {
         String root = Probe.root;
         if (root == null || target == null) {
             return;
@@ -62,7 +74,7 @@ public final class Probe {
             String real = realRoot;
             boolean inside = path.startsWith(root) || real != null && path.startsWith(real);
             if (inside && !path.endsWith(".class")) {
-                current.file(path);
+                current.file(kind + path);
             }
         } catch (Throwable error) {
             // A probe must never change the behavior of the code it observes.

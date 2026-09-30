@@ -379,7 +379,7 @@ fn walk(
     if config.tool != "maven" || config.modules.keys().ne(["."]) {
         return Err("--walk needs a single-module Maven project; use --run otherwise".into());
     }
-    config.records = true;
+    config.records = Some(true);
     let config = &config;
     let root = Path::new(&git(workspace, &["rev-parse", "--show-toplevel"])?).canonicalize()?;
     let prefix = workspace.strip_prefix(&root)?.to_owned();

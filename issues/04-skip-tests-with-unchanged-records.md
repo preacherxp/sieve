@@ -1,5 +1,7 @@
 # 04 Skip tests whose records are unchanged
 
+Closed 2026-09-30: implemented; `fixtures verify --records` moved to [TODO.md](TODO.md).
+
 Type: AFK
 
 Status (2026-09-30): implemented, except `fixtures verify --records`. The scenarios run as

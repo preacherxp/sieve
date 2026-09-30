@@ -1,5 +1,7 @@
 # 11 Planted bugs
 
+Closed 2026-09-30: implemented.
+
 Type: AFK
 
 Status (2026-09-30): implemented as `sieve catalog --plant` and `sieve replay --walk --plant`.

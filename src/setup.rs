@@ -335,7 +335,7 @@ fn maven_config(
         ignore: None,
         class_level: false,
         generated: Vec::new(),
-        records: false,
+        records: None,
     };
     let mut edits = Vec::new();
     for (module, model) in models {

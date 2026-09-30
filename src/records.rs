@@ -159,9 +159,28 @@ fn outputs(workspace: &Path) -> [(PathBuf, bool); 2] {
     ]
 }
 
-/// Content hash of a file a test read; `-` when it does not exist. Spring Boot's build
-/// information is hashed without its timestamp, which every native build rewrites.
+/// Marks directories whose listing a test read, as the agent reports them.
+const LISTED: &str = "ls:";
+
+/// The state of a recorded path: the content hash of a file, `dir` for a directory, or `-`
+/// when it does not exist. Spring Boot's build information is hashed without its timestamp,
+/// which every native build rewrites.
 fn file_hash(path: &Path) -> String {
+    if path.is_dir() {
+        return "dir".into();
+    }
+    file_state(path)
+}
+
+/// The state of a recorded key: for a listed directory (`ls:` prefix), its listing.
+fn recorded_hash(workspace: &Path, key: &str) -> String {
+    match key.strip_prefix(LISTED) {
+        Some(dir) => listing_hash(&workspace.join(dir)),
+        None => file_hash(&workspace.join(key)),
+    }
+}
+
+fn listing_hash(path: &Path) -> String {
     if path.is_dir() {
         // A listing counts; class files are left out, because component scanning is covered
         // by the Spring wiring rule and class changes by the method and shape rules.
@@ -175,6 +194,10 @@ fn file_hash(path: &Path) -> String {
         names.sort();
         return format!("dir:{}", bytecode::hash(names.join("\n").as_bytes()));
     }
+    file_state(path)
+}
+
+fn file_state(path: &Path) -> String {
     let Ok(bytes) = fs::read(path) else {
         return "-".into();
     };
@@ -477,7 +500,10 @@ pub fn record(args: Vec<String>) -> Result<u8> {
         let mut files: BTreeSet<String> = test
             .files
             .iter()
-            .filter_map(|f| relative(&workspace, f))
+            .filter_map(|f| match f.strip_prefix(LISTED) {
+                Some(dir) => relative(&workspace, dir).map(|d| format!("{LISTED}{d}")),
+                None => relative(&workspace, f),
+            })
             .collect();
         let mut spring = test.spring;
         if let Some(kept) = &kept {
@@ -501,7 +527,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
             files: files
                 .into_iter()
                 .map(|f| {
-                    let hash = file_hash(&workspace.join(&f));
+                    let hash = recorded_hash(&workspace, &f);
                     (f, hash)
                 })
                 .collect(),
@@ -659,7 +685,7 @@ impl Decider<'_> {
             return Some("Build input changed".into());
         }
         for (file, hash) in &record.files {
-            if file_hash(&self.workspace.join(file)) != *hash {
+            if recorded_hash(self.workspace, file) != *hash {
                 return Some(format!("Changed resource: {file}"));
             }
         }
@@ -950,8 +976,14 @@ fn single_module_maven(config: &Config) -> Result<()> {
 /// `mvn test` or `mvn verify` the same selection as `sieve run`.
 pub fn env_command(args: Vec<String>) -> Result<u8> {
     let options = options(args, &["--workspace", "--base"])?;
-    let workspace = workspace_option(&options)?;
-    single_module_maven(&Config::read(&workspace)?)?;
+    let workspace =
+        PathBuf::from(options.get("--workspace").map_or(".", String::as_str)).canonicalize()?;
+    let config = match workspace.join("impact.json").is_file() {
+        true => Config::read(&workspace)?,
+        false => Config::local_default(&workspace)
+            .ok_or("No impact.json, and not a single-module Maven project")?,
+    };
+    single_module_maven(&config)?;
     let dir = prepare(&workspace)?;
     let base = options.get("--base").map(String::as_str);
     println!(
@@ -1073,7 +1105,7 @@ fn recorded_files(dir: &Path, workspace: &Path) -> String {
     let mut h = bytecode::Hasher::default();
     for file in files {
         h.field(file.as_bytes())
-            .field(file_hash(&workspace.join(&file)).as_bytes());
+            .field(recorded_hash(workspace, &file).as_bytes());
     }
     h.finish()
 }
@@ -1178,6 +1210,8 @@ fn summarize(dir: &Path, selection: &mut Selection) -> Result<()> {
             .or_insert_with(|| "Unchanged test record".into());
     }
     selection.mode = match (ran.is_empty(), dropped.is_empty()) {
+        // Nothing ran and nothing was dropped: the build stopped before the tests, or has none.
+        (true, true) if !decided => "NONE",
         (_, true) => "ALL",
         (true, false) => "NONE",
         (false, false) => "SUBSET",
@@ -1316,7 +1350,6 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let mut key = bytecode::Hasher::default();
     key.field(&serde_json::to_vec(&tree)?)
         .field(build.as_bytes())
-        .field(recorded_files(&dir, workspace).as_bytes())
         .field(executable.as_bytes())
         .field(&serde_json::to_vec(&extra)?)
         .field(base.as_deref().unwrap_or_default().as_bytes())
@@ -1334,7 +1367,14 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         key.field(env::var(var).unwrap_or_default().as_bytes());
     }
     key.field(format!("{levers:?}").as_bytes());
-    let key = key.finish();
+    // The files that records list, as they are now; stored with what this run recorded.
+    let keyed = |key: &bytecode::Hasher| {
+        let mut key = key.clone();
+        key.field(recorded_files(&dir, workspace).as_bytes());
+        key.finish()
+    };
+    let base_key = key;
+    let key = keyed(&base_key);
     let state = dir.join("last-run.json");
     let last: Option<LastRun> = read_json(&state);
     let mut selection = config.all("Test records decide inside the test JVM");
@@ -1346,6 +1386,15 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         return Ok(0);
     }
     let clean = clean_reason(config, last.as_ref(), &tree, &build);
+    // Paths added, edited, or removed since the last run, for `--output`.
+    if let Some(last) = &last {
+        selection.changed = tree
+            .iter()
+            .filter(|(path, stamp)| last.tree.get(*path) != Some(stamp))
+            .map(|(path, _)| path.clone())
+            .chain(last.tree.keys().filter(|p| !tree.contains_key(*p)).cloned())
+            .collect();
+    }
     // Until this run finishes, the next one cleans after anything either tree saw deleted.
     let mut seen = last.as_ref().map(|l| l.tree.clone()).unwrap_or_default();
     seen.extend(tree.clone());
@@ -1396,6 +1445,9 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         .env("JDK_JAVA_OPTIONS", java_options(&option))
         .status()?;
     summarize(&dir, &mut selection)?;
+    if !status.success() && selection.tests.is_empty() && selection.skipped.is_empty() {
+        selection.reason = format!("{}; the build failed before any test ran", selection.reason);
+    }
     // Failures the agent could not record, such as a crashed fork or an ignored test failure.
     let failed = mark_failures(&dir, workspace, &selection.tests, status.success())?;
     if !failed.is_empty() {
@@ -1406,7 +1458,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     write_json(
         &state,
         &LastRun {
-            key,
+            key: keyed(&base_key),
             passed,
             build,
             tree,

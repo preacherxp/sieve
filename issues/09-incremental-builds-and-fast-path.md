@@ -1,5 +1,7 @@
 # 09 Incremental local builds and the no-change fast path
 
+Closed 2026-09-30: implemented; `build-info` stays enabled (see status).
+
 Type: AFK
 
 Status (2026-09-30): implemented; the Maven start count is checked with a counting wrapper

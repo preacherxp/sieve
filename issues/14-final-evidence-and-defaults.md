@@ -1,5 +1,7 @@
 # 14 Final evidence and defaults
 
+Closed 2026-09-30: final runs with the current binary, the speed-up defaults, and publication decisions moved to [TODO.md](TODO.md).
+
 Type: HITL
 
 ## Parent PRD

@@ -1,5 +1,7 @@
 # 08 Static fallback for tests without a record
 
+Closed 2026-09-30: implemented.
+
 Type: AFK
 
 Status (2026-09-30): implemented; needs no `build_fingerprint` for a single module. Tested

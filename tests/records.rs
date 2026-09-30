@@ -138,16 +138,40 @@ fn set(names: &[&str]) -> BTreeSet<String> {
 
 const ALL: &[&str] = &[
     "AdditionTest",
+    "ComposedGreetingTest",
+    "DefaultsFirstTest",
+    "DefaultsSecondTest",
     "FormatterTest",
     "GreeterTest",
     "GreetingControllerTest",
     "GreetingTest",
+    "HierarchyTest",
     "LimitsTest",
     "MultiplicationTest",
     "OrderFlowTest",
     "PriceTest",
+    "PropertySourceFirstTest",
+    "PropertySourceSecondTest",
     "ShapeTest",
 ];
+
+/// Full-context tests that load the application's configuration and services.
+const BOOT: &[&str] = &[
+    "ComposedGreetingTest",
+    "GreetingTest",
+    "OrderFlowTest",
+    "PropertySourceFirstTest",
+    "PropertySourceSecondTest",
+];
+
+fn with(names: &[&str], more: &[&'static str]) -> Vec<&'static str> {
+    let mut all: Vec<&'static str> = names
+        .iter()
+        .map(|n| *ALL.iter().chain(more).find(|a| *a == n).unwrap())
+        .collect();
+    all.extend(more);
+    all
+}
 
 #[test]
 #[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
@@ -240,16 +264,13 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "this.prefix = prefix;",
         "this.prefix = prefix.trim();",
     );
-    p.expect("bean constructor", &["GreetingTest", "OrderFlowTest"]);
+    p.expect("bean constructor", BOOT);
     p.edit(
         "src/main/resources/application.properties",
         "app.greeting.prefix=Hello",
         "app.greeting.prefix=Hello\napp.unused=1",
     );
-    p.expect(
-        "configuration",
-        &["GreetingControllerTest", "GreetingTest", "OrderFlowTest"],
-    );
+    p.expect("configuration", &with(BOOT, &["GreetingControllerTest"]));
     p.edit(
         "src/test/resources/prices.json",
         "\"pear\": 4",
@@ -275,7 +296,7 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "src/main/java/example/Clock.java",
         "package example;\n\n@org.springframework.stereotype.Component\npublic class Clock {}\n",
     );
-    p.expect("added component", &["GreetingTest", "OrderFlowTest"]);
+    p.expect("added component", &with(BOOT, &["HierarchyTest"]));
 
     // A resource that was looked up but absent counts once it appears.
     write(
@@ -283,10 +304,7 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "src/main/resources/application-default.properties",
         "app.greeting.prefix=Hello\n",
     );
-    p.expect(
-        "new profile file",
-        &["GreetingControllerTest", "GreetingTest", "OrderFlowTest"],
-    );
+    p.expect("new profile file", &with(BOOT, &["GreetingControllerTest"]));
     // A new fixture with the test that reads it runs only that test.
     write(&p.root(), "src/test/resources/extra.json", "{}\n");
     write(
@@ -625,4 +643,100 @@ fn commit_walk_carries_records_forward_and_cleans_after_deletions() {
     assert_eq!(report["summary"]["missed_failures"], 0);
     let (code, report) = walk(true);
     assert_eq!(code, 1, "{:#}", report["summary"]);
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+fn records_cover_shared_state_annotations_and_context_structure() {
+    let p = Project::new();
+    p.expect("first run", ALL);
+    // Static state read by two tests, initialized by whichever ran first.
+    p.edit(
+        "src/main/java/example/Defaults.java",
+        "List.of(\"a\", \"b\")",
+        "List.of(\"a\", \"b\", \"c\")",
+    );
+    p.expect("static field", &["DefaultsFirstTest", "DefaultsSecondTest"]);
+    // A composed annotation configures the tests that carry it.
+    let annotation = "src/test/java/example/AppTest.java";
+    p.edit(annotation, "prefix=Hello", "prefix=Hi");
+    let (code, selection, _) = p.run(&[]);
+    assert_eq!(code, 1, "{selection:#}");
+    assert_eq!(names(&selection["tests"]), set(&["ComposedGreetingTest"]));
+    p.edit(annotation, "prefix=Hi", "prefix=Hello");
+    p.expect("annotation restored", &["ComposedGreetingTest"]);
+    // The parent of a context hierarchy starts for the test too.
+    p.edit(
+        "src/test/java/hierarchy/ParentConfig.java",
+        "return new StringBuilder(\"parent\").toString();",
+        "return String.valueOf(new StringBuilder(\"parent\"));",
+    );
+    p.expect("hierarchy parent", &["HierarchyTest"]);
+    // Test property files count for every test sharing the context.
+    p.edit(
+        "src/test/resources/greeting-it.properties",
+        "app.greeting.prefix=Hello",
+        "app.greeting.prefix=Hello\nextra=1",
+    );
+    p.expect(
+        "test property file",
+        &["PropertySourceFirstTest", "PropertySourceSecondTest"],
+    );
+    // Structural changes: a method annotation, a removed method, and a new supertype.
+    p.edit(
+        "src/main/java/example/Calculator.java",
+        "    public int multiply",
+        "    @Deprecated\n    public int multiply",
+    );
+    p.expect("method annotation", &["AdditionTest", "MultiplicationTest"]);
+    p.edit(
+        "src/main/java/example/LoudGreeter.java",
+        "    public String shout(String name) {\n        return greet(name).toUpperCase();\n    }\n",
+        "",
+    );
+    p.expect("removed method", &["GreeterTest"]);
+    p.edit(
+        "src/main/java/example/Square.java",
+        "implements Shape",
+        "implements Shape, java.io.Serializable",
+    );
+    p.expect("supertype", &["ShapeTest"]);
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+fn context_attribution_holds_in_reverse_test_class_order() {
+    let p = Project::new();
+    let reverse = ["-Dsurefire.runOrder=reversealphabetical"];
+    let expect = |label: &str, ran: &[&str]| {
+        let (code, selection, starts) = p.run(&reverse);
+        assert_eq!((code, starts), (0, 1), "{label}: {selection:#}");
+        assert_eq!(
+            names(&selection["tests"]),
+            set(ran),
+            "{label}: {selection:#}"
+        );
+    };
+    expect("first run", ALL);
+    p.edit(
+        "src/main/java/example/OrderListener.java",
+        "log.add(\"placed \" + event.id());",
+        "String entry = \"placed \" + event.id();\n        log.add(entry);",
+    );
+    expect("listener", &["OrderFlowTest"]);
+    p.edit(
+        "src/main/java/example/GreetingService.java",
+        "this.prefix = prefix;",
+        "this.prefix = prefix.trim();",
+    );
+    expect("bean constructor", BOOT);
+    p.edit(
+        "src/test/resources/greeting-it.properties",
+        "app.greeting.prefix=Hello",
+        "app.greeting.prefix=Hello\nextra=1",
+    );
+    expect(
+        "test property file",
+        &["PropertySourceFirstTest", "PropertySourceSecondTest"],
+    );
 }

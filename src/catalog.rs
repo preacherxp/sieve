@@ -453,13 +453,14 @@ pub(crate) fn missed(reference: &Timed, selected: &Timed) -> BTreeSet<String> {
     missed
 }
 
-/// Kinds of the commits' changed paths, one kind per commit: the most expensive one.
+/// Kinds of the commits' changed paths, one kind per commit: the most expensive one, and
+/// whether the commit changed POMs only, as automated dependency updates do.
 fn classify_commit(
     root: &Path,
     prefix: &Path,
     commit: &str,
     config: &Config,
-) -> Result<&'static str> {
+) -> Result<(&'static str, bool)> {
     let git = |args: &[&str]| crate::replay::git(root, args);
     let listing = git(&[
         "diff-tree",
@@ -471,12 +472,14 @@ fn classify_commit(
         commit,
     ])?;
     let mut best = KINDS.len() - 1;
+    let mut pom_only = !listing.trim().is_empty();
     for line in listing.lines() {
         let mut fields = line.split('\t');
         let status = fields.next().unwrap_or("");
         let Some(path) = fields.next_back() else {
             continue;
         };
+        pom_only &= path.rsplit('/').next() == Some("pom.xml");
         let Ok(path) = Path::new(path).strip_prefix(prefix) else {
             // Shared inputs outside the project, such as a parent POM or CI scripts.
             best = best.min(0);
@@ -497,7 +500,7 @@ fn classify_commit(
                 .unwrap_or(KINDS.len() - 1),
         );
     }
-    Ok(KINDS[best])
+    Ok((KINDS[best], pom_only))
 }
 
 /// The kind of one changed path. `contents` yields the path's diff and new text on demand.
@@ -634,20 +637,33 @@ pub fn classify(workspace: &Path, commits: usize, config: &Config) -> Result<Val
         ],
     )?;
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut without: BTreeMap<&str, usize> = BTreeMap::new();
     let mut per_commit = Vec::new();
     for commit in history.lines() {
-        let Ok(kind) = classify_commit(&root, &prefix, commit, config) else {
+        let Ok((kind, pom_only)) = classify_commit(&root, &prefix, commit, config) else {
             continue;
         };
         *counts.entry(kind).or_default() += 1;
-        per_commit.push(json!({"commit": commit, "kind": kind}));
+        if !pom_only {
+            *without.entry(kind).or_default() += 1;
+        }
+        per_commit.push(json!({"commit": commit, "kind": kind, "pom_only": pom_only}));
     }
-    let total: usize = counts.values().sum();
-    let weights: BTreeMap<&str, f64> = counts
-        .iter()
-        .map(|(k, c)| (*k, *c as f64 / total.max(1) as f64))
-        .collect();
-    Ok(json!({"commits": total, "counts": counts, "weights": weights, "per_commit": per_commit}))
+    let weights = |counts: &BTreeMap<&'static str, usize>| -> BTreeMap<&'static str, f64> {
+        let total: usize = counts.values().sum();
+        counts
+            .iter()
+            .map(|(k, c)| (*k, *c as f64 / total.max(1) as f64))
+            .collect()
+    };
+    Ok(json!({
+        "commits": counts.values().sum::<usize>(),
+        "pom_only": counts.values().sum::<usize>() - without.values().sum::<usize>(),
+        "counts": counts,
+        "weights": weights(&counts),
+        "weights_without_pom_only": weights(&without),
+        "per_commit": per_commit,
+    }))
 }
 
 /// Writes `config` as the copy's `impact.json`, with the Maven adapter that class- and
@@ -655,7 +671,7 @@ pub fn classify(workspace: &Path, commits: usize, config: &Config) -> Result<Val
 fn configure(copy: &Path, config: &Config) -> Result<()> {
     let mut config: Config = serde_json::from_value(serde_json::to_value(config)?)?;
     config.validate(copy)?;
-    if config.tool == "maven" && !config.records {
+    if config.tool == "maven" && config.records != Some(true) {
         for module in config.modules.keys() {
             let pom = copy.join(module).join("pom.xml");
             let xml = fs::read_to_string(&pom)?;
@@ -1032,28 +1048,14 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         runner.planting = false;
     }
     // Weighted total: each kind's mean of edit medians, by the kind's share of history.
-    let weights = history["weights"].as_object().cloned().unwrap_or_default();
     let mut kinds: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     for (edit, runs) in catalog.edits.iter().zip(&edits) {
         kinds.entry(&edit.kind).or_default().push(median(runs));
     }
-    let weight = |kind: &str| -> f64 {
-        if weights.is_empty() {
-            1.0
-        } else {
-            weights.get(kind).and_then(Value::as_f64).unwrap_or(0.0)
-        }
-    };
-    let covered: f64 = kinds.keys().map(|k| weight(k)).sum();
-    let weighted = if covered > 0.0 {
-        kinds
-            .iter()
-            .map(|(k, v)| weight(k) * v.iter().sum::<f64>() / v.len() as f64)
-            .sum::<f64>()
-            / covered
-    } else {
-        f64::NAN
-    };
+    let (covered, weighted) = weighted_total(&history["weights"], &kinds);
+    let (covered_without, weighted_without) =
+        weighted_total(&history["weights_without_pom_only"], &kinds);
+    let weights = history["weights"].as_object().cloned().unwrap_or_default();
     let report = json!({
         "workspace": original,
         "catalog": catalog_path,
@@ -1070,6 +1072,10 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         "weighted": {
             "covered_weight": if weights.is_empty() { Value::Null } else { json!(covered) },
             "sieve_seconds": weighted,
+            "without_pom_only": {
+                "covered_weight": covered_without,
+                "sieve_seconds": weighted_without,
+            },
             "native_seconds": median(&native),
             "full_seconds": median(&full),
         },
@@ -1085,6 +1091,32 @@ pub fn main(args: Vec<String>) -> Result<u8> {
     fs::write(output.join("summary.md"), &text)?;
     eprint!("{text}");
     Ok(u8::from(missed > 0))
+}
+
+/// The weighted mean of each kind's mean edit median, over the kinds the catalog covers, and
+/// the history weight those kinds cover. Without weights every kind counts equally.
+fn weighted_total(weights: &Value, kinds: &BTreeMap<&str, Vec<f64>>) -> (f64, f64) {
+    let weights = weights.as_object().cloned().unwrap_or_default();
+    let weight = |kind: &str| -> f64 {
+        if weights.is_empty() {
+            1.0
+        } else {
+            weights.get(kind).and_then(Value::as_f64).unwrap_or(0.0)
+        }
+    };
+    let covered: f64 = kinds.keys().map(|k| weight(k)).sum();
+    let total = kinds
+        .iter()
+        .map(|(k, v)| weight(k) * v.iter().sum::<f64>() / v.len() as f64)
+        .sum::<f64>();
+    (
+        covered,
+        if covered > 0.0 {
+            total / covered
+        } else {
+            f64::NAN
+        },
+    )
 }
 
 fn markdown(report: &Value) -> String {
@@ -1146,6 +1178,14 @@ fn markdown(report: &Value) -> String {
         w["full_seconds"].as_f64().unwrap_or(f64::NAN),
         w["covered_weight"].as_f64().map_or("equal weights".into(), |c| format!("{:.0}%", c * 100.0)),
     );
+    if let Some(seconds) = w["without_pom_only"]["sieve_seconds"]
+        .as_f64()
+        .filter(|s| s.is_finite())
+    {
+        out += &format!(
+            "Without POM-only commits, such as automated dependency updates: sieve {seconds:.1} s.\n"
+        );
+    }
     if let Some(levers) = report["levers"].as_object().filter(|l| !l.is_empty()) {
         out += "\n| Speed-up | Default state | Toggle | Edit | Default s | Toggled s |\n| --- | --- | --- | --- | ---: | ---: |\n";
         for (lever, v) in levers {

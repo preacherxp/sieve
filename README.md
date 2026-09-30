@@ -238,16 +238,20 @@ For developers on a single-module Maven project whose test JVM runs Java 24+, lo
 replaces static selection with evidence from earlier runs. It pays off most for Spring
 context tests: framework dispatch (Kafka listeners, HTTP handlers) leaves no bytecode edge
 from a test to the code it runs, so static analysis runs all of them for any component
-edit. Opt in with `"records": true`:
-
-```json
-{ "tool": "maven", "modules": { ".": [] }, "records": true }
-```
+edit. It is one command, run from the project directory before and after every edit:
 
 ```bash
-sieve run --workspace .                 # select from records
-sieve run --workspace . --base origin/main  # also use static analysis for unrecorded tests
-sieve run --workspace . --full          # run everything, still recording
+sieve run          # first time: every test runs and leaves a record; then only what edits affect
+```
+
+`sieve run` without `--base` or `--full` uses local mode on any single-module Maven project,
+with or without `impact.json`; without one it uses defaults and treats OpenAPI
+specifications (`<inputSpec>`) as generated inputs. `"records": true` in `impact.json` also
+applies local mode to `--base` and `--full` runs, and `"records": false` switches it off:
+
+```bash
+sieve run --base origin/main   # also use static analysis for tests without a record
+sieve run --full               # run everything, still recording
 ```
 
 `sieve run` starts Maven once: an incremental `verify` with Spring Boot `repackage` skipped

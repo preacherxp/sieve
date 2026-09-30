@@ -40,8 +40,9 @@ struct Config {
     generated: Vec<String>,
     /// Local mode for single-module Maven projects: `run` loads the agent into the test JVM,
     /// which keeps test records and drops the test classes whose records are unchanged.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    records: bool,
+    /// Unset, `run` without `--base` uses it on single-module Maven projects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    records: Option<bool>,
 }
 
 const DEFAULT_IGNORE: &[&str] = &["README.md", "docs/**", "/README.md", "/docs/**"];
@@ -135,6 +136,33 @@ impl Config {
             return Err(format!("Invalid generated pattern: {pattern:?}").into());
         }
         Ok(())
+    }
+
+    /// The configuration `run` uses on a single-module Maven project without `impact.json`:
+    /// local mode, with OpenAPI specifications as generated inputs.
+    fn local_default(workspace: &Path) -> Option<Self> {
+        let pom = fs::read_to_string(workspace.join("pom.xml")).ok()?;
+        if pom.contains("<modules>") {
+            return None;
+        }
+        let mut generated = BTreeSet::new();
+        for spec in pom.split("<inputSpec>").skip(1) {
+            let spec = spec.split("</inputSpec>").next()?.trim();
+            let spec = spec
+                .trim_start_matches("${project.basedir}/")
+                .trim_start_matches("${basedir}/");
+            if let Some((dir, _)) = spec.rsplit_once('/').filter(|_| !spec.starts_with('$')) {
+                generated.insert(format!("{dir}/**"));
+            }
+        }
+        serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {".": []}, "records": true, "generated": generated,
+        }))
+        .ok()
+    }
+
+    fn single_module_maven(&self) -> bool {
+        self.tool == "maven" && self.modules.keys().eq(["."])
     }
 
     fn generated_input(&self, path: &str) -> bool {
@@ -525,16 +553,18 @@ fn main_result() -> Result<u8> {
     }
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
-            "sieve <select|run> --workspace PATH [--base REV | --full]\n\
+            "sieve <select|run> [--workspace PATH] [--base REV | --full]\n\
                   [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
                   sieve <init|refresh> [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
-                  sieve env --workspace PATH [--base REV]\n\
+                  sieve env [--workspace PATH] [--base REV]\n\
                   sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
                   sieve classify --workspace PATH [--commits N]\n\
                   sieve replay --workspace PATH [--commits N] [--run] [-- BUILD_ARGS...]\n\
                   sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\n\
-                  Requires impact.json and the build adapters documented in README.md.\n\
-                  No base or unavailable Git history selects ALL. run propagates build failures."
+                  On a single-module Maven project, `sieve run` alone runs the tests your edits\n\
+                  can affect (local mode; the first run records every test). Other projects need\n\
+                  impact.json and the build adapters documented in README.md; there, no base or\n\
+                  unavailable Git history selects ALL. run propagates build failures."
         );
         return Ok(0);
     }
@@ -574,9 +604,24 @@ fn main_result() -> Result<u8> {
     if full && base.is_some() {
         return Err("Use either --base or --full".into());
     }
-    let workspace = workspace.ok_or("--workspace is required")?.canonicalize()?;
-    let config = Config::read(&workspace)?;
-    if config.records && command == "run" {
+    let workspace = workspace
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()?;
+    let local_default = command == "run" && !workspace.join("impact.json").exists();
+    let config = match Config::read(&workspace) {
+        Err(error) if local_default => Config::local_default(&workspace).ok_or(error)?,
+        config => config?,
+    };
+    // One command for developers: plain `run` on a single-module Maven project uses local mode
+    // unless `impact.json` says `"records": false`. `--base` and `--full`, as CI passes them,
+    // keep the configured selection.
+    let local = config
+        .records
+        .unwrap_or(base.is_none() && !full && config.single_module_maven());
+    if local && command == "run" {
+        if local_default {
+            eprintln!("No impact.json: local mode with defaults, records in .sieve/");
+        }
         let run = records::Run {
             base,
             full,

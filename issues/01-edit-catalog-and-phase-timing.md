@@ -1,5 +1,7 @@
 # 01 Edit catalog with phase timing
 
+Closed 2026-09-30: implemented; nothing left open.
+
 Type: AFK
 
 Status (2026-09-30): implemented as `sieve catalog` and `sieve classify` (`src/catalog.rs`,
