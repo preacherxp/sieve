@@ -16,7 +16,11 @@ runs:
     - uses: actions/setup-java@v4
       with:
         distribution: temurin
-        java-version: ${{ inputs.java-version }}
+        # JDK 25 compiles Sieve's test-JVM agent (build.rs finds JAVA_HOME_25_X64); the last
+        # version listed becomes JAVA_HOME for the fixtures.
+        java-version: |
+          25
+          ${{ inputs.java-version }}
         cache: ${{ inputs.tool == 'maven' && 'maven' || '' }}
     - uses: gradle/actions/setup-gradle@v4
       if: inputs.tool == 'gradle'

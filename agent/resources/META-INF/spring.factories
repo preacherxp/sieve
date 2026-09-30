@@ -1,0 +1,3 @@
+org.springframework.test.context.ContextCustomizerFactory=sieve.agent.spring.ContextHook
+org.springframework.test.context.TestExecutionListener=sieve.agent.spring.ContextUse
+org.springframework.boot.SpringApplicationRunListener=sieve.agent.spring.BootRun

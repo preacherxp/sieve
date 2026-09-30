@@ -28,6 +28,10 @@ jobs:
         run: |
           rustup toolchain install 1.92.0 --profile minimal --component rustfmt --component clippy
           rustup default 1.92.0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
@@ -46,6 +50,10 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-release-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
       - name: Build release binary once for every Java job
         run: |
           rustup toolchain install 1.92.0 --profile minimal
@@ -143,6 +151,30 @@ jobs:
     name: Version compatibility
     if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     uses: ./.github/workflows/compatibility.yml
+  records:
+    name: Test records (Maven, JDK 25)
+    needs: [rust]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/java-build
+        with:
+          tool: maven
+          java-version: '25'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-debug-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+      - name: Record, select, and rerun tests in projects/records
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 test --locked --test records -- --include-ignored --test-threads=1
   container-tests:
     name: ${{ matrix.service }} container
     runs-on: ubuntu-latest
