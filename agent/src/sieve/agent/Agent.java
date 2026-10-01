@@ -15,7 +15,7 @@ import java.util.Set;
 import sieve.probe.Probe;
 
 /**
- * Starts the agent on a Java 24+ JVM, called by {@link Boot} for
+ * Starts the agent on a Java 17+ JVM, called by {@link Boot} for
  * {@code -javaagent:sieve-agent.jar=<options file>}, which {@code sieve} passes through
  * {@code JDK_JAVA_OPTIONS}. The options file is written by the {@code sieve} binary; without it
  * the agent does nothing.
@@ -61,16 +61,7 @@ public final class Agent {
         for (Class<?> c : jdk) {
             names.add(c.getName().replace('.', '/'));
         }
-        ClassFileTransformer transformer;
-        try {
-            // Loaded by name: it uses the Class-File API, so it is the only Java 24 class here.
-            transformer = (ClassFileTransformer) Class.forName("sieve.agent.Transformer")
-                    .getDeclaredConstructor(List.class, Set.class)
-                    .newInstance(outputs, names);
-        } catch (ReflectiveOperationException | LinkageError error) {
-            System.err.println("sieve: cannot start the agent, every test runs: " + error);
-            return;
-        }
+        ClassFileTransformer transformer = new Transformer(outputs, names);
         State.configure(Path.of(workspace), sieve, options.getProperty("mode", "select"), options.getProperty("base"),
                 options.getProperty("context", ""), options.getProperty("session", ""), options.getProperty("record_env", ""));
         instrumentation.addTransformer(transformer, true);

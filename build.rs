@@ -1,5 +1,6 @@
 //! Compiles the test-JVM agent (`agent/`) into two jars that the binary embeds: the agent
-//! itself and the probe it adds to the bootstrap class path. Needs a JDK 24+ `javac`, found
+//! itself, with the vendored ASM (`agent/asm`), and the probe it adds to the bootstrap class
+//! path. Needs a JDK 17+ `javac`, found
 //! through `SIEVE_JAVA_HOME`, `JAVA_HOME`, `JAVA_HOME_<version>_*` (as set by CI setup
 //! actions), or `PATH`. Build with `--no-default-features` to leave the agent out.
 use std::{
@@ -8,7 +9,7 @@ use std::{
     process::Command,
 };
 
-const MINIMUM: u32 = 24;
+const MINIMUM: u32 = 17;
 
 fn main() {
     println!("cargo:rerun-if-changed=agent");
@@ -29,34 +30,20 @@ fn main() {
     let probe = classes.join("probe");
     let stubs = classes.join("stubs");
     let agent = classes.join("agent");
-    // Test JVMs older than 24 load the listener and filter too, which then stay inactive; only
-    // the transformer needs the Class-File API.
-    let transformer = Path::new("agent/src/sieve/agent/Transformer.java");
     compile(&bin, "17", "agent/probe", &probe, &[], None, None);
     compile(&bin, "17", "agent/stubs", &stubs, &[], None, None);
+    compile(&bin, "17", "agent/asm", &agent, &[], None, None);
     // The entry point loads on any JVM that `JDK_JAVA_OPTIONS` reaches, back to Java 8.
     let boot = Path::new("agent/src/sieve/agent/Boot.java");
     compile(&bin, "8", "agent/src", &agent, &[], None, Some(boot));
     let classpath: &[&Path] = &[&probe, &stubs, &agent];
-    compile(
-        &bin,
-        "17",
-        "agent/src",
-        &agent,
-        classpath,
-        Some(transformer),
-        None,
-    );
-    let classpath: &[&Path] = &[&probe, &agent];
-    compile(
-        &bin,
-        &MINIMUM.to_string(),
-        "agent/src",
-        &agent,
-        classpath,
-        None,
-        None,
-    );
+    compile(&bin, "17", "agent/src", &agent, classpath, None, None);
+    fs::create_dir_all(agent.join("META-INF")).unwrap();
+    fs::copy(
+        "agent/asm/LICENSE.txt",
+        agent.join("META-INF/ASM-LICENSE.txt"),
+    )
+    .unwrap();
     copy(Path::new("agent/resources"), &agent);
     let manifest = classes.join("agent.mf");
     fs::write(

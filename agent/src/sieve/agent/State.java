@@ -59,6 +59,9 @@ final class State {
     private static boolean parallel;
     private static Set<String> skip;
 
+    private static final Set<String> VOLATILE = Set.of("java.class.path", "sun.java.command", "surefire.real.class.path",
+            "java.vm.compressedOopsMode", "org.gradle.test.worker");
+
     private State() {}
 
     static synchronized void configure(Path workspace, String sieve, String mode, String base, String invocation, String session, String recordEnv) {
@@ -80,8 +83,9 @@ final class State {
         values.put("invocation", invocation);
         for (String name : System.getProperties().stringPropertyNames()) {
             // Classpath and command point at fresh Surefire booter files; compressed-oops
-            // placement varies with ASLR. Project output and the JDK are checked separately.
-            if (!Set.of("java.class.path", "sun.java.command", "surefire.real.class.path", "surefire.test.class.path", "java.vm.compressedOopsMode").contains(name)) {
+            // placement varies with ASLR; Gradle numbers its test workers per daemon. Project
+            // output and the JDK are checked separately.
+            if (!VOLATILE.contains(name)) {
                 values.put("property:" + name, System.getProperty(name));
             }
         }

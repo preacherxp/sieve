@@ -17,9 +17,9 @@ public final class Boot {
         } catch (NumberFormatException error) {
             feature = 0;
         }
-        if (feature < 24) {
+        if (feature < 17) {
             if (arguments != null && !arguments.isEmpty() && !isBuildTool()) {
-                System.err.println("sieve: test records need a Java 24+ test JVM, not " + version + "; every test runs");
+                System.err.println("sieve: test records need a Java 17+ test JVM, not " + version + "; every test runs");
             }
             return;
         }
@@ -34,6 +34,8 @@ public final class Boot {
 
     static boolean isBuildTool() {
         String command = System.getProperty("sun.java.command", "");
-        return command.startsWith("org.codehaus.plexus.classworlds.launcher.Launcher") || command.startsWith("org.mvndaemon.");
+        return command.startsWith("org.codehaus.plexus.classworlds.launcher.Launcher") || command.startsWith("org.mvndaemon.")
+                || command.startsWith("org.gradle.launcher.") || command.startsWith("org.gradle.wrapper.")
+                || command.startsWith("org.jetbrains.kotlin.daemon.");
     }
 }
