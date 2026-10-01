@@ -35,7 +35,9 @@ pub struct Timed {
 
 impl Timed {
     pub fn inconclusive(&self) -> bool {
-        self.report_error.is_some() || self.exit != Some(0) && self.failed.is_empty()
+        self.exit.is_none()
+            || self.report_error.is_some()
+            || self.exit != Some(0) && self.failed.is_empty()
     }
 }
 
@@ -53,7 +55,9 @@ pub(crate) fn missed(reference: &Timed, selected: &Timed) -> BTreeSet<String> {
         if let Some(error) = &timed.report_error {
             missed.insert(format!("<unreadable {run} reports: {error}>"));
         }
-        if timed.exit != Some(0) && timed.failed.is_empty() {
+        if timed.exit.is_none() {
+            missed.insert(format!("<inconclusive {run} build: terminated>"));
+        } else if timed.exit != Some(0) && timed.failed.is_empty() {
             missed.insert(format!(
                 "<inconclusive {run} build: failed without test failures>"
             ));
@@ -178,13 +182,31 @@ fn suite_time(xml: &str) -> Option<f64> {
 
 /// Deletes test reports, so that a run's reports are its own.
 pub fn clear_reports(workspace: &Path) -> Result<()> {
-    for folder in ["surefire-reports", "failsafe-reports"] {
-        let dir = workspace.join("target").join(folder);
+    let folders = [
+        workspace.join("target/surefire-reports"),
+        workspace.join("target/failsafe-reports"),
+        // Gradle keeps the results of a skipped up-to-date `Test` task; without them it reruns.
+        workspace.join("build/test-results"),
+    ];
+    for dir in folders {
         if dir.is_dir() {
             fs::remove_dir_all(dir)?;
         }
     }
     Ok(())
+}
+
+/// Whether a build output line reports failed compilation: Maven's banner, or a failed
+/// Gradle compile task (Java, Kotlin, Groovy, Scala).
+fn compile_failure(line: &str) -> bool {
+    line.contains("COMPILATION ERROR")
+        || line
+            .split_once("Execution failed for task '")
+            .is_some_and(|(_, task)| {
+                task.split(':')
+                    .next_back()
+                    .is_some_and(|t| t.starts_with("compile"))
+            })
 }
 
 /// Runs `command`, timestamping its output lines into `log`, and reads the test reports.
@@ -245,7 +267,7 @@ pub fn run(command: &mut Command, log: &Path, workspace: &Path, tool: &str) -> R
         executed: reports.executed,
         failed: reports.failed,
         report_error,
-        compile_error: lines.iter().any(|(_, l)| l.contains("COMPILATION ERROR")),
+        compile_error: lines.iter().any(|(_, l)| compile_failure(l)),
     })
 }
 
@@ -330,5 +352,24 @@ mod tests {
         };
         assert!(unreadable.inconclusive());
         assert!(!missed(&unreadable, &unreadable).is_empty());
+        let terminated = Timed {
+            failed: BTreeSet::from(["example.PartialTest".into()]),
+            ..Default::default()
+        };
+        assert!(terminated.inconclusive());
+        assert!(!missed(&terminated, &terminated).is_empty());
+    }
+
+    #[test]
+    fn compile_failures_of_both_build_tools() {
+        assert!(compile_failure("[ERROR] COMPILATION ERROR : "));
+        assert!(compile_failure("Execution failed for task ':compileJava'."));
+        assert!(compile_failure(
+            "Execution failed for task ':app:compileTestKotlin'."
+        ));
+        assert!(!compile_failure(
+            "Execution failed for task ':integrationTest'."
+        ));
+        assert!(!compile_failure("> Task :compileJava"));
     }
 }

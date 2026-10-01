@@ -772,6 +772,25 @@ fn native_class_level_selection_runs_reaching_test_classes() {
         let root = temp.path().join("project");
         let workspace = root.to_str().unwrap();
         let output = temp.path().join("selection.json");
+        // `check` never compiles a source set that no Test task runs, such as a developer
+        // tool reading local configuration; the class-level compile must skip it too.
+        if tool == "gradle" {
+            let build = fs::read_to_string(root.join("build.gradle")).unwrap();
+            write(&root, "build.gradle", build + "sourceSets { tools }\n");
+            write(
+                &root,
+                "src/tools/java/example/Tool.java",
+                "package example; class Tool { String url = LocalConfig.URL; }",
+            );
+            success(&[
+                "refresh",
+                "--workspace",
+                workspace,
+                "--executable",
+                &executable,
+            ]);
+            commit(&root, "Add an uncompilable tool source set");
+        }
         let integration = if tool == "maven" {
             "integration"
         } else {

@@ -18,7 +18,12 @@ gradle.beforeProject { p ->
     def testsFile = p.providers.gradleProperty('impact.testsFile').orNull
     def tests = testsFile == null ? null : p.providers.fileContents(p.layout.projectDirectory.file(testsFile))
         .asText.get().readLines().findAll { !it.isEmpty() }
+    // Local mode: the test-record agent joins the test JVMs only, never Gradle's own daemons.
+    def agent = p.providers.gradleProperty('impact.agent').orNull
     p.tasks.withType(Test).configureEach { task ->
+        if (agent != null) {
+            task.jvmArgs(agent)
+        }
         // An empty include filter would run every test, so an empty selection disables the task.
         if (!enabled || tests?.isEmpty()) {
             task.enabled = false
@@ -36,6 +41,13 @@ gradle.beforeProject { p ->
 
 gradle.projectsEvaluated {
     def root = gradle.rootProject
+    if (root.findProperty('impact.agent') != null || root.findProperty('impact.tests') != null) {
+        // Local mode's default command, and its native reference: every test task, without
+        // linters or packaging.
+        root.tasks.register('impactTests') {
+            dependsOn(root.allprojects.collect { it.tasks.withType(Test) })
+        }
+    }
     def listing = root.findProperty('impact.classes')?.toString()
     if (listing != null) {
         def classes = root.files()
@@ -47,8 +59,21 @@ gradle.projectsEvaluated {
             if (sourceSets != null) {
                 jvm = true
                 sourceSets.each { classes.from(it.output.classesDirs) }
-                compile.configure { dependsOn(sourceSets.collect { it.classesTaskName }) }
-                p.tasks.withType(Test).each { if (it.testClassesDirs != null) tests.from(it.testClassesDirs) }
+                // Compile main and what the Test tasks run, not every source set: `check` never
+                // builds a developer tool's source set, which may need local configuration.
+                // Sources left uncompiled have no classes, so their changes select the module.
+                def testTasks = p.tasks.withType(Test).toList()
+                def main = sourceSets.findByName('main')
+                compile.configure {
+                    if (main == null && testTasks.isEmpty()) {
+                        dependsOn(sourceSets.collect { it.classesTaskName })
+                    }
+                    if (main != null) {
+                        dependsOn(main.classesTaskName)
+                    }
+                    testTasks.each { t -> dependsOn(t.testClassesDirs, t.classpath) }
+                }
+                testTasks.each { if (it.testClassesDirs != null) tests.from(it.testClassesDirs) }
             }
         }
         if (!jvm) {

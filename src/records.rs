@@ -168,8 +168,7 @@ fn execution_guard(dir: &Path, session: &str) -> Result<Option<Lock>> {
         Ok(()) if session.is_empty() => Ok(Some(lock)),
         Ok(()) => Err("The managed test JVM outlived its Sieve run; no records kept".into()),
         Err(fs::TryLockError::WouldBlock)
-            if !session.is_empty()
-                && fs::read_to_string(dir.join("execution.lock"))? == session =>
+            if !session.is_empty() && fs::read_to_string(dir.join("session"))? == session =>
         {
             Ok(None)
         }
@@ -184,12 +183,55 @@ fn run_dir(dir: &Path, session: &str) -> PathBuf {
     dir.join(if session.is_empty() { "env-run" } else { "run" })
 }
 
-fn outputs(workspace: &Path) -> [(PathBuf, bool); 2] {
-    let target = workspace.join("target");
-    [
-        (target.join("classes"), false),
-        (target.join("test-classes"), true),
-    ]
+/// The workspace's build tool: from `impact.json`, or Maven for the configuration-free default.
+fn tool(workspace: &Path) -> String {
+    read_json::<serde_json::Value>(&workspace.join("impact.json"))
+        .and_then(|config| config["tool"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "maven".into())
+}
+
+/// Compiled classes and resources, each marked `true` when it holds test output. Gradle keeps
+/// one directory per language and source set; sets named like `test` or `integTest` hold tests.
+fn outputs(workspace: &Path) -> Vec<(PathBuf, bool)> {
+    if tool(workspace) != "gradle" {
+        let target = workspace.join("target");
+        return vec![
+            (target.join("classes"), false),
+            (target.join("test-classes"), true),
+        ];
+    }
+    let build = workspace.join("build");
+    // The agent receives these before the first compilation, so conventional ones always count.
+    let mut dirs: Vec<PathBuf> = ["java", "kotlin", "groovy", "scala"]
+        .iter()
+        .flat_map(|l| ["main", "test"].map(|s| build.join("classes").join(l).join(s)))
+        .chain(["main", "test"].map(|s| build.join("resources").join(s)))
+        .collect();
+    let languages = fs::read_dir(build.join("classes"))
+        .into_iter()
+        .flatten()
+        .flatten();
+    for language in languages.map(|e| e.path()) {
+        for set in fs::read_dir(&language).into_iter().flatten().flatten() {
+            dirs.push(set.path());
+        }
+    }
+    for set in fs::read_dir(build.join("resources"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        dirs.push(set.path());
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs.into_iter()
+        .map(|dir| {
+            let set = dir.file_name().map(|n| n.to_string_lossy().to_lowercase());
+            let test = set.is_some_and(|s| s.contains("test"));
+            (dir, test)
+        })
+        .collect()
 }
 
 /// Marks directories whose listing a test read, as the agent reports them.
@@ -435,7 +477,12 @@ fn relative(root: &Path, path: &str) -> Option<String> {
     let relative = normalized.strip_prefix(root).ok()?;
     let relative = relative.to_str()?.replace('\\', "/");
     // Sieve's own state and the build tool's scratch files are not test inputs.
-    let scratch = ["target/surefire", "target/failsafe"];
+    let scratch = [
+        "target/surefire",
+        "target/failsafe",
+        "build/tmp",
+        ".gradle/",
+    ];
     let skip = relative.is_empty()
         || relative.starts_with(".sieve/")
         || scratch.iter().any(|s| relative.starts_with(s));
@@ -921,7 +968,9 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
         &out,
         skip.iter().map(|t| format!("{t}\n")).collect::<String>(),
     )?;
-    let name = format!("decisions-{}.json", std::process::id());
+    // Named after the test JVM (its scratch files are `decide-<pid>-…`), so that `run` can take
+    // each test's reason from the JVM that ran or dropped it.
+    let name = format!("decisions-{}.json", jvm_pid(&out, "decide"));
     let run = run_dir(&dir, session);
     fs::create_dir_all(&run)?;
     write_json(&run.join(name), &reasons)?;
@@ -1045,9 +1094,12 @@ fn java_options(option: &str) -> String {
     }
 }
 
-fn single_module_maven(config: &Config) -> Result<()> {
-    if config.tool != "maven" || config.modules.keys().ne(["."]) {
-        return Err("\"records\" needs a single-module Maven project (modules {\".\": []})".into());
+fn single_module(config: &Config) -> Result<()> {
+    if !matches!(config.tool.as_str(), "maven" | "gradle") || config.modules.keys().ne(["."]) {
+        return Err(
+            "\"records\" needs a single-module Maven or Gradle project (modules {\".\": []})"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -1063,7 +1115,10 @@ pub fn env_command(args: Vec<String>) -> Result<u8> {
         false => Config::local_default(&workspace)
             .ok_or("No impact.json, and not a single-module Maven project")?,
     };
-    single_module_maven(&config)?;
+    if config.tool != "maven" {
+        return Err("sieve env is for plain Maven; on Gradle, use sieve run".into());
+    }
+    single_module(&config)?;
     let dir = prepare(&workspace)?;
     let _execution = execution_guard(&dir, "")?;
     println!(
@@ -1172,6 +1227,11 @@ fn clean_reason(
     let Some(last) = last else {
         return Some("No earlier local run".into());
     };
+    if !last.passed {
+        // Pending state is written before Maven starts. An interrupted clean must never
+        // make preserved-metadata source edits look compiled to the next run.
+        return Some("Earlier local run did not pass or finish".into());
+    }
     if last.build != build {
         return Some("Build input changed".into());
     }
@@ -1224,7 +1284,7 @@ fn mark_failures(
     reported: &BTreeSet<String>,
     success: bool,
 ) -> Result<BTreeSet<String>> {
-    let reports = match crate::reports::read_reports(workspace, "maven") {
+    let reports = match crate::reports::read_reports(workspace, &tool(workspace)) {
         Ok(reports) => reports,
         Err(error) if success => return Err(error),
         Err(_) => Default::default(),
@@ -1270,18 +1330,79 @@ const VALUED: &[&str] = &[
     "-P", "-pl", "-f", "-s", "-gs", "-t", "-T", "-rf", "-b", "-l", "-D",
 ];
 
-/// Whether the build arguments name goals or phases, which then replace the default `verify`.
-fn has_goals(extra: &[String]) -> bool {
+/// Gradle options that take the next argument as their value.
+const GRADLE_VALUED: &[&str] = &[
+    "--tests",
+    "-x",
+    "--exclude-task",
+    "-p",
+    "--project-dir",
+    "-I",
+    "--init-script",
+    "-c",
+    "--settings-file",
+    "-g",
+    "--gradle-user-home",
+    "--console",
+    "--max-workers",
+    "--warning-mode",
+    "-D",
+    "-P",
+];
+
+/// Whether the build arguments name goals, phases, or tasks, which then replace the default.
+fn has_goals(tool: &str, extra: &[String]) -> bool {
+    let valued = if tool == "gradle" {
+        GRADLE_VALUED
+    } else {
+        VALUED
+    };
     let mut args = extra.iter();
     while let Some(arg) = args.next() {
         if !arg.starts_with('-') {
             return true;
         }
-        if VALUED.contains(&arg.as_str()) {
+        if valued.contains(&arg.as_str()) {
             args.next();
         }
     }
     false
+}
+
+/// Tests requested by name always run: Surefire's `-Dtest`, Failsafe's `-Dit.test`, Gradle's
+/// `--tests`.
+fn explicit_tests(extra: &[String]) -> bool {
+    extra.iter().any(|a| {
+        a.starts_with("-Dtest=")
+            || a.starts_with("-Dit.test=")
+            || a == "--tests"
+            || a.starts_with("--tests=")
+    })
+}
+
+/// The init script that attaches the agent to Gradle's `Test` tasks, extracted next to the agent
+/// so that its path, and with it Gradle's caches, stay stable between runs.
+pub(crate) fn gradle_init_script(jar: &Path) -> Result<PathBuf> {
+    let bytes = crate::setup::GRADLE_SCRIPT;
+    let path = jar.parent().ok_or("No agent directory")?.join(format!(
+        "sieve-{}.init.gradle",
+        &bytecode::hash(bytes)[..16]
+    ));
+    if fs::read(&path).ok().as_deref() != Some(bytes) {
+        let mut temp = tempfile::NamedTempFile::new_in(path.parent().ok_or("No directory")?)?;
+        temp.write_all(bytes)?;
+        temp.persist(&path)?;
+    }
+    Ok(path)
+}
+
+/// The test JVM's process id in a scratch file name such as `decide-<pid>-<random>.tmp`.
+fn jvm_pid(path: &Path, prefix: &str) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix(prefix)?.strip_prefix('-')?.split('-').next())
+        .filter(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
+        .map_or_else(|| std::process::id().to_string(), str::to_owned)
 }
 
 fn summarize(dir: &Path, selection: &mut Selection) -> Result<()> {
@@ -1289,23 +1410,49 @@ fn summarize(dir: &Path, selection: &mut Selection) -> Result<()> {
     let mut dropped = BTreeSet::new();
     let mut decided = false;
     let mut notes = Vec::new();
+    // Each test JVM decides about every test class, but only the classes it discovered count:
+    // Surefire and Failsafe, or two Gradle `Test` tasks, see the others under another context.
+    let mut decisions: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut handled: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for entry in fs::read_dir(dir.join("run"))? {
         let path = entry?.path();
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        if name.starts_with("decisions-") {
+        if let Some(pid) = name
+            .strip_prefix("decisions-")
+            .and_then(|n| n.strip_suffix(".json"))
+        {
             if let Some(reasons) = read_json::<BTreeMap<String, String>>(&path) {
                 decided = true;
-                selection.reasons.extend(reasons);
+                decisions.insert(pid.to_owned(), reasons);
             }
         } else if name.starts_with("summary-") {
             if let Some(summary) = read_json::<Summary>(&path) {
+                let jvm = handled.entry(jvm_pid(&path, "summary")).or_default();
+                jvm.extend(summary.ran.iter().chain(&summary.dropped).cloned());
                 ran.extend(summary.ran);
                 dropped.extend(summary.dropped);
                 notes.extend(summary.notes);
             }
+        }
+    }
+    for (pid, reasons) in &decisions {
+        let own = handled.get(pid);
+        for (test, reason) in reasons {
+            if own.is_some_and(|own| own.contains(test)) {
+                selection.reasons.insert(test.clone(), reason.clone());
+            }
+        }
+    }
+    // Classes no JVM discovered, such as abstract fixtures, keep any JVM's reason.
+    for reasons in decisions.values() {
+        for (test, reason) in reasons {
+            selection
+                .reasons
+                .entry(test.clone())
+                .or_insert_with(|| reason.clone());
         }
     }
     dropped.retain(|t| !ran.contains(t));
@@ -1446,6 +1593,7 @@ fn invocation(
         "JAVA_TOOL_OPTIONS",
         "MAVEN_ARGS",
         "MAVEN_OPTS",
+        "GRADLE_OPTS",
         "TESTCONTAINERS_REUSE_ENABLE",
         "PATH",
     ]
@@ -1508,9 +1656,15 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let explicit_executable = executable.is_some();
     let mut executable =
         executable.unwrap_or_else(|| crate::setup::default_executable(workspace, &config.tool));
-    single_module_maven(config)?;
+    single_module(config)?;
+    let gradle = config.tool == "gradle";
+    if gradle {
+        if let Some(lever) = levers.on.iter().find(|l| *l != "reuse") {
+            return Err(format!("The {lever} speed-up is for Maven only").into());
+        }
+    }
     let dir = prepare(workspace)?;
-    let mut execution = Lock::acquire(&dir, "execution.lock")?;
+    let _execution = Lock::acquire(&dir, "execution.lock")?;
     let session = format!(
         "{}:{}",
         std::process::id(),
@@ -1518,8 +1672,8 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_nanos()
     );
-    execution.0.set_len(0)?;
-    execution.0.write_all(session.as_bytes())?;
+    // Some native file locks also prohibit non-owner reads. Keep the token outside the lock.
+    fs::write(dir.join("session"), &session)?;
     let write = |selection: &Selection| -> Result<()> {
         let json = serde_json::to_string_pretty(selection)? + "\n";
         if let Some(path) = &output {
@@ -1528,10 +1682,8 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         eprintln!("{json}");
         Ok(())
     };
-    let explicit = extra
-        .iter()
-        .any(|a| a.starts_with("-Dtest=") || a.starts_with("-Dit.test="));
-    let goals = has_goals(&extra);
+    let explicit = explicit_tests(&extra);
+    let goals = has_goals(&config.tool, &extra);
     let tree = tree(config, workspace)?;
     let build = build_inputs(workspace)?;
     let context = invocation(config, &executable, &extra, &levers)?;
@@ -1566,7 +1718,11 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         write(&selection)?;
         return Ok(0);
     }
-    let clean = clean_reason(config, last.as_ref(), &tree, &build);
+    // Gradle's incremental compilation removes the output of deleted sources itself.
+    let clean = match gradle {
+        true => None,
+        false => clean_reason(config, last.as_ref(), &tree, &build),
+    };
     // Paths added, edited, or removed since the last run, for `--output`.
     if let Some(last) = &last {
         selection.changed = tree
@@ -1589,7 +1745,12 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
             tree: seen,
         },
     )?;
-    let mode = if full { "record" } else { "select" };
+    // A Gradle test JVM cannot see `--tests`, so named tests switch selection off here.
+    let mode = if full || (gradle && explicit) {
+        "record"
+    } else {
+        "select"
+    };
     // The base can substitute for missing records only under an invocation already shown
     // green. Git alone says nothing about changed -D properties or environment inputs.
     let fallback_base = base.as_deref().filter(|_| {
@@ -1608,12 +1769,26 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let run_dir = dir.join("run");
     fs::remove_dir_all(&run_dir)?;
     fs::create_dir_all(&run_dir)?;
-    let mut args: Vec<String> = vec!["-B".into(), "-ntp".into()];
+    let mut args: Vec<String> = if gradle {
+        // The daemon stays: it is what keeps a warm Gradle fast. The agent reaches only the
+        // `Test` tasks' JVMs, through the init script, never the daemons.
+        let script = gradle_init_script(&agent_jar()?)?;
+        vec![
+            "--console=plain".into(),
+            "--init-script".into(),
+            plain(&script),
+            format!("-Pimpact.agent={option}"),
+        ]
+    } else {
+        vec!["-B".into(), "-ntp".into()]
+    };
     if clean.is_some() {
         args.push("clean".into());
     }
     if !goals {
-        args.push("verify".into());
+        // Gradle's `--tests` filters the task named before it, which must be a `Test` task.
+        let task = if explicit { "test" } else { "impactTests" };
+        args.push(if gradle { task } else { "verify" }.into());
     }
     let mut command = Command::new("");
     selection.speedups = levers.apply(
@@ -1628,16 +1803,16 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     crate::timing::clear_reports(workspace)?;
     selection.reason = match &clean {
         Some(reason) => format!("{}; clean: {reason}", selection.reason),
+        None if gradle => format!("{}; incremental build, Gradle daemon", selection.reason),
         None => format!("{}; incremental build", selection.reason),
     };
     eprintln!("{}", serde_json::to_string_pretty(&selection)?);
-    let mut maven = Command::new(&executable);
-    maven.envs(command.get_envs().filter_map(|(k, v)| Some((k, v?))));
-    let status = maven
-        .current_dir(workspace)
-        .args(&args)
-        .env("JDK_JAVA_OPTIONS", java_options(&option))
-        .status()?;
+    let mut build_tool = Command::new(&executable);
+    build_tool.envs(command.get_envs().filter_map(|(k, v)| Some((k, v?))));
+    if !gradle {
+        build_tool.env("JDK_JAVA_OPTIONS", java_options(&option));
+    }
+    let status = build_tool.current_dir(workspace).args(&args).status()?;
     summarize(&dir, &mut selection)?;
     if !status.success() && selection.tests.is_empty() && selection.skipped.is_empty() {
         selection.reason = format!("{}; the build failed before any test ran", selection.reason);
@@ -1711,6 +1886,88 @@ mod tests {
     }
 
     #[test]
+    fn gradle_outputs_mark_test_source_sets() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(
+            root.join("impact.json"),
+            r#"{"tool":"gradle","modules":{".":[]}}"#,
+        )
+        .unwrap();
+        // Before the first compilation, the conventional directories already count.
+        let before = outputs(root);
+        assert!(before.contains(&(root.join("build/classes/kotlin/main"), false)));
+        assert!(before.contains(&(root.join("build/resources/test"), true)));
+        for dir in [
+            "build/classes/kotlin/integTest",
+            "build/classes/java/generated",
+            "build/resources/integTest",
+        ] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let after = outputs(root);
+        assert!(after.contains(&(root.join("build/classes/kotlin/integTest"), true)));
+        assert!(after.contains(&(root.join("build/classes/java/generated"), false)));
+        assert!(after.contains(&(root.join("build/resources/integTest"), true)));
+        assert_eq!(after.len(), after.iter().collect::<BTreeSet<_>>().len());
+        fs::write(
+            root.join("impact.json"),
+            r#"{"tool":"maven","modules":{".":[]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            outputs(root),
+            [
+                (root.join("target/classes"), false),
+                (root.join("target/test-classes"), true)
+            ]
+        );
+    }
+
+    #[test]
+    fn reasons_come_from_the_jvm_that_ran_each_test() {
+        let temp = tempfile::tempdir().unwrap();
+        let run = temp.path().join("run");
+        fs::create_dir_all(&run).unwrap();
+        assert_eq!(jvm_pid(&run.join("decide-4711-99.tmp"), "decide"), "4711");
+        assert_eq!(
+            jvm_pid(&run.join("summary-4711-99.json"), "summary"),
+            "4711"
+        );
+        let reasons = |unit: &str, it: &str| serde_json::json!({"a.UnitTest": unit, "a.FlowIT": it, "a.Base": "No record"});
+        write_json(
+            &run.join("decisions-1.json"),
+            &reasons("Unchanged test record", "Invocation changed"),
+        )
+        .unwrap();
+        write_json(
+            &run.join("decisions-2.json"),
+            &reasons("Invocation changed", "Changed method: a/B#c()V"),
+        )
+        .unwrap();
+        let summary = |ran: &[&str], dropped: &[&str]| Summary {
+            ran: ran.iter().map(|s| s.to_string()).collect(),
+            dropped: dropped.iter().map(|s| s.to_string()).collect(),
+            notes: Vec::new(),
+        };
+        write_json(
+            &run.join("summary-1-5.json"),
+            &summary(&[], &["a.UnitTest"]),
+        )
+        .unwrap();
+        write_json(&run.join("summary-2-6.json"), &summary(&["a.FlowIT"], &[])).unwrap();
+        let config: Config =
+            serde_json::from_value(serde_json::json!({"tool": "maven", "modules": {".": []}}))
+                .unwrap();
+        let mut selection = config.all("test");
+        summarize(temp.path(), &mut selection).unwrap();
+        assert_eq!(selection.reasons["a.UnitTest"], "Unchanged test record");
+        assert_eq!(selection.reasons["a.FlowIT"], "Changed method: a/B#c()V");
+        assert_eq!(selection.reasons["a.Base"], "No record");
+        assert_eq!(selection.mode, "SUBSET");
+    }
+
+    #[test]
     fn build_info_hashes_without_its_timestamp() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join("META-INF/build-info.properties");
@@ -1739,10 +1996,26 @@ mod tests {
     #[test]
     fn goals_replace_verify() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(!has_goals(&args(&["-Pci", "-q", "-Dx=1"])));
-        assert!(!has_goals(&args(&["-P", "ci", "-pl", "."])));
-        assert!(has_goals(&args(&["test"])));
-        assert!(has_goals(&args(&["-P", "ci", "test"])));
+        assert!(!has_goals("maven", &args(&["-Pci", "-q", "-Dx=1"])));
+        assert!(!has_goals("maven", &args(&["-P", "ci", "-pl", "."])));
+        assert!(has_goals("maven", &args(&["test"])));
+        assert!(has_goals("maven", &args(&["-P", "ci", "test"])));
+        assert!(!has_goals(
+            "gradle",
+            &args(&["--tests", "a.BTest", "-Pci=1", "--offline"])
+        ));
+        assert!(!has_goals(
+            "gradle",
+            &args(&["-x", "detekt", "--console", "plain"])
+        ));
+        assert!(has_goals("gradle", &args(&["check"])));
+        assert!(has_goals(
+            "gradle",
+            &args(&["--tests", "a.BTest", ":integrationTest"])
+        ));
+        assert!(explicit_tests(&args(&["--tests", "a.BTest"])));
+        assert!(explicit_tests(&args(&["-Dtest=ATest"])));
+        assert!(!explicit_tests(&args(&["-Pci", "check"])));
     }
 
     #[test]
@@ -1769,6 +2042,16 @@ mod tests {
         };
         assert!(clean_reason(&config, None, &last.tree, "b").is_some());
         assert_eq!(clean_reason(&config, Some(&last), &last.tree, "b"), None);
+        let interrupted = LastRun {
+            passed: false,
+            key: String::new(),
+            context: String::new(),
+            build: last.build.clone(),
+            tree: last.tree.clone(),
+        };
+        assert!(clean_reason(&config, Some(&interrupted), &last.tree, "b")
+            .unwrap()
+            .contains("did not pass or finish"));
         assert!(clean_reason(&config, Some(&last), &last.tree, "c").is_some());
         let edited = tree(&[
             ("src/A.java", "2:2"),
@@ -1828,8 +2111,8 @@ mod tests {
     #[test]
     fn execution_lock_allows_only_its_session_and_releases_without_deleting() {
         let temp = tempfile::tempdir().unwrap();
-        let mut owner = Lock::acquire(temp.path(), "execution.lock").unwrap();
-        owner.0.write_all(b"session").unwrap();
+        let owner = Lock::acquire(temp.path(), "execution.lock").unwrap();
+        fs::write(temp.path().join("session"), "session").unwrap();
         assert!(execution_guard(temp.path(), "session").unwrap().is_none());
         assert!(execution_guard(temp.path(), "").is_err());
         assert!(execution_guard(temp.path(), "old-session").is_err());

@@ -47,6 +47,77 @@ fn local_records_require_explicit_adoption() {
     assert!(!cli(&["select", "--workspace", workspace]).status.success());
 }
 
+#[cfg(all(unix, feature = "agent"))]
+#[test]
+fn local_wrapper_runs_serialize_the_build_in_one_workspace() {
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    write(&root, "pom.xml", "<project/>");
+    write(
+        &root,
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true}"#,
+    );
+    let build = temp.path().join("build");
+    executable(
+        &build,
+        r#"#!/bin/sh
+if [ -e active ]; then exit 9; fi
+touch active
+trap 'rm -f active' EXIT
+while [ ! -e release ]; do sleep 0.05; done
+echo complete >> completed
+"#,
+    );
+    let start = || {
+        Command::new(BIN)
+            .args([
+                "run",
+                "--full",
+                "--workspace",
+                root.to_str().unwrap(),
+                "--executable",
+                build.to_str().unwrap(),
+            ])
+            .env("SIEVE_CACHE_DIR", temp.path().join("cache"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = start();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !root.join("active").exists() {
+        assert!(
+            first.try_wait().unwrap().is_none(),
+            "first build exited before acquiring the workspace"
+        );
+        if Instant::now() >= deadline {
+            let _ = first.kill();
+            panic!("first build did not start");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut second = start();
+    std::thread::sleep(Duration::from_millis(100));
+    let overlapping_exit = second.try_wait().unwrap();
+    write(&root, "release", "");
+    assert!(first.wait().unwrap().success());
+    assert!(second.wait().unwrap().success());
+    assert!(
+        overlapping_exit.is_none(),
+        "second build overlapped the first"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("completed")).unwrap(),
+        "complete\ncomplete\n"
+    );
+}
+
 #[test]
 fn every_mutation_is_safe_for_both_builds() {
     let catalog: Value =

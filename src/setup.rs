@@ -28,12 +28,14 @@ pub fn default_executable(workspace: &Path, tool: &str) -> String {
     }
 }
 
+pub const GRADLE_SCRIPT: &[u8] = include_bytes!("gradle.init.gradle");
+
 pub fn gradle_script() -> Result<tempfile::NamedTempFile> {
     let mut file = tempfile::Builder::new()
         .prefix("impact-")
         .suffix(".gradle")
         .tempfile()?;
-    file.write_all(include_bytes!("gradle.init.gradle"))?;
+    file.write_all(GRADLE_SCRIPT)?;
     Ok(file)
 }
 

@@ -152,7 +152,7 @@ jobs:
     if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     uses: ./.github/workflows/compatibility.yml
   records:
-    name: Test records (Maven, JDK 25)
+    name: Test records (Maven and Gradle, JDK 25)
     needs: [rust]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -164,6 +164,11 @@ jobs:
         with:
           tool: maven
           java-version: '25'
+      # Gradle 9.1+ runs on JDK 25; the Gradle case runs its tests on the build's JDK.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
       - uses: actions/cache@v4
         with:
           path: |

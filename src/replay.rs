@@ -360,8 +360,10 @@ fn walk(
 ) -> Result<u8> {
     // The walk measures local mode, whether or not the project has switched it on yet.
     let mut config: Config = serde_json::from_value(serde_json::to_value(config)?)?;
-    if config.tool != "maven" || config.modules.keys().ne(["."]) {
-        return Err("--walk needs a single-module Maven project; use --run otherwise".into());
+    if !matches!(config.tool.as_str(), "maven" | "gradle") || config.modules.keys().ne(["."]) {
+        return Err(
+            "--walk needs a single-module Maven or Gradle project; use --run otherwise".into(),
+        );
     }
     config.records = Some(true);
     let config = &config;
@@ -416,7 +418,6 @@ fn walk(
         extra: extra.clone(),
         logs: logs.clone(),
         count: 0,
-        planting: false,
     };
     let mut journal = crate::catalog::Journal::default();
     checkout(&start)?;
@@ -450,7 +451,6 @@ fn walk(
         if plant {
             let planted = match changed_code(&root, &prefix, commit)? {
                 Some(region) => {
-                    runner.planting = true;
                     let cell = std::cell::RefCell::new(&mut runner);
                     let mut chosen = |tag: &str| {
                         cell.borrow_mut().sieve(
@@ -469,7 +469,6 @@ fn walk(
                         &mut chosen,
                         &mut full,
                     );
-                    cell.into_inner().planting = false;
                     result?
                 }
                 None => json!({"mutant": null, "reason": "no changed main source"}),

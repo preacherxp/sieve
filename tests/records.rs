@@ -252,7 +252,10 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         (0, set(&["FormatterTest"]))
     );
     // Restoring the default invocation reruns records made under different Maven properties.
-    p.expect("default invocation after explicit selection", ALL);
+    p.expect(
+        "default invocation after explicit selection",
+        &["FormatterTest"],
+    );
 
     // Framework dispatch, context startup, and resources read at startup.
     p.edit(
@@ -546,7 +549,8 @@ fn local_records_invalidate_properties_environment_and_preserved_metadata_edits(
         .as_str()
         .unwrap()
         .contains("unchanged metadata"));
-    assert!(names(&content["tests"]).contains("PriceTest"));
+    assert_eq!(names(&content["tests"]), set(&["PriceTest"]));
+    assert_eq!(names(&content["skipped"]), set(&["SlowUnrelatedTest"]));
 }
 
 #[test]
@@ -661,6 +665,12 @@ fn catalog_times_edits_and_planted_bugs_catch_a_broken_selector() {
     assert_eq!(report["edits"][1]["selection"]["mode"], "NONE");
     let planted = &report["planted"][0];
     assert!(planted["detected"].as_bool().unwrap(), "{planted:#}");
+    // The planted run decides with the records of the normal runs, so it runs fewer tests;
+    // selecting everything would make "no missed failure" hold trivially.
+    assert!(
+        planted["selected_cases"].as_u64().unwrap() < planted["full_cases"].as_u64().unwrap(),
+        "{planted:#}"
+    );
     assert_eq!(report["missed_failures"], 0);
     // The fixture itself is never edited.
     assert!(!Path::new(ROOT).join("projects/records/README.md").exists());
@@ -839,5 +849,144 @@ fn context_attribution_holds_in_reverse_test_class_order() {
     expect(
         "test property file",
         &["PropertySourceFirstTest", "PropertySourceSecondTest"],
+    );
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Gradle 8.14+ on PATH (or IMPACT_GRADLE)"]
+fn gradle_records_skip_unchanged_tests_on_one_daemon_build() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    copy(&Path::new(ROOT).join("projects/single-gradle"), &root);
+    // Tests run on the JDK that runs Gradle, which local mode needs to be Java 24+.
+    let build = fs::read_to_string(root.join("build.gradle")).unwrap();
+    let build: String = build
+        .lines()
+        .filter(|l| !l.contains("toolchain"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(root.join("build.gradle"), build).unwrap();
+    let mut config: Value =
+        serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+    config["records"] = Value::Bool(true);
+    fs::write(
+        root.join("impact.json"),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    git(root.to_str().unwrap(), &["init", "-q"]);
+    commit(&root, "base");
+    let gradle = std::env::var("IMPACT_GRADLE").unwrap_or_else(|_| "gradle".into());
+    let wrapper = temp.path().join("gradle-counting");
+    let starts = temp.path().join("starts");
+    executable(
+        &wrapper,
+        &format!(
+            "#!/bin/sh\necho start >> '{}'\nexec '{gradle}' \"$@\"\n",
+            starts.display()
+        ),
+    );
+    let count = || {
+        fs::read_to_string(&starts)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    };
+    let selection = temp.path().join("selection.json");
+    let run = |extra: &[&str]| -> (i32, Value, usize) {
+        let before = count();
+        let mut args = vec![
+            "run",
+            "--workspace",
+            root.to_str().unwrap(),
+            "--executable",
+            wrapper.to_str().unwrap(),
+            "--output",
+            selection.to_str().unwrap(),
+            "--",
+        ];
+        if std::env::var_os("IMPACT_OFFLINE").is_some() {
+            args.push("--offline");
+        }
+        args.extend(extra);
+        let status = Command::new(BIN)
+            .args(&args)
+            .env("SIEVE_CACHE_DIR", temp.path().join("cache"))
+            .status()
+            .unwrap();
+        let selection: Value = serde_json::from_slice(&fs::read(&selection).unwrap()).unwrap();
+        (status.code().unwrap(), selection, count() - before)
+    };
+    let all = set(&[
+        "CalculatorIT",
+        "CalculatorTest",
+        "DiscountTest",
+        "GreeterTest",
+        "LimitsTest",
+        "StringUtilsTest",
+    ]);
+
+    let (code, selection, started) = run(&[]);
+    assert_eq!((code, started), (0, 1), "{selection:#}");
+    assert_eq!(
+        names(&selection["tests"]),
+        all,
+        "first run records every test: {selection:#}"
+    );
+    assert!(root
+        .join(".sieve/records/example.CalculatorTest.json")
+        .is_file());
+
+    let (code, selection, started) = run(&[]);
+    assert_eq!(
+        (code, started),
+        (0, 0),
+        "unchanged: no build: {selection:#}"
+    );
+    assert_eq!(selection["mode"], "NONE");
+
+    let source = root.join("src/main/java/example/StringUtils.java");
+    let text = fs::read_to_string(&source).unwrap();
+    fs::write(
+        &source,
+        text.replacen("toUpperCase()", "toUpperCase(java.util.Locale.ROOT)", 1),
+    )
+    .unwrap();
+    let (code, selection, started) = run(&[]);
+    assert_eq!((code, started), (0, 1), "{selection:#}");
+    assert_eq!(
+        names(&selection["tests"]),
+        set(&["StringUtilsTest"]),
+        "{selection:#}"
+    );
+    assert!(
+        !selection["reason"].as_str().unwrap().contains("clean"),
+        "Gradle never cleans"
+    );
+
+    // A bug in a method body fails the tests that executed it, and the failure propagates.
+    let calculator = root.join("src/main/java/example/Calculator.java");
+    let text = fs::read_to_string(&calculator).unwrap();
+    fs::write(&calculator, text.replacen("a + b;", "a + b + 1;", 1)).unwrap();
+    let (code, selection, _) = run(&["--continue"]);
+    assert_eq!(code, 1, "{selection:#}");
+    assert!(
+        names(&selection["tests"]).contains("CalculatorTest"),
+        "{selection:#}"
+    );
+    fs::write(&calculator, text).unwrap();
+    let (code, selection, _) = run(&[]);
+    assert_eq!(code, 0, "failed tests run until they pass: {selection:#}");
+    assert!(
+        names(&selection["tests"]).contains("CalculatorTest"),
+        "{selection:#}"
+    );
+
+    // Named tests always run, although their records are unchanged.
+    let (code, selection, started) = run(&["--tests", "example.GreeterTest"]);
+    assert_eq!((code, started), (0, 1), "{selection:#}");
+    assert_eq!(
+        names(&selection["tests"]),
+        set(&["GreeterTest"]),
+        "{selection:#}"
     );
 }

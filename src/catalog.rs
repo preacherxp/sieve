@@ -18,7 +18,7 @@ const USAGE: &str = "sieve catalog --workspace PATH --catalog FILE [--samples N]
     Applies each catalog edit to HEAD, times `sieve run` against a native full build and\n\
     `sieve run --full`, and weights edit kinds by the last N first-parent commits.\n\
     --plant also plants a bug in each edit and reports missed failures (exit 1).\n\
-    --levers times each edit again with each speed-up switched off.\n\
+    --levers times each edit again with each optional speed-up switched on.\n\
     Runs in a temporary copy unless --in-place is given; --config replaces the copy's\n\
     impact.json, and --history names the repository whose commits are classified.";
 
@@ -426,6 +426,8 @@ pub fn plant(
             "not_compiling": tried,
             "full_failed": reference.failed,
             "selected_failed": chosen.failed,
+            "full_cases": reference.cases,
+            "selected_cases": chosen.cases,
             "detected": !reference.failed.is_empty(),
             "inconclusive": reference.inconclusive() || chosen.inconclusive(),
             "missed": missed,
@@ -699,11 +701,27 @@ pub(crate) struct Runner<'a> {
     pub(crate) extra: Vec<String>,
     pub(crate) logs: PathBuf,
     pub(crate) count: usize,
-    /// Planted-bug runs ignore test failures, so that every suite runs to completion.
-    pub(crate) planting: bool,
 }
 
 impl Runner<'_> {
+    /// The build arguments of every run: the configured ones, and a flag that lets every
+    /// test suite run despite failures in earlier ones, so that a planted bug's failures are
+    /// all collected. Normal and planted runs must share it: the invocation is part of a test
+    /// record's context, and Surefire passes `-D` properties to the test JVM, so a flag only
+    /// in planted runs would invalidate every record and select everything.
+    fn args(&self) -> Vec<String> {
+        let flag = if self.tool == "gradle" {
+            "--continue"
+        } else {
+            "-Dmaven.test.failure.ignore=true"
+        };
+        let mut args = self.extra.clone();
+        if !args.iter().any(|a| a == flag) {
+            args.push(flag.into());
+        }
+        args
+    }
+
     fn log(&mut self, label: &str) -> PathBuf {
         self.count += 1;
         let safe: String = label
@@ -725,11 +743,7 @@ impl Runner<'_> {
         if let Some(executable) = &self.executable {
             command.args(["--executable", executable]);
         }
-        command.arg("--").args(&self.extra);
-        if self.planting {
-            // Every suite runs, so that failures in later ones are compared too.
-            command.arg("-Dmaven.test.failure.ignore=true");
-        }
+        command.arg("--").args(self.args());
         timing::run(&mut command, &log, self.workspace, &self.tool)
     }
 
@@ -745,12 +759,14 @@ impl Runner<'_> {
         if self.tool == "maven" {
             command.args(["-B", "-ntp", "verify"]);
         } else {
-            command.args(["--console=plain", "check"]);
+            // The same test tasks that local mode runs, on the same daemon, without the agent.
+            let script = crate::records::gradle_init_script(&crate::records::agent_jar()?)?;
+            command
+                .args(["--console=plain", "--init-script"])
+                .arg(script)
+                .args(["-Pimpact.tests=all", "impactTests"]);
         }
-        command.args(&self.extra);
-        if self.planting {
-            command.arg("-Dmaven.test.failure.ignore=true");
-        }
+        command.args(self.args());
         timing::run(&mut command, &log, self.workspace, &self.tool)
     }
 }
@@ -923,7 +939,6 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         extra,
         logs,
         count: 0,
-        planting: false,
     };
     let base: &[&str] = &["--base", "HEAD"];
     eprintln!("catalog: warming up {}", workspace.display());
@@ -959,8 +974,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
     let mut levers = BTreeMap::new();
     if compare_levers {
         for lever in crate::records::LEVERS {
-            let default_on = *lever != "mvnd";
-            let switch = if default_on { "--without" } else { "--with" };
+            let switch = "--with";
             let mut per_edit = Vec::new();
             for (i, edit) in catalog.edits.iter().enumerate() {
                 let mut runs = Vec::new();
@@ -990,7 +1004,6 @@ pub fn main(args: Vec<String>) -> Result<u8> {
     let mut planted = Vec::new();
     let mut missed = 0usize;
     if plant_bugs {
-        runner.planting = true;
         for edit in &catalog.edits {
             eprintln!("catalog: planting a bug in {}", edit.name);
             let saved = State::save(&workspace)?;
@@ -1027,7 +1040,6 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             result["edit"] = json!(edit.name);
             planted.push(result);
         }
-        runner.planting = false;
     }
     // Weighted total: each kind's mean of edit medians, by the kind's share of history.
     let mut kinds: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
