@@ -5,6 +5,10 @@ catalogs for internal services stay outside this repository.
 
 ## Verification
 
+- [ ] Re-run the planted-bug catalogs and commit walks done before 2026-10-01: their planted runs
+      used a different invocation than the normal runs, selected every test, and so could not
+      miss a failure (fixed in the runner; see issue 20).
+
 - [ ] Run the new CI job ("Test records (Maven, JDK 25)") on GitHub, and the JDK 25 setup in the
       jobs that compile Rust.
 - [ ] Walk the commons-text window from `docs/performance.md` with `sieve replay --walk --plant`

@@ -1,6 +1,6 @@
 # Adopting local mode on a service
 
-Local mode gives developers on a single-module Maven service short feedback loops: after
+Local mode gives developers on a single-module Maven or Gradle service short feedback loops: after
 an edit, `sieve run` runs only the test classes whose recorded behavior the edit can
 change, and it starts no build at all when nothing changed since the last green run. This
 guide takes a service from zero to measured. The mechanics are described in the
@@ -8,13 +8,13 @@ guide takes a service from zero to measured. The mechanics are described in the
 
 ## Check the prerequisites
 
-- One Maven module (`modules: {".": []}`), JUnit Platform tests, and a test JVM on Java 24
-  or newer. On an older test JVM the agent stays inactive and every test runs.
+- One Maven or Gradle module (`modules: {".": []}`), JUnit Platform tests, and a test JVM
+  on Java 17 or newer. On an older test JVM the agent stays inactive and every test runs.
 - Surefire and Failsafe on their default class loader (`useSystemClassLoader` not set to
   `false`), and no `junit.jupiter.execution.parallel.enabled=true`. In-JVM parallel runs
   keep no records.
 - A `sieve` built with the agent: `cargo install --git https://github.com/preacherxp/sieve
-  --locked` on a machine whose `JAVA_HOME` (or `SIEVE_JAVA_HOME`) points to JDK 24+.
+  --locked` on a machine whose `JAVA_HOME` (or `SIEVE_JAVA_HOME`) points to JDK 17+.
 
 ## Switch it on
 
@@ -41,9 +41,13 @@ The code must compile: Maven compiles every test before any runs. Then work as u
 
 ```bash
 sieve run                      # first run: every test, records written; later: what edits affect
-sieve run -- -Dtest=MyTest     # explicit tests always run
+sieve run -- -Dtest=MyTest     # explicit tests always run (Gradle: -- --tests MyTest)
 JDK_JAVA_OPTIONS="$(sieve env)" mvn verify   # the same selection, plain Maven
 ```
+
+On Gradle, `sieve run` keeps the Gradle daemon, never cleans, and runs every `Test` task
+by default instead of `check`, so linters do not run on every edit; `sieve run -- check`
+runs them. Plain `./gradlew` runs are unaffected and keep no records.
 
 `--output selection.json` explains every test class: which method, resource, or wiring
 change made it run, or that its record was unchanged.
@@ -51,7 +55,10 @@ change made it run, or that its record was unchanged.
 The unchanged-run shortcut hashes file contents, so preserving a file's size and
 modification time cannot hide an edit. Such content edits trigger a clean build to replace
 stale compiled classes. Local CLI runs hold a workspace execution lock through the build
-and reporting.
+and reporting. Plain Maven callbacks defer selection and recording while a wrapper owns
+that lock. Ordinary Maven and IDE builds can still modify native build outputs; Sieve
+checks those outputs before skipping a build and rejects records for classes rewritten
+while tests ran.
 
 The build keeps native `verify` packaging by default. Startup shortcuts are explicit:
 `--with reuse,jgitver,mvnd,repackage` enables container reuse, skipping jgitver, using the

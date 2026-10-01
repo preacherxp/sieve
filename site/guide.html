@@ -709,7 +709,7 @@
                 <g class="term T-ink"><rect x="798" y="128" width="112" height="44" rx="12"/><text class="tt" x="854" y="147" text-anchor="middle">verify</text><text class="ts" x="854" y="163" text-anchor="middle">incremental</text></g>
               </svg>
             </div>
-            <figcaption>The shortcut hashes file contents as well as metadata: an edit that keeps its modification time still forces <code>clean</code>, so Maven cannot test stale classes. Concurrent runs in one workspace wait on an OS file lock.</figcaption>
+            <figcaption>The shortcut hashes file contents as well as metadata: an edit that keeps its modification time still forces <code>clean</code>, so Maven cannot test stale classes. Failed or interrupted previous runs also clean. Concurrent local Sieve runs in one workspace wait on an OS file lock.</figcaption>
           </figure>
 
           <figure class="fig">
@@ -747,14 +747,14 @@
             <div class="fig-body">
               <svg class="fx" viewBox="0 0 920 640" role="img" aria-labelledby="f7t f7d">
                 <title id="f7t">Per-test-class decision in local mode</title>
-                <desc id="f7d">A test class without a record runs, unless a base is given and static analysis shows it reaches no change. With a record, it runs if the last run failed or if the test class, JDK, build inputs, executed method bodies, read files, class shapes, Spring wiring or string-named classes changed. Otherwise it is dropped.</desc>
+                <desc id="f7d">A test class without a record runs, unless a base is given, the same wrapper invocation previously passed, and static analysis shows it reaches no change. With a record, it runs if the last run failed or if the test class, JDK, build inputs, invocation, JVM properties, declared environment inputs, executed method bodies, read files, class shapes, Spring wiring or string-named classes changed. Otherwise it is dropped.</desc>
                 <g><rect class="start" x="290" y="20" width="240" height="40" rx="20"/><text class="inv t" x="410" y="45" text-anchor="middle">Discovered test class</text></g>
                 <g><path class="e" d="M410 60 V93" marker-end="url(#ah)"/></g>
                 <g><rect class="dec" x="240" y="95" width="340" height="40" rx="20"/><text class="t" x="410" y="120" text-anchor="middle">Record exists in .sieve/records?</text></g>
                 <g><path class="e" d="M410 135 V173" marker-end="url(#ah)"/><text class="lab" x="418" y="158">yes</text></g>
                 <g><rect class="dec" x="240" y="175" width="340" height="40" rx="20"/><text class="t" x="410" y="200" text-anchor="middle">Last recorded run passed?</text></g>
                 <g><path class="e" d="M410 215 V253" marker-end="url(#ah)"/><text class="lab" x="418" y="238">yes</text></g>
-                <g><rect class="dec" x="240" y="255" width="340" height="40" rx="20"/><text class="t" x="410" y="280" text-anchor="middle">Test class, JDK, build inputs same?</text></g>
+                <g><rect class="dec" x="240" y="255" width="340" height="40" rx="20"/><text class="t" x="410" y="280" text-anchor="middle">Test, JDK, build and inputs same?</text></g>
                 <g><path class="e" d="M410 295 V333" marker-end="url(#ah)"/><text class="lab" x="418" y="318">yes</text></g>
                 <g><rect class="dec" x="240" y="335" width="340" height="40" rx="20"/><text class="t" x="410" y="360" text-anchor="middle">Executed method bodies same?</text></g>
                 <g><path class="e" d="M410 375 V413" marker-end="url(#ah)"/><text class="lab" x="418" y="398">yes</text></g>
@@ -773,7 +773,7 @@
                 <g class="term T-mod"><rect x="40" y="575" width="180" height="52" rx="12"/><text class="tt" x="130" y="597" text-anchor="middle">RUN</text><text class="ts" x="130" y="615" text-anchor="middle">and extend the record</text></g>
 
                 <g><path class="e" d="M580 115 H618" marker-end="url(#ah)"/><text class="lab" x="599" y="108" text-anchor="middle">no</text></g>
-                <g><text class="s" x="760" y="84" text-anchor="middle">static class-level fallback, base assumed green</text><rect class="dec" x="620" y="95" width="280" height="40" rx="20"/><text class="t" x="760" y="120" text-anchor="middle">--base: reaches no change?</text></g>
+                <g><text class="s" x="760" y="84" text-anchor="middle">static fallback: same passing invocation</text><rect class="dec" x="620" y="95" width="280" height="40" rx="20"/><text class="t" x="760" y="120" text-anchor="middle">--base: reaches no change?</text></g>
                 <g><path class="e ok" d="M760 135 V150 H676 V173" marker-end="url(#ah-ok)"/><text class="lab ok" x="700" y="146">yes</text></g>
                 <g><path class="e run" d="M760 150 H837 V173" marker-end="url(#ah-run)"/><text class="lab run" x="806" y="146">no</text></g>
                 <g class="term T-sub"><rect x="596" y="175" width="160" height="48" rx="12"/><text class="tt" x="676" y="195" text-anchor="middle">DROP</text><text class="ts" x="676" y="212" text-anchor="middle">reaches no change</text></g>
@@ -806,9 +806,15 @@
               <tr><td><code>State</code></td><td>Per-JVM state and the subprocess conversation with the binary.</td></tr>
             </tbody>
           </table></div>
+          <p>Records check invocation arguments, stable JVM properties and environment variables
+            declared under <code>record_env</code>. <code>sieve env</code> uses separate callback
+            files; its callbacks run every test and write no records while a local wrapper owns
+            the workspace lock. Ordinary Maven or IDE builds can still alter native outputs;
+            output fingerprints invalidate the shortcut and classes rewritten during tests
+            prevent recording.</p>
           <p>Native <code>verify</code> packaging stays enabled. The <code>reuse</code>, <code>jgitver</code>, <code>mvnd</code> and
             <code>repackage</code> speed-ups are opt-in through <code>--with</code>. Records still assume observed paths cover test
-            behavior and tests are independent; environment inputs, external services, floating image tags and jars changed
+            behavior and tests are independent; undeclared environment inputs, external services, floating image tags and jars changed
             without a build-input change need full-suite validation.</p>
           <p><a href="../build.rs">build.rs</a> compiles the agent against API stubs in three layers (<code>Boot</code> for Java 8,
             most classes for 17, <code>Transformer</code> for 24) and embeds both jars with <code>include_bytes!</code>, so binary
@@ -875,6 +881,7 @@ target/debug/sieve fixtures verify --tool both --scenario all --selected --class
               <tr><td><a href="../src/generated.rs">src/generated.rs</a></td><td>Generated-source diff at the merge base</td><td><code>Base::start</code> · <code>Base::changes</code></td></tr>
               <tr><td><a href="../src/records.rs">src/records.rs</a></td><td>Local run, <code>decide</code>, <code>record</code>, <code>env</code>, speed-ups</td><td><code>run</code> · <code>decide</code> · <code>record</code> · <code>agent_jar</code></td></tr>
               <tr><td><a href="../src/bytecode.rs">src/bytecode.rs</a></td><td>Method-body and class-shape digests</td><td><code>digest</code> · <code>hash</code></td></tr>
+              <tr><td><a href="../src/reports.rs">src/reports.rs</a></td><td>Native JUnit XML parsing for execution and validation</td><td><code>read_reports</code></td></tr>
               <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code></td></tr>
               <tr><td><a href="../agent/">agent/</a> · <a href="../build.rs">build.rs</a></td><td>Test-JVM agent and its build</td><td><code>Boot</code> · <code>Filter</code> · <code>State</code></td></tr>
               <tr><td>fixtures · replay · catalog · timing</td><td>Validation and measurement</td><td><code>fixtures::main</code> · <code>replay::main</code> · <code>catalog::main</code></td></tr>

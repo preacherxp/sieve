@@ -78,9 +78,9 @@ dependency, an annotation processor path, or an unpacked artifact, and a sibling
 named in the effective build configuration (such as a shared OpenAPI specification); for
 Gradle, a source set directory inside another project.
 
-Prerequisites: Rust 1.92+ and a JDK 24+ `javac` to install/build the CLI, Git for change
+Prerequisites: Rust 1.92+ and a JDK 17+ `javac` to install/build the CLI, Git for change
 detection, and the JDK/build tool required by your project. `build.rs` compiles the
-local-mode agent with the first JDK 24+ found in `SIEVE_JAVA_HOME`, `JAVA_HOME`,
+local-mode agent with the first JDK 17+ found in `SIEVE_JAVA_HOME`, `JAVA_HOME`,
 `JAVA_HOME_<version>_*`, or `PATH`; `cargo install --no-default-features` builds Sieve
 without the agent and without local mode. The Gradle adapter requires **Gradle 7.6.3+**.
 The default samples use JDK 17, Maven 3.9.9, Gradle 8.12.1 in CI (the existing
@@ -262,7 +262,7 @@ opt-in class selection against native full and module-selected runs.
 
 ## Local mode: test records
 
-For developers on a single-module Maven project whose test JVM runs Java 24+, local mode
+For developers on a single-module Maven or Gradle project whose test JVM runs Java 17+, local mode
 replaces static selection with evidence from earlier runs. It pays off most for Spring
 context tests: framework dispatch (Kafka listeners, HTTP handlers) leaves no bytecode edge
 from a test to the code it runs, so static analysis runs all of them for any component
@@ -285,12 +285,20 @@ sieve run --full               # run everything, still recording
 
 `sieve run` starts Maven once with an incremental `verify`. It
 adds `clean` only when stale output is possible (a file deleted
-or renamed since the last run, a build input edit, a `generated` input edit, or no
-earlier run). A content edit that preserves file metadata also cleans to prevent stale
+or renamed since the last run, a build input edit, a `generated` input edit, no
+earlier run, or a failed/interrupted previous run). A content edit that preserves file metadata also cleans to prevent stale
 compiler output. When nothing changed since the last passing run, including the command,
 environment, and Sieve version, it reports `NONE` without starting Maven. Build arguments
 after `--` are appended; if they name goals or phases, they replace `verify`.
 Concurrent wrapper runs in one workspace are serialized through an OS file lock.
+
+On Gradle, `sieve run` starts one build on the Gradle daemon and never adds `clean`:
+Gradle's incremental compilation removes the output of deleted sources itself. By default
+it runs every `Test` task (`impactTests`, added by Sieve's init script) without linters or
+packaging; task names after `--` replace it, such as `sieve run -- check`. The init script
+adds the agent to the `Test` tasks' JVMs only, never to the Gradle or Kotlin daemons.
+Gradle's own `--tests` filter always runs the named tests, through the `test` task when
+no task is named.
 
 The embedded agent reaches every test JVM through `JDK_JAVA_OPTIONS`, so POM `argLine`
 settings (including JaCoCo's) are kept; the agent ignores Maven's own JVM. At JUnit
@@ -310,7 +318,7 @@ A test class is dropped when its last run passed and none of the following chang
 
 - the test class, its nested classes, the JDK, or build inputs (including parent POMs
   outside the workspace);
-- Maven invocation arguments, stable JVM system properties, or declared environment inputs
+- Maven or Gradle invocation arguments, stable JVM system properties, or declared environment inputs
   (`"record_env": ["SERVICE_MODE"]` in `impact.json`);
 - a method it executed (bodies are hashed without debug information, with constant-pool
   references resolved, so comment edits and renumbered constants change nothing);
@@ -326,14 +334,14 @@ Without a passing record, a test class runs. After a passing wrapper run under t
 invocation, `--base` can use class-level analysis to drop unrecorded tests that reach
 no change since that base, which is assumed green. New or changed invocations run them.
 Tests that failed run until they pass. Explicitly requested tests (`-Dtest`,
-`-Dit.test`) always run. A JVM that runs test classes in parallel keeps no records and
+`-Dit.test`, Gradle's `--tests`) always run. A JVM that runs test classes in parallel keeps no records and
 drops nothing; so does a run in which a probe failed, no project class was instrumented,
 or class files changed while the tests ran. A class that failed in the build reports, or
 ran without the agent reporting it in a failed build, counts as failed, and a build whose
 test failures were ignored does not count as passing. `--output` gives a reason for
 every test class, and lists dropped ones under `skipped`; build reports omit them.
 
-Plain Maven gets the same selection with the agent option:
+Plain Maven can use test records through the agent option:
 
 ```bash
 JDK_JAVA_OPTIONS="$(sieve env --workspace .)" mvn verify
@@ -350,19 +358,21 @@ since the test class last changed, and that tests do not depend on what earlier 
 left behind. Not tracked: undeclared environment variables, external services,
 floating Docker image tags, dependency jars changed without a POM change, and lazily
 created beans, whose startup counts only for the test class that first used them. JVMs
-older than Java 24 (back to Java 8) load the agent but keep it inactive, so every test
-runs. Surefire
-with `useSystemClassLoader=false` is not supported. Gradle, multi-module projects, and CI
-keep today's module- and class-level behavior.
+older than Java 17 (back to Java 8) load the agent but keep it inactive, so every test
+runs; so do class files newer than the vendored ASM can read. Surefire
+with `useSystemClassLoader=false` is not supported. Multi-module projects and CI keep
+today's module- and class-level behavior. Plain Gradle runs without Sieve get no records.
 
-The agent is Java (`agent/`), compiled by `build.rs` against small API stubs and embedded
-in the binary; `sieve` extracts it to `SIEVE_CACHE_DIR` (default: the user cache
+The agent is Java (`agent/`), compiled by `build.rs` for Java 17 against small API stubs,
+with a vendored and relocated copy of ASM (`agent/asm`, BSD-3-Clause), and embedded in the
+binary; `sieve` extracts it to `SIEVE_CACHE_DIR` (default: the user cache
 directory) and compares it with the embedded bytes on every use. The fixture
 `projects/records` covers plain, resource-reading, and Spring Boot tests:
 
 ```bash
 cargo test --locked --test records -- --include-ignored --test-threads=1
 # Add IMPACT_OFFLINE=1 to run Maven offline, IMPACT_MAVEN=/path/to/mvn for another Maven.
+# The Gradle case uses Gradle 8.14+ from PATH, or IMPACT_GRADLE=/path/to/gradle.
 ```
 
 ### Local speed-ups
@@ -435,7 +445,7 @@ output forward (Sieve cleans only on its own triggers). Each commit runs `sieve 
 PARENT` and then a native full build as the reference, and optionally a planted bug in the
 commit's changed code. The report lists feedback time, phases, `clean` runs, and missed
 failures per commit and in total; any missed failure exits with 1. The walk switches local
-mode on for any single-module Maven project, and leaves the workspace untouched.
+mode on for any single-module Maven or Gradle project, and leaves the workspace untouched.
 
 ## GitHub CI
 

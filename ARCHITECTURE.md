@@ -12,7 +12,7 @@ A browsable version with diagrams lives in [site/guide.html](site/guide.html).
 |---|---|---|---|---|
 | Module-level | `select`/`run` with `impact.json` | Git diff + declared module graph | Modules | `src/main.rs` |
 | Class-level | `"class_level": true`, mode `MODULES` | Compiled bytecode of the revision | Test classes | `src/classes.rs`, `src/generated.rs` |
-| Local mode | `run --records` or `"records": true`, single-module Maven | Per-test runtime records from earlier runs | Test classes | `src/records.rs`, `agent/` |
+| Local mode | `run --records` or `"records": true`, single-module Maven or Gradle | Per-test runtime records from earlier runs | Test classes | `src/records.rs`, `agent/` |
 
 Module selection is the default, including single-module projects. Class selection is
 always opt-in. A configured `run` without a base selects `ALL` unless local mode was
@@ -98,9 +98,10 @@ sieve run --records                         (records::run)
   ├─ key = hash(source contents, build inputs, invocation, env, version, agent jars)
   │    unchanged since last passing run → NONE without starting Maven
   ├─ agent_jar → extract embedded jars to SIEVE_CACHE_DIR, verify bytes
-  └─ mvn [clean] verify   JDK_JAVA_OPTIONS=-javaagent:sieve-agent.jar=<options>
-        │
-        test JVM ─ Boot (Java 8 entry) → Agent (Java 24+, else inactive)
+  ├─ Maven: mvn [clean] verify   JDK_JAVA_OPTIONS=-javaagent:sieve-agent.jar=<options>
+  └─ Gradle: gradle --init-script sieve.init.gradle -Pimpact.agent=<option> impactTests
+        │     (daemon kept, never clean; the init script adds the agent to Test tasks only)
+        test JVM ─ Boot (Java 8 entry) → Agent (Java 17+, else inactive)
         │   Transformer   method-entry probes on project classes, file probes on JDK file APIs
         │   Probe/Bucket  bootstrap-loaded sinks: hits per test class / context startup / rest
         │   Filter        JUnit PostDiscoveryFilter ── exec ──▶ sieve decide  → classes to drop
@@ -113,27 +114,32 @@ sieve run --records                         (records::run)
 test class, JDK, build inputs, invocation and JVM properties, declared environment inputs
 (`record_env`), executed method bodies, read/listed files, class shapes of executed classes
 and their hierarchy, Spring wiring of loaded components, or classes named by string
-constants. Without a record, `--base` enables the static fallback
-(`statically_unreached`). `bytecode.rs` provides the change-insensitive digests: FNV-1a
+constants. Without a record, `--base` enables the static fallback only after a passing
+wrapper run with the same invocation (`statically_unreached`). `bytecode.rs` provides the change-insensitive digests: FNV-1a
 over method bodies and class shapes with constant-pool references resolved and debug
 attributes ignored.
 
 The unchanged-run shortcut hashes source contents as well as metadata. Content edits
-that preserve modification times force a clean build, so Maven cannot test stale classes.
+that preserve modification times and failed/interrupted previous runs force a clean
+build, so Maven cannot test stale classes.
 Packaging follows native `verify`; `reuse`, `jgitver`, `mvnd`, and `repackage` are opt-in
 speed-ups through `--with`.
 
 State in `.sieve/` (self-ignoring, survives `mvn clean`): `records/`, `snapshots/` of
-class shapes, `run/` decisions and summaries, execution and record locks, and the catalog
-journal. The execution lock serializes local CLI runs through build and reporting.
+class shapes, `run/` decisions and summaries, `env-run/` for plain Maven callbacks,
+`execution.lock`, its separate `session` token, the record-store `lock`, and the catalog journal. The execution lock
+serializes local CLI runs through build and reporting. Plain Maven callbacks run every
+test and write no records while another wrapper owns that lock. External Maven or IDE
+builds can still modify native outputs; output fingerprints invalidate the shortcut and
+class files rewritten during tests prevent recording.
 
 Runtime records assume observed paths cover the test's behavior and that tests are
 independent. Undeclared environment inputs, external services, floating image tags, and
 dependency jars changed without a build-input change still need full-suite validation.
 
 The agent is compiled by `build.rs` against `agent/stubs` (JUnit Platform and Spring API
-stubs), in three layers: `Boot` for Java 8, most classes for Java 17, `Transformer` for
-Java 24 (Class-File API). Both jars are embedded with `include_bytes!`; building with
+stubs), in two layers: `Boot` for Java 8, everything else for Java 17. `Transformer` uses
+a vendored ASM relocated to `sieve.agent.asm` (`agent/asm`, ADR 0003). Both jars are embedded with `include_bytes!`; building with
 `--no-default-features` omits them and local mode.
 
 ## Validation tooling
@@ -158,9 +164,9 @@ catch it.
 | `src/` | CLI (see table below), Gradle init script |
 | `agent/` | Java agent sources, bootstrap probe, compile-only API stubs, service registrations |
 | `build.rs` | Compiles and embeds the agent |
-| `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `workflows` |
+| `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `replay`, `workflows` |
 | `projects/` | Fixtures: `maven`/`gradle` (3-module parity pair), `single-*`, `records`, `records-reuse`, `containers` |
-| `samples/` | `bookstore` (class-level/local demo), `webshop` (5 Spring WebFlux services + system tests) |
+| `samples/` | `bookstore` (class-level/local demo), `webshop` (5 Spring WebFlux services + system tests), `selective-performance` (module/class timing comparison) |
 | `scenarios.json` | Independent oracle for fixture mutations |
 | `.github/` | CI (`ci.yml`), compatibility matrix, weekly fixtures, reusable Java build action |
 | `docs/`, `issues/` | ADRs, measurements, coverage notes, local-mode roadmap |

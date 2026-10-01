@@ -26,6 +26,8 @@ def main():
     maven = shutil.which(args.maven)
     if not sieve or not maven:
         parser.error("build Sieve and provide an available Maven executable")
+    sieve = str(Path(sieve).resolve())
+    maven = str(Path(maven).resolve())
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     summary = output / "summary.json"

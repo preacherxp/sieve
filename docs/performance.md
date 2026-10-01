@@ -172,3 +172,47 @@ python3 scripts/benchmark-selective-performance.py --maven /path/to/mvn
 python3 scripts/benchmark-selective-performance.py --maven /path/to/mvn \
   --delay-ms 0 --output validation-results/selective-performance-zero
 ```
+
+## Local mode on a slow single-module service: commit walks
+
+Measured 2026-10-01 on macOS ARM64 (12 cores), JDK 24.0.1, Maven 3.9.11 and Gradle 8.14
+(daemon), Docker 29. The benchmark is a purpose-built Spring Boot 3.5 teleconsultation
+service (Java 21 bytecode with Kotlin reporting, PostgreSQL and Kafka through
+Testcontainers, 233 tests in 62 classes) whose 35-commit history was written and frozen
+before Sieve ran on it. Its integration tests extend a base class with `@DirtiesContext`,
+so each context test class starts Spring, PostgreSQL and Kafka. The same sources build
+with Maven and Gradle. A native full build takes 103–232 s per commit. Raw data:
+[walk-bench-clinic-maven.json](walk-bench-clinic-maven.json),
+[walk-bench-clinic-gradle.json](walk-bench-clinic-gradle.json).
+
+`sieve replay --walk --plant --commits 20` applied the last 20 commits in order to one
+working tree, ran `sieve run --base PARENT` against a native build of the same tests
+(Maven `verify`; Gradle's `Test` tasks without linters), and planted one bug per commit
+with changed main code. Seconds, totals per commit kind:
+
+| Commits | Maven native | Maven Sieve | Gradle native | Gradle Sieve |
+| --- | ---: | ---: | ---: | ---: |
+| 4 narrow (test-only, docs, CI, a failing test rerun) | 623 | 80 (−87%) | 663 | 89 (−87%) |
+| 14 wide (component, configuration, migration, wiring) | 2,281 | 2,071 (−9%) | 2,364 | 2,305 (−2%) |
+| 2 build inputs (POM, Kotlin version) | 311 | 324 (+4%) | 293 | 305 (+4%) |
+| **20 total** | **3,215** | **2,475 (−23%)** | **3,319** | **2,698 (−19%)** |
+
+- **Edits the records can narrow pay off most.** A test change ran 1–3 tests in 7–10 s
+  instead of 110 s. A bug planted in a method body ran 1–13 tests in 2–21 s, and failed.
+- **Spring wiring limits the rest.** `application.yml`, a Flyway migration, a constructor,
+  or a Spring Data repository method is read or wired by every context, so every context
+  test reruns; with `@DirtiesContext` each of them restarts its containers. Removing
+  `@DirtiesContext` at HEAD cut the native Maven build from 135 s to 99 s (−27%) and
+  broke one test that read another test's Kafka events: test isolation is the other lever.
+- **No real failure was missed.** Maven reported 2 missed failures, both from a test
+  whose result depended on test order, before the commit that fixed it. Gradle reported
+  4: two were PostgreSQL connection drops at container start in the native runs, and two
+  came from a planted bug that did not compile, which the walk did not yet recognize on
+  Gradle (fixed since). Planted bugs were detected in 11 Maven and 10 Gradle commits.
+- Earlier planted-bug runs selected every test: planted runs added a failure-ignore flag
+  that normal runs lacked, which changed the records' invocation context. All runs of a
+  walk or catalog now share the flag; walks and catalogs from before 2026-10-01 should be
+  repeated.
+
+One benchmark and one machine, built by the same author as the tool; a service with
+shared contexts or fewer wiring edits will show different shares.

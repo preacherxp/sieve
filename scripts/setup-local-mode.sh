@@ -94,7 +94,7 @@ cat <<EOF
 Local mode is set up. From $service, before and after every edit:
   sieve run                          # only tests an edit can affect
   sieve run --output /tmp/sel.json   # why each test ran or was skipped
-  sieve run --base origin/main       # static fallback for tests without records
+  sieve run --base origin/main       # static fallback after a green run with the same invocation
   sieve run --full                   # everything, still recording
   JDK_JAVA_OPTIONS="\$(sieve env)" mvn verify   # the same selection, plain Maven
 Records live in .sieve/, which Git ignores. Commit impact.json if the team should share it.

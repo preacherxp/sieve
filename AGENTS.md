@@ -9,9 +9,10 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
   Kotlin/JVM projects using Maven or Gradle, with conservative module selection.
   Projects can opt into bytecode-based class-level selection
   (`"class_level": true`); it compiles the selected modules before running tests.
-- Local mode (`"records": true`, single-module Maven, Java 24+ test JVM) is for developer
+- Local mode (`"records": true`, single-module Maven or Gradle, Java 17+ test JVM) is for developer
   machines, not CI: it keeps per-test records in `.sieve/` and loads an embedded agent
-  through `JDK_JAVA_OPTIONS`. Do not enable it in consumer CI workflows.
+  through `JDK_JAVA_OPTIONS` (Maven) or Sieve's init script (Gradle). Do not enable it in
+  consumer CI workflows.
 - Language independence is a future direction, not an implemented capability.
   Do not advertise support for other languages or invent adapter commands.
 - Read `README.md`, `Cargo.toml`, and `src/gradle.init.gradle` for current setup
