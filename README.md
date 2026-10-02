@@ -324,11 +324,47 @@ A test class is dropped when its last run passed and none of the following chang
   references resolved, so comment edits and renumbered constants change nothing);
 - a file it read, looked up, or listed;
 - the shape (signatures, fields, annotations, supertypes, static initializer) of a class
-  it executed, of that class's project supertypes and subtypes, of classes whose fields it
-  used, and of the annotation types it carries;
-- the Spring wiring of a component its context test loads, by the same slice-aware rule
-  as class-level selection, including added and removed components;
-- an added class named by a string constant in a class it executed.
+  it used, of that class's project supertypes and subtypes, of classes whose fields it
+  used, and of the annotation types it carries; private methods without annotations are
+  left out, since only the class's own code calls them;
+- the Spring wiring of a component it uses, or, for changes that can act anywhere in the
+  context, of a component its context test loads (see below);
+- an added class named by a string constant in a class it used.
+
+A test *uses* a class when it ran code of that class other than its constructors and
+static initializer, or used its fields. A Spring context constructs every component it
+loads, so constructing one is not using it: a constructor or static initializer whose
+bytecode only stores values into the class's own fields (calling nothing but JDK value
+types, collections, `java.time`, and null checks) reruns only the tests that use the
+class. Other constructors count like any executed method.
+
+Component wiring is compared in parts. A new constructor dependency, or an annotated
+member whose annotations act on calls to it (`@Transactional`, security, caching,
+validation, `@Value`, Spring Data `@Query`, JPA and Jackson mappings, project annotations
+that carry only such meta-annotations), reruns the tests that use the component; for an
+interface such as a repository, the tests that use classes calling the changed members.
+An added component with such annotations, and no library supertype a framework looks for,
+reruns the tests that use its project supertypes, their other implementations, or their
+callers. Request mappings also rerun the users of controllers whose paths may overlap the
+changed ones. Any other change, such as a listener, `@Bean` method, lifecycle callback,
+aspect pointcut, class annotation, supertype, or a removed component, reruns every context
+test that loads the component, as in class-level selection.
+
+A changed Spring Boot configuration file (`application*` or `bootstrap*`, YAML or
+properties) is compared key by key: comment and formatting edits change nothing, and a
+changed key reruns the tests that use a project class naming it, in a placeholder such as
+`@Value("${clinic.reminders.window}")`, as a key constant, or as the prefix of a
+`@ConfigurationProperties` class. A key that no project class names, such as
+`spring.datasource.*`, is read by the framework, and every test that read the file runs;
+so does a file the reader cannot follow (anchors, tabs, multi-line plain scalars). A
+Flyway migration directory that only gained versioned migrations after the newest one,
+containing only non-unique indexes, sequences, comments, and tables without foreign keys,
+reruns nothing.
+
+Each of these narrowed changes could still stop a context from starting. When none of the
+selected tests starts a full context and no such test has passed since the change, the
+one with the fewest recorded methods runs as a startup check, with the reason `Startup check for changes it does
+not use: …`.
 
 Without a passing record, a test class runs. After a passing wrapper run under the same
 invocation, `--base` can use class-level analysis to drop unrecorded tests that reach

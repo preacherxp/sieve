@@ -3,7 +3,7 @@
 //! `sieve record`. A test class is dropped when its last run passed and nothing it executed
 //! or read has changed since, or, without a record, when static analysis shows it reaches no
 //! change since a green `--base`.
-use crate::{bytecode, classes, fingerprint, Config, Result, Selection};
+use crate::{bytecode, classes, fingerprint, settings, Config, Result, Selection};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,12 +40,29 @@ struct Record {
     files: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// What a class looked like when a record was last extended. Fields missing from older
+/// snapshots compare as changed.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 struct Shape {
     shape: String,
     wiring: String,
     supers: Vec<String>,
     component: bool,
+    #[serde(default)]
+    api: String,
+    #[serde(default)]
+    declared: String,
+    #[serde(default)]
+    injection: String,
+    #[serde(default)]
+    wired: BTreeMap<String, bytecode::Wired>,
+    #[serde(default)]
+    plain: BTreeSet<String>,
+    #[serde(default)]
+    routes: BTreeMap<String, Vec<String>>,
+    /// Compiled from test sources.
+    #[serde(default)]
+    test: bool,
 }
 
 type Snapshot = BTreeMap<String, Shape>;
@@ -85,7 +102,7 @@ struct Summary {
 
 fn prepare(workspace: &Path) -> Result<PathBuf> {
     let dir = workspace.join(DIR);
-    for sub in ["records", "snapshots", "run"] {
+    for sub in ["records", "snapshots", "settings", "run"] {
         fs::create_dir_all(dir.join(sub))?;
     }
     let ignore = dir.join(".gitignore");
@@ -259,15 +276,10 @@ fn listing_hash(path: &Path) -> String {
     if path.is_dir() {
         // A listing counts; class files are left out, because component scanning is covered
         // by the Spring wiring rule and class changes by the method and shape rules.
-        let mut names: Vec<String> = fs::read_dir(path)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| !n.ends_with(".class"))
-            .collect();
-        names.sort();
-        return format!("dir:{}", bytecode::hash(names.join("\n").as_bytes()));
+        return format!(
+            "dir:{}",
+            bytecode::hash(listing(path).join("\n").as_bytes())
+        );
     }
     file_state(path)
 }
@@ -412,12 +424,21 @@ impl Current {
         self.digests
             .iter()
             .map(|(name, d)| {
-                let component = self.index.get(name).is_some_and(|&i| self.component[i]);
+                // A test class that starts a context is not one of its components.
+                let index = self.index.get(name).copied();
+                let component = index.is_some_and(|i| self.component[i] && !self.context[i]);
                 let shape = Shape {
                     shape: d.shape.clone(),
                     wiring: d.wiring.clone(),
                     supers: d.supers.clone(),
                     component,
+                    api: d.api.clone(),
+                    declared: d.declared.clone(),
+                    injection: d.injection.clone(),
+                    wired: d.wired.clone(),
+                    plain: d.plain.clone(),
+                    routes: d.routes.clone(),
+                    test: index.is_some_and(|i| self.classes[i].test),
                 };
                 (name.clone(), shape)
             })
@@ -621,6 +642,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
                 .collect(),
         };
         snapshot_used = true;
+        save_settings(&dir, &workspace, &record)?;
         write_json(&path, &record)?;
     }
     if snapshot_used {
@@ -647,18 +669,89 @@ fn collect_garbage(dir: &Path) -> Result<()> {
     for entry in fs::read_dir(dir.join("records"))? {
         if let Some(record) = read_json::<Record>(&entry?.path()) {
             used.insert(format!("{}.json", record.snapshot));
+            for hash in record.files.values() {
+                used.insert(settings_name(hash));
+            }
         }
     }
-    for entry in fs::read_dir(dir.join("snapshots"))? {
-        let entry = entry?;
-        if !used.contains(entry.file_name().to_string_lossy().as_ref()) {
-            let _ = fs::remove_file(entry.path());
+    for sub in ["snapshots", "settings"] {
+        for entry in fs::read_dir(dir.join(sub))? {
+            let entry = entry?;
+            if !used.contains(entry.file_name().to_string_lossy().as_ref()) {
+                let _ = fs::remove_file(entry.path());
+            }
         }
     }
     Ok(())
 }
 
-/// Project supertypes and subtypes of `classes`, transitively, including themselves.
+/// The file name under `.sieve/settings` for a recorded hash.
+fn settings_name(hash: &str) -> String {
+    format!("{}.json", hash.replace(':', "-"))
+}
+
+/// The names in a directory listing, as [`listing_hash`] counts them.
+fn listing(path: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.ends_with(".class"))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Keeps the keys of each configuration file and the names of each migration directory a
+/// record read, by hash, so that a later edit can be narrowed to what it changed.
+fn save_settings(dir: &Path, workspace: &Path, record: &Record) -> Result<()> {
+    for (file, hash) in &record.files {
+        let path = dir.join("settings").join(settings_name(hash));
+        if hash == "-" || path.is_file() || recorded_hash(workspace, file) != *hash {
+            continue;
+        }
+        if let Some(listed) = file.strip_prefix(LISTED) {
+            let names = listing(&workspace.join(listed));
+            if settings::is_migrations(&names) {
+                let names: BTreeMap<String, String> =
+                    names.into_iter().map(|n| (n, String::new())).collect();
+                write_json(&path, &names)?;
+            }
+            continue;
+        }
+        if !settings::is_config(file) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(workspace.join(file)) else {
+            continue;
+        };
+        if let Some(keys) = settings::flatten(file, &text) {
+            write_json(&path, &keys)?;
+        }
+    }
+    Ok(())
+}
+
+/// The keys of a configuration file at a recorded hash: none for a file that did not exist.
+fn settings_at(
+    dir: &Path,
+    workspace: &Path,
+    file: &str,
+    hash: &str,
+) -> Option<BTreeMap<String, String>> {
+    if hash == "-" {
+        return Some(BTreeMap::new());
+    }
+    if recorded_hash(workspace, file) == hash {
+        let text = fs::read_to_string(workspace.join(file)).ok()?;
+        return settings::flatten(file, &text);
+    }
+    read_json(&dir.join("settings").join(settings_name(hash)))
+}
+
+/// Project supertypes and subtypes of `classes`, transitively, including themselves. Test
+/// classes extending them are left out: only JUnit instantiates those.
 fn hierarchy<'a>(classes: &BTreeSet<&'a str>, shapes: &'a Snapshot) -> BTreeSet<&'a str> {
     let mut subtypes: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (name, shape) in shapes {
@@ -687,7 +780,8 @@ fn hierarchy<'a>(classes: &BTreeSet<&'a str>, shapes: &'a Snapshot) -> BTreeSet<
                         }),
                     );
                 } else {
-                    stack.extend(subtypes.get(name).into_iter().flatten().copied());
+                    let subs = subtypes.get(name).into_iter().flatten().copied();
+                    stack.extend(subs.filter(|s| !shapes.get(*s).is_some_and(|s| s.test)));
                 }
             }
         }
@@ -701,6 +795,166 @@ struct Wiring {
     all: Option<String>,
     selected: BTreeMap<String, String>,
     added: BTreeSet<String>,
+    /// Classes whose users run, with the reason: components whose changes stay inside them.
+    classes: BTreeMap<String, String>,
+    /// Changes that only a context start shows when they break it.
+    startup: BTreeSet<String>,
+}
+
+/// What a change to a component's annotations can affect.
+#[derive(PartialEq, PartialOrd)]
+enum Effect {
+    /// Calls to the component itself.
+    Local,
+    /// Requests that the changed handler's path patterns may now match.
+    Route,
+    /// Anything in the context: listeners, bean definitions, lifecycle callbacks, advice.
+    Global,
+}
+
+/// Annotations whose effect is limited to calls of the annotated class or member.
+const LOCAL_ANNOTATIONS: &[&str] = &[
+    "org/springframework/stereotype/Service",
+    "org/springframework/stereotype/Component",
+    "org/springframework/stereotype/Repository",
+    "org/springframework/transaction/annotation/",
+    "jakarta/transaction/Transactional",
+    "javax/transaction/Transactional",
+    "org/springframework/security/access/prepost/",
+    "org/springframework/security/access/annotation/Secured",
+    "jakarta/annotation/security/",
+    "javax/annotation/security/",
+    "org/springframework/cache/annotation/Cacheable",
+    "org/springframework/cache/annotation/CachePut",
+    "org/springframework/cache/annotation/CacheEvict",
+    "org/springframework/cache/annotation/Caching",
+    "org/springframework/validation/annotation/Validated",
+    "jakarta/validation/",
+    "javax/validation/",
+    "org/springframework/beans/factory/annotation/Value",
+    "org/springframework/beans/factory/annotation/Qualifier",
+    "org/springframework/beans/factory/annotation/Autowired",
+    "org/springframework/web/bind/annotation/PathVariable",
+    "org/springframework/web/bind/annotation/RequestParam",
+    "org/springframework/web/bind/annotation/RequestBody",
+    "org/springframework/web/bind/annotation/RequestHeader",
+    "org/springframework/web/bind/annotation/RequestPart",
+    "org/springframework/web/bind/annotation/CookieValue",
+    "org/springframework/web/bind/annotation/ResponseStatus",
+    "org/springframework/web/bind/annotation/ResponseBody",
+    "org/springframework/format/annotation/",
+    "org/springframework/scheduling/annotation/Async",
+    "org/springframework/retry/annotation/",
+    "org/springframework/lang/",
+    "org/springframework/data/annotation/",
+    "org/springframework/data/jpa/repository/Query",
+    "org/springframework/data/jpa/repository/Modifying",
+    "org/springframework/data/repository/query/Param",
+    "jakarta/persistence/",
+    "javax/persistence/",
+    "org/hibernate/annotations/",
+    "com/fasterxml/jackson/annotation/",
+    "io/micrometer/",
+    "org/jetbrains/annotations/",
+    "jakarta/annotation/Nullable",
+    "jakarta/annotation/Nonnull",
+    "javax/annotation/Nullable",
+    "javax/annotation/Nonnull",
+    "kotlin/",
+    "java/lang/Deprecated",
+    "java/lang/SafeVarargs",
+    "java/lang/FunctionalInterface",
+];
+
+/// Library supertypes that no injection point or framework callback looks for.
+const INERT_SUPERTYPES: &[&str] = &[
+    "java/lang/Object",
+    "java/lang/Record",
+    "java/lang/Enum",
+    "java/io/Serializable",
+    "java/lang/Comparable",
+    "java/lang/Cloneable",
+    "org/springframework/data/",
+    "kotlin/jvm/internal/markers/",
+];
+
+fn listed(name: &str, list: &[&str]) -> bool {
+    list.iter()
+        .any(|p| name == *p || p.ends_with('/') && name.starts_with(p))
+}
+
+impl Current {
+    fn class(&self, name: &str) -> Option<&classes::Class> {
+        self.index.get(name).map(|&i| &self.classes[i])
+    }
+
+    /// What an annotation on a component can affect. Project annotations, such as one an
+    /// aspect's pointcut names, are local when their own annotations are.
+    fn effect(&self, annotation: &str) -> Effect {
+        if bytecode::mapping(annotation) {
+            return Effect::Route;
+        }
+        if listed(annotation, LOCAL_ANNOTATIONS) {
+            return Effect::Local;
+        }
+        match self.class(annotation) {
+            Some(class) if class.annotation => {
+                let meta = class.annotations.iter().all(|a| {
+                    a.name.starts_with("java/lang/annotation/")
+                        || a.name.starts_with("kotlin/annotation/")
+                        || listed(&a.name, LOCAL_ANNOTATIONS)
+                });
+                if meta {
+                    Effect::Local
+                } else {
+                    Effect::Global
+                }
+            }
+            _ => Effect::Global,
+        }
+    }
+
+    /// Whether every constructor and the static initializer of `class` is plain.
+    fn plain(&self, class: &str, now: &Snapshot) -> bool {
+        let (Some(digest), Some(shape)) = (self.digests.get(class), now.get(class)) else {
+            return false;
+        };
+        digest
+            .methods
+            .keys()
+            .filter(|m| construction(m))
+            .all(|m| shape.plain.contains(m))
+    }
+}
+
+/// Whether a method key (`name(descriptor)`) constructs or initializes its class.
+fn construction(method: &str) -> bool {
+    method.starts_with("<init>(") || method.starts_with("<clinit>(")
+}
+
+/// Whether two request-mapping patterns can match the same path.
+fn overlap(a: &str, b: &str) -> bool {
+    let rest = |s: &str| s.contains("**") || s.starts_with("{*");
+    let wild = |s: &str| s.contains(['{', '*', '?']);
+    let (x, y): (Vec<&str>, Vec<&str>) = (
+        a.split('/').filter(|s| !s.is_empty()).collect(),
+        b.split('/').filter(|s| !s.is_empty()).collect(),
+    );
+    for i in 0..x.len().max(y.len()) {
+        match (x.get(i), y.get(i)) {
+            (Some(s), Some(t)) => {
+                if rest(s) || rest(t) {
+                    return true;
+                }
+                if s != t && !wild(s) && !wild(t) {
+                    return false;
+                }
+            }
+            (Some(s), None) | (None, Some(s)) => return rest(s),
+            (None, None) => break,
+        }
+    }
+    true
 }
 
 fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) -> Wiring {
@@ -712,24 +966,120 @@ fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) 
             .filter(|n| !then.contains_key(*n))
             .cloned()
             .collect(),
+        classes: BTreeMap::new(),
+        startup: BTreeSet::new(),
     };
+    let names: BTreeSet<&String> = then.keys().chain(now.keys()).collect();
     let mut changed = BTreeSet::new();
-    for name in then.keys().chain(now.keys()) {
+    let mut patterns = BTreeSet::new();
+    for name in names {
         let (a, b) = (then.get(name), now.get(name));
         let component = a.is_some_and(|s| s.component) || b.is_some_and(|s| s.component);
         let differs = a.map(|s| (&s.wiring, s.component)) != b.map(|s| (&s.wiring, s.component));
-        if component && differs {
-            if b.is_none() {
-                wiring.all = Some(format!("Spring component removed: {name}"));
+        // Older snapshots counted context tests as components.
+        if !component || !differs || current.context_test(&name.replace('/', ".")) {
+            continue;
+        }
+        let Some(b) = b else {
+            wiring.all = Some(format!("Spring component removed: {name}"));
+            continue;
+        };
+        let reason = format!("Spring wiring changed: {name}");
+        let mut members = BTreeSet::new();
+        let narrowed = match a.filter(|a| a.component) {
+            // The same declaration: only constructors or annotated members changed.
+            Some(a) if b.component && !a.declared.is_empty() && a.declared == b.declared => {
+                let mut effect = Effect::Local;
+                for key in a.wired.keys().chain(b.wired.keys()) {
+                    let (x, y) = (a.wired.get(key), b.wired.get(key));
+                    if x == y {
+                        continue;
+                    }
+                    members.insert(key.clone());
+                    for annotation in x.into_iter().chain(y).flat_map(|w| &w.annotations) {
+                        let found = current.effect(annotation);
+                        if found == Effect::Route {
+                            patterns.extend(a.routes.get(key).into_iter().flatten().cloned());
+                            patterns.extend(b.routes.get(key).into_iter().flatten().cloned());
+                        }
+                        if found > effect {
+                            effect = found;
+                        }
+                    }
+                }
+                effect != Effect::Global
             }
+            Some(_) => false,
+            None => added(
+                name,
+                b,
+                current,
+                then,
+                now,
+                &reason,
+                &mut wiring,
+                &mut patterns,
+            ),
+        };
+        if narrowed {
+            // Interfaces and abstract classes run no code of their own for the members
+            // Spring implements, such as repository queries: callers of those members do.
+            if !current.class(name).is_some_and(|c| c.abstract_) {
+                members.clear();
+            }
+            let mut owners = BTreeSet::from([name.as_str()]);
+            while let Some(sub) = current.classes.iter().find(|c| {
+                !members.is_empty()
+                    && !owners.contains(c.name.as_str())
+                    && c.supers.iter().any(|s| owners.contains(s.as_str()))
+            }) {
+                owners.insert(&sub.name);
+            }
+            for key in &members {
+                let calls: Vec<String> = owners.iter().map(|o| format!("{o}#{key}")).collect();
+                let calling = current
+                    .classes
+                    .iter()
+                    .filter(|c| calls.iter().any(|call| c.calls.contains(call)));
+                for class in calling {
+                    wiring
+                        .classes
+                        .entry(class.name.clone())
+                        .or_insert_with(|| format!("{reason}#{key}"));
+                }
+            }
+            wiring.classes.insert(name.clone(), reason.clone());
+            wiring.startup.insert(reason);
+        } else {
             changed.insert(name.clone());
         }
     }
-    changed.retain(|n| now.contains_key(n));
+    // Handlers whose paths may now be matched differently.
+    for snapshot in [then, now] {
+        for (name, shape) in snapshot {
+            let routes = shape.routes.values().flatten();
+            if let Some(route) = routes
+                .clone()
+                .find(|r| patterns.iter().any(|p| overlap(p, r)))
+            {
+                wiring
+                    .classes
+                    .entry(name.clone())
+                    .or_insert_with(|| format!("Request mapping changed near {route}"));
+            }
+        }
+    }
     if changed.is_empty() || wiring.all.is_some() {
         return wiring;
     }
-    let label = changed.iter().next().cloned().unwrap_or_default();
+    let label: Vec<&str> = changed.iter().take(3).map(String::as_str).collect();
+    let more = changed.len().saturating_sub(3);
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    let label = format!("{}{more}", label.join(", "));
     match classes::affected_by(
         &current.classes,
         classes::Changes::Classes(&changed),
@@ -750,17 +1100,153 @@ fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) 
     wiring
 }
 
+/// Whether a component added since the snapshot affects only what can reach it: plain
+/// stereotypes and local annotations, no library supertype a framework looks for. Its
+/// project supertypes' other implementations and their callers are affected, since
+/// injection points of those types may now receive it.
+#[allow(clippy::too_many_arguments)]
+fn added(
+    name: &str,
+    shape: &Shape,
+    current: &Current,
+    then: &Snapshot,
+    now: &Snapshot,
+    reason: &str,
+    wiring: &mut Wiring,
+    patterns: &mut BTreeSet<String>,
+) -> bool {
+    let Some(class) = current.class(name) else {
+        return false;
+    };
+    let mut affected = BTreeSet::new();
+    let mut stack: Vec<&str> = class.supers.iter().map(String::as_str).collect();
+    while let Some(sup) = stack.pop() {
+        match current.class(sup) {
+            Some(project) => {
+                if affected.insert(sup.to_owned()) {
+                    stack.extend(project.supers.iter().map(String::as_str));
+                }
+            }
+            None if listed(sup, INERT_SUPERTYPES) => {}
+            None => return false,
+        }
+    }
+    let annotations = class.annotations.iter().map(|a| a.name.as_str()).chain(
+        shape
+            .wired
+            .values()
+            .flat_map(|w| w.annotations.iter().map(String::as_str)),
+    );
+    for annotation in annotations {
+        let controller = matches!(
+            annotation,
+            "org/springframework/web/bind/annotation/RestController"
+                | "org/springframework/stereotype/Controller"
+        );
+        match current.effect(annotation) {
+            Effect::Global if !controller => return false,
+            _ => {}
+        }
+    }
+    patterns.extend(shape.routes.values().flatten().cloned());
+    for sup in affected.clone() {
+        for snapshot in [then, now] {
+            for (other, s) in snapshot {
+                if s.supers.contains(&sup) {
+                    affected.insert(other.clone());
+                }
+            }
+        }
+        for caller in current.classes.iter().filter(|c| c.uses.contains(&sup)) {
+            affected.insert(caller.name.clone());
+        }
+    }
+    for other in affected {
+        wiring
+            .classes
+            .entry(other)
+            .or_insert_with(|| format!("{reason}, which shares its supertype"));
+    }
+    true
+}
+
 struct Decider<'a> {
     workspace: &'a Path,
     dir: PathBuf,
     current: Current,
     now: Snapshot,
     snapshots: BTreeMap<String, Option<(Snapshot, Wiring)>>,
+    /// Changes skipped for some test that only a context start shows when they break it.
+    startup: BTreeSet<String>,
+    /// Whether the last checked test skipped such a change.
+    pending: bool,
+    /// Per configuration file and recorded hash: what [`settings_reach`] found.
+    settings: BTreeMap<(String, String), std::result::Result<Reach, String>>,
+}
+
+/// The project classes that name a changed key, with the key, and whether the change could
+/// stop a context from starting.
+struct Reach {
+    consumers: BTreeMap<String, String>,
+    startup: bool,
+}
+
+/// What a change to a configuration file or migration directory since `hash` reaches, or
+/// why every test reading it runs: an unreadable file, a key no project class names, which
+/// the framework or a library may read, or migrations that change existing tables.
+fn settings_reach(
+    dir: &Path,
+    workspace: &Path,
+    current: &Current,
+    file: &str,
+    hash: &str,
+) -> std::result::Result<Reach, String> {
+    let resource = format!("Changed resource: {file}");
+    if let Some(listed) = file.strip_prefix(LISTED) {
+        let then: BTreeMap<String, String> =
+            read_json(&dir.join("settings").join(settings_name(hash))).ok_or(resource.clone())?;
+        let then: Vec<String> = then.into_keys().collect();
+        let path = workspace.join(listed);
+        let now = listing(&path);
+        let read = |name: &str| fs::read_to_string(path.join(name)).ok();
+        if settings::is_migrations(&then) && settings::inert_migrations(&then, &now, read) {
+            return Ok(Reach {
+                consumers: BTreeMap::new(),
+                startup: true,
+            });
+        }
+        return Err(resource);
+    }
+    if !settings::is_config(file) {
+        return Err(resource);
+    }
+    let then = settings_at(dir, workspace, file, hash).ok_or_else(|| resource.clone())?;
+    let now = settings_at(dir, workspace, file, &recorded_hash(workspace, file)).ok_or(resource)?;
+    let mut consumers = BTreeMap::new();
+    let changed = settings::changed(&then, &now);
+    for key in &changed {
+        let found = settings::consumers(key, &current.classes);
+        if found.is_empty() {
+            return Err(format!(
+                "Changed configuration {key} in {file}, read by the framework"
+            ));
+        }
+        for i in found {
+            consumers
+                .entry(current.classes[i].name.clone())
+                .or_insert_with(|| key.clone());
+        }
+    }
+    Ok(Reach {
+        consumers,
+        startup: !changed.is_empty(),
+    })
 }
 
 impl Decider<'_> {
     /// Why the test must run, or `None` when its record shows that nothing it used changed.
     fn check(&mut self, test: &str, record: &Record, jdk: &str, context: &str) -> Option<String> {
+        self.pending = false;
         let current = &self.current;
         if !record.passed {
             return Some("Failed last time".into());
@@ -777,21 +1263,76 @@ impl Decider<'_> {
         if record.build != current.build {
             return Some("Build input changed".into());
         }
+        // Classes whose code the test ran beyond constructing them. A context constructs
+        // every component it loads; constructing one is not using it.
+        let used: BTreeSet<&str> = record
+            .methods
+            .keys()
+            .filter_map(|m| m.split_once('#'))
+            .filter(|(_, method)| !construction(method))
+            .map(|(owner, _)| owner)
+            .collect();
+        // With the classes used without running code of their own: owners of fields read
+        // or written, whose static initializers ran elsewhere, and annotation types,
+        // transitively.
+        let mut shaped: BTreeSet<&str> = used.clone();
+        let mut stack: Vec<&str> = used.iter().copied().collect();
+        while let Some(name) = stack.pop() {
+            let Some(class) = current.class(name) else {
+                continue;
+            };
+            let annotations = class
+                .refs
+                .iter()
+                .filter(|r| current.class(r).is_some_and(|c| c.annotation));
+            for used in class.fields.iter().chain(annotations) {
+                if let Some((key, _)) = current.index.get_key_value(used.as_str()) {
+                    if shaped.insert(key.as_str())
+                        && current.class(key).is_some_and(|c| c.annotation)
+                    {
+                        stack.push(key.as_str());
+                    }
+                }
+            }
+        }
+        // A configuration file changes for the tests that use a class naming a changed key, or
+        // that construct one through code other than plain field stores.
+        let consumer = |class: &str| {
+            let ran = record.methods.keys().filter_map(|m| m.split_once('#'));
+            let constructed = ran
+                .clone()
+                .any(|(owner, m)| owner == class && construction(m));
+            ran.clone().any(|(owner, m)| {
+                owner == class
+                    && !construction(m)
+                    && !matches!(m, "hashCode()I" | "equals(Ljava/lang/Object;)Z")
+            }) || shaped.contains(class) && !used.contains(class)
+                || constructed && !current.plain(class, &self.now)
+        };
         for (file, hash) in &record.files {
-            if recorded_hash(self.workspace, file) != *hash {
-                return Some(format!("Changed resource: {file}"));
+            if recorded_hash(self.workspace, file) == *hash {
+                continue;
             }
-        }
-        for (method, hash) in &record.methods {
-            if current.method(method) != Some(hash) {
-                return Some(format!("Changed method: {method}"));
+            let reach = self
+                .settings
+                .entry((file.clone(), hash.clone()))
+                .or_insert_with(|| settings_reach(&self.dir, self.workspace, current, file, hash));
+            let reach = match reach {
+                Err(reason) => return Some(reason.clone()),
+                Ok(reach) => reach,
+            };
+            if let Some((class, key)) = reach.consumers.iter().find(|(c, _)| consumer(c)) {
+                return Some(format!(
+                    "Changed configuration {key} in {file}, read by {class}"
+                ));
             }
-        }
-        if current.context_test(test) && !record.spring {
-            return Some("Context test without context evidence".into());
+            if reach.startup {
+                self.startup.insert(format!("Changed: {file}"));
+                self.pending = true;
+            }
         }
         let snapshots = &mut self.snapshots;
-        let (then, wiring) = match snapshots.entry(record.snapshot.clone()).or_insert_with(|| {
+        let entry = snapshots.entry(record.snapshot.clone()).or_insert_with(|| {
             let path = self
                 .dir
                 .join("snapshots")
@@ -799,52 +1340,47 @@ impl Decider<'_> {
             let then: Snapshot = read_json(&path)?;
             let wiring = wiring(&then, &self.now, current, self.workspace);
             Some((then, wiring))
-        }) {
-            Some(entry) => (&entry.0, &entry.1),
-            None => return Some("Record snapshot missing".into()),
-        };
-        let touched: BTreeSet<&str> = record
-            .methods
-            .keys()
-            .filter_map(|m| m.split_once('#').map(|(owner, _)| owner))
-            .collect();
-        // Classes used without running code of their own: owners of fields read or written,
-        // whose static initializers ran elsewhere, and annotation types, transitively.
-        let mut shaped: BTreeSet<&str> = touched.clone();
-        let mut stack: Vec<&str> = touched.iter().copied().collect();
-        while let Some(name) = stack.pop() {
-            let Some(&i) = current.index.get(name) else {
+        });
+        let snapshot = entry.as_ref().map(|e| (&e.0, &e.1));
+        for (method, hash) in &record.methods {
+            if current.method(method) == Some(hash) {
                 continue;
-            };
-            let class = &current.classes[i];
-            let annotations = class.refs.iter().filter(|r| {
-                current
-                    .index
-                    .get(r.as_str())
-                    .is_some_and(|&j| current.classes[j].annotation)
-            });
-            for used in class.fields.iter().chain(annotations) {
-                if let Some((key, _)) = current.index.get_key_value(used.as_str()) {
-                    if shaped.insert(key.as_str()) && current.classes[current.index[key]].annotation
-                    {
-                        stack.push(key.as_str());
-                    }
+            }
+            // A plain constructor or static initializer only sets the class's own fields,
+            // which reach the test only through code of the class it never ran.
+            if let (Some((owner, name)), Some((then, _))) = (method.split_once('#'), snapshot) {
+                let confined = construction(name)
+                    && !shaped.contains(owner)
+                    && then.get(owner).is_some_and(|s| s.plain.contains(name))
+                    && current.plain(owner, &self.now);
+                if confined {
+                    self.startup
+                        .insert(format!("Construction changed: {}", owner.replace('/', ".")));
+                    self.pending = true;
+                    continue;
                 }
             }
+            return Some(format!("Changed method: {method}"));
         }
-        for name in shaped.difference(&touched) {
+        if current.context_test(test) && !record.spring {
+            return Some("Context test without context evidence".into());
+        }
+        let Some((then, wiring)) = snapshot else {
+            return Some("Record snapshot missing".into());
+        };
+        for name in shaped.difference(&used) {
             let (a, b) = (then.get(*name), self.now.get(*name));
-            if a.map(|s| &s.shape) != b.map(|s| &s.shape) {
+            if a.map(|s| &s.api) != b.map(|s| &s.api) {
                 return Some(format!("Structural change: {name}"));
             }
         }
-        let related: BTreeSet<&str> = hierarchy(&touched, then)
+        let related: BTreeSet<&str> = hierarchy(&used, then)
             .into_iter()
-            .chain(hierarchy(&touched, &self.now))
+            .chain(hierarchy(&used, &self.now))
             .collect();
         for name in related {
             let (a, b) = (then.get(name), self.now.get(name));
-            if a.map(|s| (&s.shape, &s.supers)) != b.map(|s| (&s.shape, &s.supers)) {
+            if a.map(|s| (&s.api, &s.supers)) != b.map(|s| (&s.api, &s.supers)) {
                 return Some(format!("Structural change: {name}"));
             }
         }
@@ -856,8 +1392,23 @@ impl Decider<'_> {
         if let Some(reason) = wiring.selected.get(test) {
             return Some(reason.clone());
         }
-        for name in &touched {
-            let refs = current.index.get(*name).map(|&i| &current.classes[i].refs);
+        if let Some(reason) = shaped.iter().find_map(|c| wiring.classes.get(*c)) {
+            return Some(reason.clone());
+        }
+        if current.context_test(test) && !wiring.startup.is_empty() {
+            self.startup.extend(wiring.startup.iter().cloned());
+            self.pending = true;
+        }
+        let touched = record
+            .methods
+            .keys()
+            .filter_map(|m| m.split_once('#').map(|(owner, _)| owner));
+        for name in touched {
+            // A class only constructed through plain code ran none of the code naming it.
+            if !shaped.contains(name) && current.plain(name, &self.now) {
+                continue;
+            }
+            let refs = current.class(name).map(|c| &c.refs);
             if let Some(added) = wiring
                 .added
                 .iter()
@@ -924,8 +1475,13 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
         current,
         now,
         snapshots: BTreeMap::new(),
+        startup: BTreeSet::new(),
+        pending: false,
+        settings: BTreeMap::new(),
     };
     let mut unreached = None;
+    // Per context test with a record: components it constructed, and methods it ran.
+    let mut contexts = BTreeMap::new();
     let mut skip = BTreeSet::new();
     let mut reasons = BTreeMap::new();
     let broken = env::var_os("SIEVE_BROKEN_SELECTOR").is_some();
@@ -937,6 +1493,30 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
             continue;
         }
         let reason = match read_json::<Record>(&record_path(&dir, test)) {
+            Some(record) if decider.current.context_test(test) && record.spring => {
+                let components = record
+                    .methods
+                    .keys()
+                    .filter_map(|m| m.split_once('#'))
+                    .filter(|(owner, method)| {
+                        method.starts_with("<init>(")
+                            && decider.now.get(*owner).is_some_and(|s| s.component)
+                    })
+                    .map(|(owner, _)| owner)
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                let reason = decider.check(test, &record, jdk, context);
+                // Its last passing run started the context as it is now.
+                let verified = reason.is_none() && !decider.pending;
+                contexts.insert(test.clone(), (components, record.methods.len(), verified));
+                match reason {
+                    Some(reason) => reason,
+                    None => {
+                        skip.insert(test.clone());
+                        "Unchanged test record".into()
+                    }
+                }
+            }
             Some(record) => match decider.check(test, &record, jdk, context) {
                 Some(reason) => reason,
                 None => {
@@ -963,6 +1543,34 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
             }
         };
         reasons.insert(test.clone(), reason);
+    }
+    // Changes narrowed to the tests using them can still stop every context from starting:
+    // one test that starts a full context runs.
+    if let Some(change) = decider.startup.iter().next() {
+        let most = contexts.values().map(|(c, _, _)| *c).max().unwrap_or(0);
+        let full: Vec<(&String, usize, bool)> = contexts
+            .iter()
+            .filter(|(_, (c, _, _))| most > 0 && c * 10 >= most * 9)
+            .map(|(t, (_, methods, verified))| (t, *methods, *verified))
+            .collect();
+        if !full
+            .iter()
+            .any(|(t, _, verified)| *verified || !skip.contains(*t))
+        {
+            if let Some((test, _, _)) = full.iter().min_by_key(|(t, methods, _)| (*methods, *t)) {
+                skip.remove(*test);
+                let more = decider.startup.len() - 1;
+                let others = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                reasons.insert(
+                    (*test).clone(),
+                    format!("Startup check for changes it does not use: {change}{others}"),
+                );
+            }
+        }
     }
     fs::write(
         &out,
@@ -1847,7 +2455,7 @@ mod tests {
             shape: "s".into(),
             wiring: "w".into(),
             supers: supers.iter().map(|s| s.to_string()).collect(),
-            component: false,
+            ..Shape::default()
         }
     }
 
@@ -2147,5 +2755,19 @@ mod tests {
             args,
             ["-Djgitver.skip=true", "-Dspring-boot.repackage.skip=true"]
         );
+    }
+
+    #[test]
+    fn request_patterns_overlap_by_segment() {
+        assert!(overlap("/patients/{id}", "/patients/search"));
+        assert!(overlap("/patients/{id}", "/patients/{patientId}"));
+        assert!(!overlap(
+            "/practitioners/{id}/day/{day}",
+            "/practitioners/{id}/slots"
+        ));
+        assert!(!overlap("/patients", "/patients/{id}"));
+        assert!(overlap("/files/**", "/files/a/b"));
+        assert!(overlap("/a/{*rest}", "/a"));
+        assert!(!overlap("/invoices/{id}/pdf", "/consultations/{id}/letter"));
     }
 }

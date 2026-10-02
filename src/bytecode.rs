@@ -2,7 +2,8 @@
 //! and one for the class shape. Both resolve constant-pool references to their values and
 //! ignore debug attributes, so comment edits and constant-pool reordering change nothing.
 use crate::Result;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// FNV-1a, 64 bits: stable across platforms and releases, unlike `DefaultHasher`.
 #[derive(Clone)]
@@ -50,6 +51,26 @@ pub struct Digest {
     pub wiring: String,
     /// Body hash per method, keyed `name(descriptor)`.
     pub methods: BTreeMap<String, String>,
+    /// The shape without private methods that carry no annotation: only code of the class
+    /// itself calls them, and that code's hashes cover them.
+    pub api: String,
+    /// The wiring split into its parts: the class's access, supertypes and annotations; its
+    /// constructors; and each annotated member.
+    pub declared: String,
+    pub injection: String,
+    pub wired: BTreeMap<String, Wired>,
+    /// Constructors and the static initializer whose code only stores values into the
+    /// class's own fields: their effects reach a test only through code of the class.
+    pub plain: BTreeSet<String>,
+    /// Request-mapping path patterns per handler method, including the class's prefix.
+    pub routes: BTreeMap<String, Vec<String>>,
+}
+
+/// An annotated member: the hash of its annotations and their types.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Wired {
+    pub hash: String,
+    pub annotations: Vec<String>,
 }
 
 struct Reader<'a> {
@@ -309,7 +330,14 @@ fn attribute(pool: &Pool, name: &str, body: &[u8], h: &mut Hasher) -> Result<()>
     match name {
         "RuntimeVisibleAnnotations" | "RuntimeInvisibleAnnotations" => {
             for _ in 0..r.u16()? {
-                annotation(pool, &mut r, h)?;
+                // Kotlin keeps the source map, which line shifts change, in an annotation.
+                let at = r.at;
+                let kind = pool.text(Reader { bytes: body, at }.u16()?)?;
+                if kind == "Lkotlin/jvm/internal/SourceDebugExtension;" {
+                    annotation(pool, &mut r, &mut Hasher::default())?;
+                } else {
+                    annotation(pool, &mut r, h)?;
+                }
             }
         }
         "RuntimeVisibleParameterAnnotations" | "RuntimeInvisibleParameterAnnotations" => {
@@ -407,6 +435,7 @@ const ANNOTATIONS: &[&str] = &[
 ];
 
 const ACC_SYNTHETIC: u16 = 0x1000;
+const ACC_PRIVATE: u16 = 0x0002;
 
 type Attributes<'a> = Vec<(String, &'a [u8])>;
 
@@ -458,6 +487,269 @@ fn members<'a>(pool: &Pool, r: &mut Reader<'a>) -> Result<Vec<Member<'a>>> {
     Ok(out)
 }
 
+/// An annotation's type and the strings each element lists, such as a mapping's paths.
+type Info = (String, BTreeMap<String, Vec<String>>);
+
+fn strings(pool: &Pool, r: &mut Reader, out: &mut Vec<String>) -> Result<()> {
+    match r.u8()? {
+        b's' => out.push(pool.text(r.u16()?)?),
+        b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z' | b'c' => {
+            r.u16()?;
+        }
+        b'e' => {
+            r.take(4)?;
+        }
+        b'@' => {
+            info(pool, r)?;
+        }
+        b'[' => {
+            for _ in 0..r.u16()? {
+                strings(pool, r, out)?;
+            }
+        }
+        tag => return Err(format!("Unknown element value tag {tag}").into()),
+    }
+    Ok(())
+}
+
+fn info(pool: &Pool, r: &mut Reader) -> Result<Info> {
+    let descriptor = pool.text(r.u16()?)?;
+    let name = descriptor
+        .strip_prefix('L')
+        .and_then(|d| d.strip_suffix(';'))
+        .unwrap_or(&descriptor)
+        .to_owned();
+    let mut elements = BTreeMap::new();
+    for _ in 0..r.u16()? {
+        let element = pool.text(r.u16()?)?;
+        let mut values = Vec::new();
+        strings(pool, r, &mut values)?;
+        elements.insert(element, values);
+    }
+    Ok((name, elements))
+}
+
+/// The annotations on a class or member, including those on its parameters.
+fn annotations(pool: &Pool, list: &Attributes) -> Result<Vec<Info>> {
+    let mut out = Vec::new();
+    for (name, body) in list {
+        let mut r = Reader { bytes: body, at: 0 };
+        match name.as_str() {
+            "RuntimeVisibleAnnotations" | "RuntimeInvisibleAnnotations" => {
+                for _ in 0..r.u16()? {
+                    out.push(info(pool, &mut r)?);
+                }
+            }
+            "RuntimeVisibleParameterAnnotations" | "RuntimeInvisibleParameterAnnotations" => {
+                for _ in 0..r.u8()? {
+                    for _ in 0..r.u16()? {
+                        out.push(info(pool, &mut r)?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+const MAPPINGS: &[&str] = &[
+    "org/springframework/web/bind/annotation/RequestMapping",
+    "org/springframework/web/bind/annotation/GetMapping",
+    "org/springframework/web/bind/annotation/PostMapping",
+    "org/springframework/web/bind/annotation/PutMapping",
+    "org/springframework/web/bind/annotation/DeleteMapping",
+    "org/springframework/web/bind/annotation/PatchMapping",
+];
+
+/// Whether an annotation maps requests to a handler.
+pub fn mapping(annotation: &str) -> bool {
+    MAPPINGS.contains(&annotation)
+}
+
+/// The paths a mapping annotation lists, or the empty path.
+fn paths(annotations: &[Info]) -> Option<Vec<String>> {
+    let (_, elements) = annotations.iter().find(|(name, _)| mapping(name))?;
+    let mut out: Vec<String> = ["value", "path"]
+        .iter()
+        .flat_map(|e| elements.get(*e).into_iter().flatten().cloned())
+        .collect();
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    Some(out)
+}
+
+/// `prefix` and `path` joined into one normalized pattern, such as `/a/{id}`.
+fn join(prefix: &str, path: &str) -> String {
+    let segments: Vec<&str> = prefix
+        .split('/')
+        .chain(path.split('/'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    format!("/{}", segments.join("/"))
+}
+
+/// Immutable library value types, whose methods only compute values.
+const VALUE_TYPES: &[&str] = &[
+    "java/lang/String",
+    "java/lang/StringBuilder",
+    "java/lang/Integer",
+    "java/lang/Long",
+    "java/lang/Short",
+    "java/lang/Byte",
+    "java/lang/Character",
+    "java/lang/Boolean",
+    "java/lang/Double",
+    "java/lang/Float",
+    "java/lang/Math",
+    "java/util/regex/Pattern",
+    "java/util/UUID",
+    "java/time/",
+    "java/math/",
+];
+
+/// Library types whose static methods and constructors only build objects the caller owns.
+/// Their instance methods may change objects the class did not create, such as an injected
+/// registry, so only [`VALUE_TYPES`] take instance calls.
+const FACTORY_TYPES: &[&str] = &[
+    "java/lang/Enum",
+    "java/util/Objects",
+    "java/util/List",
+    "java/util/Set",
+    "java/util/Map",
+    "java/util/Collections",
+    "java/util/Arrays",
+    "java/util/ArrayList",
+    "java/util/LinkedList",
+    "java/util/HashMap",
+    "java/util/LinkedHashMap",
+    "java/util/TreeMap",
+    "java/util/HashSet",
+    "java/util/LinkedHashSet",
+    "java/util/TreeSet",
+    "java/util/ArrayDeque",
+    "java/util/EnumMap",
+    "java/util/EnumSet",
+    "java/util/Optional",
+    "java/util/Comparator",
+    "java/util/concurrent/ConcurrentHashMap",
+    "java/util/concurrent/ConcurrentLinkedQueue",
+    "java/util/concurrent/CopyOnWriteArrayList",
+    "java/util/concurrent/atomic/",
+    "kotlin/jvm/internal/Intrinsics",
+    "kotlin/collections/",
+    "kotlin/text/",
+    "org/slf4j/LoggerFactory",
+];
+
+fn listed(owner: &str, list: &[&str]) -> bool {
+    list.iter()
+        .any(|p| owner == *p || p.ends_with('/') && owner.starts_with(p))
+}
+
+fn throwable(owner: &str) -> bool {
+    owner.starts_with("java/lang/") && (owner.ends_with("Exception") || owner.ends_with("Error"))
+}
+
+/// The owner and name of the member an instruction refers to.
+fn member(pool: &Pool, index: u16) -> Result<(String, String)> {
+    let Entry::Refs(9..=11, refs) = pool.get(index)? else {
+        return Err("Expected a member reference".into());
+    };
+    let Entry::Refs(12, nat) = pool.get(refs[1])? else {
+        return Err("Expected a name and type".into());
+    };
+    Ok((pool.class(refs[0])?, pool.text(nat[0])?))
+}
+
+/// Whether a constructor or static initializer of `class` only stores values into the
+/// class's own fields: it loads arguments and constants, calls its superclass's root
+/// constructor or another of its own, creates JDK collections, and computes values with
+/// [`VALUE_TYPES`]. Exceptions it throws stop the context from starting, which any test
+/// loading the class shows.
+fn plain(pool: &Pool, body: &[u8], class: &str, initializer: bool) -> Result<bool> {
+    let mut r = Reader { bytes: body, at: 0 };
+    r.take(4)?;
+    let len = r.u32()? as usize;
+    let code = r.take(len)?;
+    let mut c = Reader { bytes: code, at: 0 };
+    while c.at < code.len() {
+        let pc = c.at;
+        let opcode = c.u8()?;
+        let ok = match opcode {
+            // Fields of the class itself; any static field may be read.
+            0xb2 => {
+                c.u16()?;
+                true
+            }
+            0xb3 => {
+                let owner = member(pool, c.u16()?)?.0;
+                initializer && owner == class
+            }
+            0xb4 | 0xb5 => member(pool, c.u16()?)?.0 == class,
+            0xb6..=0xb9 => {
+                let (owner, name) = member(pool, c.u16()?)?;
+                if opcode == 0xb9 {
+                    c.take(2)?;
+                }
+                let value = listed(&owner, VALUE_TYPES);
+                let factory = value || listed(&owner, FACTORY_TYPES);
+                let root = matches!(
+                    owner.as_str(),
+                    "java/lang/Object" | "java/lang/Record" | "java/lang/Enum"
+                );
+                match opcode {
+                    0xb8 => factory,
+                    0xb7 => {
+                        name == "<init>" && (root || owner == class || factory || throwable(&owner))
+                    }
+                    // `getClass()` is how older compilers check for null.
+                    _ => value || owner == "java/lang/Object" && name == "getClass",
+                }
+            }
+            // String concatenation and lambdas capture values without running code.
+            0xba => {
+                c.take(4)?;
+                true
+            }
+            0xbb => {
+                let owner = pool.class(c.u16()?)?;
+                listed(&owner, VALUE_TYPES) || listed(&owner, FACTORY_TYPES) || throwable(&owner)
+            }
+            0xc2 | 0xc3 => false,
+            _ => {
+                match operands(opcode)? {
+                    Some((size, _)) => {
+                        c.take(size)?;
+                    }
+                    None if opcode == 0xc4 => {
+                        let inner = c.u8()?;
+                        c.take(if inner == 0x84 { 4 } else { 2 })?;
+                    }
+                    None => {
+                        c.take((4 - (pc + 1) % 4) % 4)?;
+                        c.take(4)?;
+                        let count = if opcode == 0xaa {
+                            let low = c.u32()? as i32;
+                            let high = c.u32()? as i32;
+                            (high as i64 - low as i64 + 1) * 4
+                        } else {
+                            c.u32()? as i64 * 8
+                        };
+                        c.take(usize::try_from(count).map_err(|_| "Invalid switch")?)?;
+                    }
+                }
+                true
+            }
+        };
+        if !ok {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub fn digest(bytes: &[u8]) -> Result<Digest> {
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != 0xCAFE_BABE {
@@ -501,6 +793,13 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
     }
     attributes(&pool, &class_attributes, &mut shape, None)?;
     attributes(&pool, &class_attributes, &mut wiring, Some(ANNOTATIONS))?;
+    let declared = wiring.finish();
+    let mut api = shape.clone();
+    let mut injection = Hasher::default();
+    let mut wired = BTreeMap::new();
+    let mut plains = BTreeSet::new();
+    let mut routes = BTreeMap::new();
+    let prefixes = paths(&annotations(&pool, &class_attributes)?).unwrap_or(vec![String::new()]);
     let mut hashes = BTreeMap::new();
     for (kind, list) in [(0u8, &fields), (1, &methods)] {
         for member in list.iter() {
@@ -515,29 +814,68 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
                 code(&pool, body, &mut h)?;
             }
             let hash = h.finish();
-            // Synthetic members, such as lambda bodies, are reached only through code that
-            // names them, and that code's hash covers them.
-            if member.access & ACC_SYNTHETIC == 0 {
-                shape
-                    .bytes(&[kind])
-                    .bytes(&member.access.to_be_bytes())
-                    .field(key.as_bytes());
-                attributes(&pool, &member.attributes, &mut shape, None)?;
-            }
             let annotated = member
                 .attributes
                 .iter()
                 .any(|(n, _)| ANNOTATIONS.contains(&n.as_str()));
-            if annotated || member.name == "<init>" {
-                wiring
+            // Synthetic members, such as lambda bodies, are reached only through code that
+            // names them, and that code's hash covers them.
+            if member.access & ACC_SYNTHETIC == 0 {
+                let mut member_shape = Hasher::default();
+                member_shape
                     .bytes(&[kind])
                     .bytes(&member.access.to_be_bytes())
                     .field(key.as_bytes());
-                attributes(&pool, &member.attributes, &mut wiring, Some(ANNOTATIONS))?;
+                attributes(&pool, &member.attributes, &mut member_shape, None)?;
+                let member_shape = member_shape.finish();
+                shape.field(member_shape.as_bytes());
+                if kind == 0 || member.access & ACC_PRIVATE == 0 || annotated {
+                    api.field(member_shape.as_bytes());
+                }
+            }
+            if annotated || member.name == "<init>" {
+                let mut h = Hasher::default();
+                h.bytes(&[kind])
+                    .bytes(&member.access.to_be_bytes())
+                    .field(key.as_bytes());
+                attributes(&pool, &member.attributes, &mut h, Some(ANNOTATIONS))?;
+                let h = h.finish();
+                wiring.field(h.as_bytes());
+                if member.name == "<init>" {
+                    injection.field(h.as_bytes());
+                } else {
+                    let found = annotations(&pool, &member.attributes)?;
+                    if kind == 1 {
+                        if let Some(paths) = paths(&found) {
+                            let patterns = prefixes
+                                .iter()
+                                .flat_map(|p| paths.iter().map(move |q| join(p, q)))
+                                .collect();
+                            routes.insert(key.clone(), patterns);
+                        }
+                    }
+                    let mut names: Vec<String> = found.into_iter().map(|(n, _)| n).collect();
+                    names.sort();
+                    names.dedup();
+                    wired.insert(
+                        format!("{}{key}", if kind == 0 { "field " } else { "" }),
+                        Wired {
+                            hash: h,
+                            annotations: names,
+                        },
+                    );
+                }
             }
             if kind == 1 {
-                if member.name == "<clinit>" {
+                let initializer = member.name == "<clinit>";
+                if initializer {
                     shape.field(hash.as_bytes());
+                    api.field(hash.as_bytes());
+                }
+                if let Some(body) = body.filter(|_| initializer || member.name == "<init>") {
+                    if plain(&pool, body, &name, initializer)? {
+                        plains.insert(key.clone());
+                    }
                 }
                 hashes.insert(key, hash);
             }
@@ -549,6 +887,12 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
         shape: shape.finish(),
         wiring: wiring.finish(),
         methods: hashes,
+        api: api.finish(),
+        declared,
+        injection: injection.finish(),
+        wired,
+        plain: plains,
+        routes,
     })
 }
 
@@ -576,9 +920,17 @@ mod tests {
             .ok()?;
         assert!(status.status.success(), "{status:?}");
         let mut digests = BTreeMap::new();
-        for entry in fs::read_dir(&out).unwrap() {
-            let digest = digest(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
-            digests.insert(digest.name.clone(), digest);
+        let mut dirs = vec![out];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let digest = digest(&fs::read(path).unwrap()).unwrap();
+                digests.insert(digest.name.clone(), digest);
+            }
         }
         Some(digests)
     }
@@ -680,5 +1032,99 @@ mod tests {
             return;
         };
         assert!(digests["S"].methods.contains_key("f(ILjava/lang/String;)I"));
+    }
+
+    #[test]
+    fn plain_constructors_only_store_into_their_own_fields() {
+        let source = "import java.util.*;
+            public class P {
+                static final List<String> NAMES = List.of(\"a\", \"b\");
+                private final String name; private final Map<String, Integer> counts = new HashMap<>();
+                public P(String name) { this.name = Objects.requireNonNull(name).trim(); }
+                public P(int n) { this(String.valueOf(n)); }
+                public String name() { return name; }
+            }
+            class Q {
+                static int created;
+                private final Runnable task;
+                Q(Runnable task) { this.task = task; task.run(); }
+                Q() { this(() -> {}); created++; }
+            }
+            class R {
+                R(Map<String, Object> registry) { registry.put(\"r\", this); }
+            }";
+        let Some(digests) = compile(&[("P.java", source)]) else {
+            return;
+        };
+        let p = &digests["P"].plain;
+        assert!(p.contains("<init>(Ljava/lang/String;)V"), "{p:?}");
+        assert!(p.contains("<init>(I)V"), "{p:?}");
+        assert!(p.contains("<clinit>()V"), "{p:?}");
+        // Calling into an argument, or storing into a static field, reaches beyond the class.
+        assert!(digests["Q"].plain.is_empty(), "{:?}", digests["Q"].plain);
+        // So does changing an object it was given.
+        assert!(digests["R"].plain.is_empty(), "{:?}", digests["R"].plain);
+    }
+
+    #[test]
+    fn private_methods_stay_out_of_the_api() {
+        let Some(before) = compile(&[("A.java", BASE)]) else {
+            return;
+        };
+        let helper = BASE.replace(
+            "public int one(int x) { return x + 1; }",
+            "public int one(int x) { return inc(x); }\n private int inc(int x) { return x + 1; }",
+        );
+        let after = compile(&[("A.java", &helper)]).unwrap();
+        assert_ne!(before["A"].shape, after["A"].shape);
+        assert_eq!(before["A"].api, after["A"].api);
+        let public = compile(&[(
+            "A.java",
+            &helper.replace("private int inc", "public int inc"),
+        )])
+        .unwrap();
+        assert_ne!(before["A"].api, public["A"].api);
+    }
+
+    #[test]
+    fn wiring_splits_into_declaration_constructors_and_annotated_members() {
+        let mapping = "package org.springframework.web.bind.annotation;
+            import java.lang.annotation.*;
+            @Retention(RetentionPolicy.RUNTIME) public @interface GetMapping { String[] value() default {}; String[] path() default {}; }";
+        let request = "package org.springframework.web.bind.annotation;
+            import java.lang.annotation.*;
+            @Retention(RetentionPolicy.RUNTIME) public @interface RequestMapping { String[] value() default {}; }";
+        let controller = "import org.springframework.web.bind.annotation.*;
+            @RequestMapping(\"/patients\")
+            public class C {
+                private final Object service;
+                public C(Object service) { this.service = service; }
+                @GetMapping(\"/{id}\") public String one(long id) { return \"\" + id; }
+                @GetMapping public String all() { return \"\"; }
+            }";
+        let Some(before) = compile(&[
+            ("GetMapping.java", mapping),
+            ("RequestMapping.java", request),
+            ("C.java", controller),
+        ]) else {
+            return;
+        };
+        let c = &before["C"];
+        assert_eq!(c.routes["one(J)Ljava/lang/String;"], ["/patients/{id}"]);
+        assert_eq!(c.routes["all()Ljava/lang/String;"], ["/patients"]);
+        assert_eq!(
+            c.wired["one(J)Ljava/lang/String;"].annotations,
+            ["org/springframework/web/bind/annotation/GetMapping"]
+        );
+        let injected = controller.replace("public C(Object service)", "public C(String service)");
+        let after = compile(&[
+            ("GetMapping.java", mapping),
+            ("RequestMapping.java", request),
+            ("C.java", &injected),
+        ])
+        .unwrap();
+        assert_eq!(c.declared, after["C"].declared);
+        assert_eq!(c.wired, after["C"].wired);
+        assert_ne!(c.injection, after["C"].injection);
     }
 }

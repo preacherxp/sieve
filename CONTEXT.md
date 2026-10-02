@@ -42,6 +42,17 @@ _Avoid_: internal change, implementation change
 An edit to a class's shape: its signatures, fields, annotations, or supertypes, or the addition or removal of a class.
 _Avoid_: API change
 
+**Use** (of a class):
+Running code of the class other than its constructors and static initializer, or reading or writing its fields. A Spring context constructs every component; only tests that use a component depend on its state.
+_Avoid_: touch, load
+
+**Plain constructor**:
+A constructor or static initializer whose bytecode only stores values into the class's own fields, so its effects reach a test only through code of the class.
+
+**Startup check**:
+One full context test that runs when a narrowed change could stop the context from starting and no selected test would show it.
+_Avoid_: canary, smoke test
+
 ### Validation
 
 **Missed failure**:

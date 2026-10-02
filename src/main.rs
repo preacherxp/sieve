@@ -8,6 +8,7 @@ mod generated;
 mod records;
 mod replay;
 mod reports;
+mod settings;
 mod setup;
 mod timing;
 use std::{

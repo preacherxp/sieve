@@ -32,8 +32,12 @@ catalogs for internal services stay outside this repository.
 - [x] Weight edit kinds without automated dependency updates: optionally leave out commits that
       touch only the POM when classifying history. Done: the catalog reports both totals; only
       5–10 of 34–50 commits per benchmark service were POM-only.
-- [ ] Narrow configuration edits: record which configuration keys a context reads, so that a new
-      unused key does not rerun every context test.
+- [x] Narrow configuration edits: done statically (ADR 0004). A changed key reruns the users of
+      project classes that name it; keys only the framework reads still rerun every reader.
+- [ ] Narrow framework-read configuration keys (`spring.*`, `server.*`) by the auto-configuration
+      that binds them, and migrations that alter existing tables by the tables tests touch.
+- [ ] Member-level shapes for components: an annotation added to one method reruns all users of
+      the class, not only callers of that method.
 - [ ] Lazily created beans count only for the test class that first used them; attribute them to
       the context that holds them.
 - [ ] Revisit the AOT class cache once the JDK can cache classes with directories on the class path

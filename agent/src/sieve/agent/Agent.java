@@ -61,7 +61,7 @@ public final class Agent {
         for (Class<?> c : jdk) {
             names.add(c.getName().replace('.', '/'));
         }
-        ClassFileTransformer transformer = new Transformer(outputs, names);
+        ClassFileTransformer transformer = new Transformer(outputs, Path.of(workspace), names);
         State.configure(Path.of(workspace), sieve, options.getProperty("mode", "select"), options.getProperty("base"),
                 options.getProperty("context", ""), options.getProperty("session", ""), options.getProperty("record_env", ""));
         instrumentation.addTransformer(transformer, true);

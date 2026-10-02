@@ -112,9 +112,15 @@ sieve run --records                         (records::run)
 
 `decide` drops a test class when its record passed and nothing it depends on changed: the
 test class, JDK, build inputs, invocation and JVM properties, declared environment inputs
-(`record_env`), executed method bodies, read/listed files, class shapes of executed classes
-and their hierarchy, Spring wiring of loaded components, or classes named by string
-constants. Without a record, `--base` enables the static fallback only after a passing
+(`record_env`), executed method bodies, read/listed files, class shapes of used classes
+and their hierarchy, Spring wiring of used or loaded components, or classes named by string
+constants. Constructing a class is not using it (ADR 0004): plain constructors and static
+initializers, which only store into the class's own fields, count only for tests that ran
+other code of the class. Wiring is compared per part (declaration, constructors, annotated
+members, request mappings); configuration files per key (`settings.rs`, through the
+project classes that name a key); migration listings per appended file. When such a
+narrowed change could stop a context from starting and no full context test runs or has
+passed since, one runs as a startup check. Without a record, `--base` enables the static fallback only after a passing
 wrapper run with the same invocation (`statically_unreached`). `bytecode.rs` provides the change-insensitive digests: FNV-1a
 over method bodies and class shapes with constant-pool references resolved and debug
 attributes ignored.
@@ -126,7 +132,8 @@ Packaging follows native `verify`; `reuse`, `jgitver`, `mvnd`, and `repackage` a
 speed-ups through `--with`.
 
 State in `.sieve/` (self-ignoring, survives `mvn clean`): `records/`, `snapshots/` of
-class shapes, `run/` decisions and summaries, `env-run/` for plain Maven callbacks,
+class shapes, `settings/` with the keys of recorded configuration files and the names of
+recorded migration directories, `run/` decisions and summaries, `env-run/` for plain Maven callbacks,
 `execution.lock`, its separate `session` token, the record-store `lock`, and the catalog journal. The execution lock
 serializes local CLI runs through build and reporting. Plain Maven callbacks run every
 test and write no records while another wrapper owns that lock. External Maven or IDE
@@ -180,7 +187,8 @@ catch it.
 | `classes.rs` | Class-file parser and class-level impact graph |
 | `generated.rs` | Generated-source comparison against the merge base |
 | `records.rs` | Local-mode `run`, `decide`, `record`, `env`, agent extraction, speed-ups |
-| `bytecode.rs` | Method-body and class-shape digests |
+| `bytecode.rs` | Method-body and class-shape digests, plain constructors, wiring parts, request mappings |
+| `settings.rs` | Configuration keys and their project readers, inert Flyway migrations |
 | `reports.rs` | Native JUnit XML parsing shared by execution and validation |
 | `fixtures.rs`, `replay.rs`, `catalog.rs`, `timing.rs` | Validation and measurement |
 

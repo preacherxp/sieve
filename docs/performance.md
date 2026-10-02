@@ -216,3 +216,42 @@ with changed main code. Seconds, totals per commit kind:
 
 One benchmark and one machine, built by the same author as the tool; a service with
 shared contexts or fewer wiring edits will show different shares.
+
+## Construction is not use: the same walks after ADR 0004
+
+Measured 2026-10-02 on the same machine, benchmark, 20 commits, and procedure
+(`sieve replay --walk --plant --commits 20`), after [ADR 0004](adr/0004-construction-is-not-use.md):
+constructing a component no longer counts as using it, wiring is compared per member,
+configuration files per key, and appended inert Flyway migrations rerun nothing. Raw data:
+[walk-bench-clinic-maven-2026-10-02.json](walk-bench-clinic-maven-2026-10-02.json),
+[walk-bench-clinic-gradle-2026-10-02.json](walk-bench-clinic-gradle-2026-10-02.json).
+Seconds, totals per commit kind; the 2026-10-01 Sieve column is the walk above.
+
+| Commits | Maven native | Maven Sieve 10-01 | Maven Sieve 10-02 | Gradle native | Gradle Sieve 10-01 | Gradle Sieve 10-02 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 narrow | 660 | 80 | 84 (−87%) | 642 | 89 | 66 (−90%) |
+| 14 wide | 2,288 | 2,071 | 1,145 (−50%) | 2,326 | 2,305 | 1,133 (−51%) |
+| 2 build inputs | 362 | 324 | 362 (±0%) | 328 | 305 | 320 (−2%) |
+| **20 total** | **3,310** | **2,475** | **1,591 (−52%)** | **3,296** | **2,698** | **1,520 (−54%)** |
+
+- **Wide commits now run the tests that executed the change.** Across the 14 wide commits,
+  test classes run fell from 337 to 163 of 955 (Maven) and from 335 to 163 of 857 (Gradle).
+  On Maven, test classes run per commit (10-01 in parentheses): a new endpoint and
+  constructor dependency, 5: the 3 tests that call the controller, its edited unit test,
+  and the new test (21); a repository query for the CSV import, 3 (38); a changed
+  `clinic.reminders.window`, the 2 tests that ran the reminder job (one while the job's
+  schedule fired during it) and a test that had failed (27); two new indexes, only the test that had failed (22); a Kotlin body edit, 2
+  (21; Kotlin's line map had made it a structural change).
+- **What still runs widely is what the tests ran.** A booking, notification, or template
+  change is executed by most integration tests; a `spring.datasource.*` key is read by the
+  framework; a migration with a foreign key, or an edit of the integration-test base class,
+  reaches every context test; build-input edits still select everything (issue 22).
+- **No real failure was missed.** Maven reported 3 missed failures: two from the
+  order-dependent `PatientApiIT` before the commit that fixed it (as on 10-01), one from a
+  PostgreSQL SSL handshake failure at context start in a native run. Gradle reported 1, a
+  PostgreSQL connection drop at context start in a native run. Planted bugs were detected
+  in 11 commits on each tool (10-01: 11 and 10).
+- The startup check did not run in either walk: every commit with a narrowed change also
+  selected a full context test, or one had passed since the change.
+
+One benchmark and one machine, built by the same author as the tool.

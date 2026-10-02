@@ -31,15 +31,17 @@ final class Transformer implements ClassFileTransformer {
     /** {@code java.io.File} methods that look at the file they are called on. */
     private static final Set<String> SELF_METHODS = Set.of("exists", "isFile", "isDirectory", "length", "list", "listFiles");
 
-    private final Set<Path> outputs = new java.util.HashSet<>();
+    private final Set<Path> outputs = new java.util.LinkedHashSet<>();
+    private final Path workspace;
     private final Set<String> jdk;
-    private final java.util.Map<String, java.util.Optional<Path>> locations = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, List<Path>> locations = new java.util.concurrent.ConcurrentHashMap<>();
 
-    Transformer(List<Path> outputs, Set<String> jdk) {
+    Transformer(List<Path> outputs, Path workspace, Set<String> jdk) {
         // Real paths, so that a symlinked or differently spelled checkout still matches.
         for (Path output : outputs) {
             this.outputs.add(real(output));
         }
+        this.workspace = real(workspace);
         this.jdk = Set.copyOf(jdk);
     }
 
@@ -60,9 +62,12 @@ final class Transformer implements ClassFileTransformer {
             if (jdk.contains(name)) {
                 return fileProbes(bytes);
             }
-            Path dir = output(domain);
             // Proxies defined into an output directory's domain have no class file there.
-            if (dir == null || !Files.isRegularFile(dir.resolve(name + ".class"))) {
+            boolean project = false;
+            for (Path dir : output(domain)) {
+                project |= Files.isRegularFile(dir.resolve(name + ".class"));
+            }
+            if (!project) {
                 return null;
             }
             byte[] probed = methodProbes(name, bytes);
@@ -74,20 +79,29 @@ final class Transformer implements ClassFileTransformer {
         }
     }
 
-    private Path output(ProtectionDomain domain) throws Exception {
+    /**
+     * The output directories a class from this domain may come from: its own, or, for a jar
+     * the build packaged inside the workspace (Failsafe tests the packaged jar), all of them.
+     */
+    private List<Path> output(ProtectionDomain domain) {
         CodeSource source = domain == null ? null : domain.getCodeSource();
         URL location = source == null ? null : source.getLocation();
         if (location == null || !"file".equals(location.getProtocol())) {
-            return null;
+            return List.of();
         }
         return locations.computeIfAbsent(location.toString(), key -> {
             try {
                 Path path = real(Path.of(location.toURI()));
-                return java.util.Optional.ofNullable(outputs.contains(path) ? path : null);
+                if (outputs.contains(path)) {
+                    return List.of(path);
+                }
+                boolean packaged = path.getFileName().toString().endsWith(".jar") && path.startsWith(workspace)
+                        && !path.startsWith(workspace.resolve(".sieve"));
+                return packaged ? List.copyOf(outputs) : List.of();
             } catch (java.net.URISyntaxException | RuntimeException error) {
-                return java.util.Optional.empty();
+                return List.of();
             }
-        }).orElse(null);
+        });
     }
 
     /**

@@ -16,9 +16,13 @@ struct Project {
 
 impl Project {
     fn new() -> Self {
+        Self::of("projects/records")
+    }
+
+    fn of(fixture: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("project");
-        copy(&Path::new(ROOT).join("projects/records"), &root);
+        copy(&Path::new(ROOT).join(fixture), &root);
         let maven = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
         let wrapper = temp.path().join("mvn-counting");
         executable(
@@ -164,6 +168,15 @@ const BOOT: &[&str] = &[
     "PropertySourceSecondTest",
 ];
 
+/// Full-context tests that call the greeting service. Its constructor only stores the
+/// configured prefix, so the other context tests do not depend on it.
+const GREETING: &[&str] = &[
+    "ComposedGreetingTest",
+    "GreetingTest",
+    "PropertySourceFirstTest",
+    "PropertySourceSecondTest",
+];
+
 fn with(names: &[&str], more: &[&'static str]) -> Vec<&'static str> {
     let mut all: Vec<&'static str> = names
         .iter()
@@ -269,7 +282,15 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "this.prefix = prefix;",
         "this.prefix = prefix.trim();",
     );
-    p.expect("bean constructor", BOOT);
+    let selection = p.expect("bean constructor", GREETING);
+    assert_eq!(
+        selection["reasons"]["example.GreetingTest"],
+        "Changed method: example/GreetingService#<init>(Ljava/lang/String;)V"
+    );
+    assert_eq!(
+        selection["reasons"]["example.OrderFlowTest"],
+        "Unchanged test record"
+    );
     p.edit(
         "src/main/resources/application.properties",
         "app.greeting.prefix=Hello",
@@ -301,7 +322,19 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "src/main/java/example/Clock.java",
         "package example;\n\n@org.springframework.stereotype.Component\npublic class Clock {}\n",
     );
-    p.expect("added component", &with(BOOT, &["HierarchyTest"]));
+    // Nothing uses the new component; one full context test checks that the context starts.
+    let (code, selection, _) = p.run(&[]);
+    assert_eq!(code, 0, "{selection:#}");
+    let ran = names(&selection["tests"]);
+    assert_eq!(ran.len(), 1, "{selection:#}");
+    let check = ran.iter().next().unwrap();
+    assert!(BOOT.contains(&check.as_str()), "{selection:#}");
+    assert!(selection["reasons"][format!("example.{check}")]
+        .as_str()
+        .unwrap()
+        .starts_with(
+            "Startup check for changes it does not use: Spring wiring changed: example/Clock"
+        ));
 
     // A resource that was looked up but absent counts once it appears.
     write(
@@ -309,7 +342,12 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "src/main/resources/application-default.properties",
         "app.greeting.prefix=Hello\n",
     );
-    p.expect("new profile file", &with(BOOT, &["GreetingControllerTest"]));
+    // Its only key is read by the greeting service, through a placeholder.
+    let selection = p.expect("new profile file", GREETING);
+    assert_eq!(
+        selection["reasons"]["example.GreetingTest"],
+        "Changed configuration app.greeting.prefix in target/classes/application-default.properties, read by example/GreetingService"
+    );
     // A new fixture with the test that reads it runs only that test.
     write(&p.root(), "src/test/resources/extra.json", "{}\n");
     write(
@@ -812,6 +850,50 @@ fn records_cover_shared_state_annotations_and_context_structure() {
         "implements Shape, java.io.Serializable",
     );
     p.expect("supertype", &["ShapeTest"]);
+    // A constructor that calls out of its class counts for every context constructing it.
+    let service = "src/main/java/example/GreetingService.java";
+    p.edit(
+        service,
+        "this.prefix = prefix;",
+        "this.prefix = prefix;\n        System.out.println(\"greeting service\");",
+    );
+    p.expect("constructor with side effects", BOOT);
+    // Comments and formatting change no configuration key.
+    p.edit(
+        "src/main/resources/application.properties",
+        "app.greeting.prefix=Hello",
+        "# The greeting's first word.\napp.greeting.prefix = Hello",
+    );
+    p.expect("configuration comment", &[]);
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the sample's dependencies"]
+fn failsafe_tests_of_the_packaged_jar_record_main_code() {
+    // Failsafe runs integration tests against the jar the build packaged, not
+    // `target/classes`; their records must still hold the main code they ran.
+    let p = Project::of("samples/bookstore");
+    fs::write(
+        p.root().join("impact.json"),
+        "{\"tool\": \"maven\", \"modules\": {\".\": []}, \"records\": true}\n",
+    )
+    .unwrap();
+    commit(&p.root(), "local mode");
+    let fast = ["-Dbookstore.setupMillis=0"];
+    let (code, selection, _) = p.run(&fast);
+    assert_eq!(code, 0, "{selection:#}");
+    p.edit(
+        "src/main/java/bookstore/orders/Inventory.java",
+        "        int available = stock.getOrDefault(isbn, 0);",
+        "        int available = stock.getOrDefault(isbn, 0) + 0;",
+    );
+    let (code, selection, _) = p.run(&fast);
+    assert_eq!(code, 0, "{selection:#}");
+    assert_eq!(
+        names(&selection["tests"]),
+        set(&["InventoryTest", "OrderServiceIT"]),
+        "{selection:#}"
+    );
 }
 
 #[test]
@@ -840,7 +922,7 @@ fn context_attribution_holds_in_reverse_test_class_order() {
         "this.prefix = prefix;",
         "this.prefix = prefix.trim();",
     );
-    expect("bean constructor", BOOT);
+    expect("bean constructor", GREETING);
     p.edit(
         "src/test/resources/greeting-it.properties",
         "app.greeting.prefix=Hello",

@@ -87,6 +87,8 @@ pub struct Class {
     pub uses: BTreeSet<String>,
     /// Owners of the fields this class reads or writes.
     pub fields: BTreeSet<String>,
+    /// Methods this class calls, as `owner#name(descriptor)`.
+    pub calls: BTreeSet<String>,
     /// Source paths whose bytecode was inlined here (Kotlin SMAP).
     pub inlined: Vec<String>,
     /// Non-private static constants, which `javac`/`kotlinc` copy into callers without
@@ -182,7 +184,9 @@ pub fn parse(bytes: &[u8]) -> Result<Class> {
     let mut class_refs = vec![0u16; count];
     let mut member_refs = Vec::new();
     let mut field_owners = Vec::new();
+    let mut method_refs = Vec::new();
     let mut member_names = vec![0u16; count];
+    let mut member_types = vec![0u16; count];
     let mut index = 1;
     while index < count {
         match r.take(1)?[0] {
@@ -194,14 +198,17 @@ pub fn parse(bytes: &[u8]) -> Result<Class> {
             7 => class_refs[index] = r.u16()?,
             tag @ 9..=11 => {
                 let owner = r.u16()?;
-                member_refs.push((owner, r.u16()?));
+                let member = r.u16()?;
+                member_refs.push((owner, member));
                 if tag == 9 {
                     field_owners.push(owner);
+                } else {
+                    method_refs.push((owner, member));
                 }
             }
             12 => {
                 member_names[index] = r.u16()?;
-                r.take(2)?;
+                member_types[index] = r.u16()?;
             }
             8 | 16 | 19 | 20 => {
                 r.take(2)?;
@@ -238,6 +245,20 @@ pub fn parse(bytes: &[u8]) -> Result<Class> {
         if text(*name)? != "<init>" {
             class.uses.insert(class_name(owner)?.to_owned());
         }
+    }
+    for &(owner, member) in &method_refs {
+        let name = *member_names
+            .get(member as usize)
+            .ok_or("Invalid member index")?;
+        let descriptor = *member_types
+            .get(member as usize)
+            .ok_or("Invalid member index")?;
+        class.calls.insert(format!(
+            "{}#{}{}",
+            class_name(owner)?,
+            text(name)?,
+            text(descriptor)?
+        ));
     }
     let access = r.u16()?;
     class.annotation = access & ACC_ANNOTATION != 0;
