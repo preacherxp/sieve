@@ -304,7 +304,8 @@ The embedded agent reaches every test JVM through `JDK_JAVA_OPTIONS`, so POM `ar
 settings (including JaCoCo's) are kept; the agent ignores Maven's own JVM. At JUnit
 Platform discovery it asks `sieve decide` which test classes to drop, and after the run
 it hands `sieve record` what each top-level test class executed: every project method,
-and every workspace file it opened, looked up, or listed through the JDK's file APIs
+whether loaded from the build's output directories or from a jar the build packaged in the
+workspace (Failsafe tests the packaged jar), and every workspace file it opened, looked up, or listed through the JDK's file APIs
 (including class-path resource lookups, which also record resources that do not exist
 yet, and directory listings). Test property files named by `@TestPropertySource` count
 as read while the context starts. Work done while a Spring

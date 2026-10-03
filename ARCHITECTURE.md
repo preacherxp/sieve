@@ -102,7 +102,8 @@ sieve run --records                         (records::run)
   └─ Gradle: gradle --init-script sieve.init.gradle -Pimpact.agent=<option> impactTests
         │     (daemon kept, never clean; the init script adds the agent to Test tasks only)
         test JVM ─ Boot (Java 8 entry) → Agent (Java 17+, else inactive)
-        │   Transformer   method-entry probes on project classes, file probes on JDK file APIs
+        │   Transformer   method-entry probes on project classes (output dirs or packaged jars
+        │                 in the workspace), file probes on JDK file APIs
         │   Probe/Bucket  bootstrap-loaded sinks: hits per test class / context startup / rest
         │   Filter        JUnit PostDiscoveryFilter ── exec ──▶ sieve decide  → classes to drop
         │   Listener      attributes hits to the running top-level class, records outcomes
