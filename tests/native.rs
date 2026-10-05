@@ -7,6 +7,9 @@ use std::{
 };
 use support::*;
 
+#[path = "support/sample_projects.rs"]
+mod sample_projects;
+
 fn tools() -> Vec<(&'static str, String)> {
     let requested = std::env::var("IMPACT_TOOL").unwrap_or_else(|_| "both".into());
     assert!(["both", "maven", "gradle"].contains(&requested.as_str()));

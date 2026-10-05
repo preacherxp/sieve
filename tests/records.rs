@@ -1169,12 +1169,134 @@ fn version_plugin_properties_do_not_invalidate_records() {
     );
 }
 
+/// Builds `<dir>/<name>-<version>.jar` holding `<name>.Api.version()`, which returns the version.
+fn build_jar(dir: &Path, name: &str, version: &str) -> PathBuf {
+    let tool = |name: &str| match std::env::var_os("JAVA_HOME") {
+        Some(home) => Path::new(&home).join("bin").join(name),
+        None => PathBuf::from(name),
+    };
+    let src = dir.join(format!("{name}-{version}-src"));
+    let classes = dir.join(format!("{name}-{version}-classes"));
+    write(
+        &src,
+        &format!("{name}/Api.java"),
+        format!(
+            "package {name};\n\npublic class Api {{\n    public static String version() {{\n        return \"{version}\";\n    }}\n}}\n"
+        ),
+    );
+    fs::create_dir_all(&classes).unwrap();
+    let status = Command::new(tool("javac"))
+        .args(["-d", classes.to_str().unwrap()])
+        .arg(src.join(name).join("Api.java"))
+        .status()
+        .unwrap();
+    assert!(status.success(), "javac");
+    let jar = dir.join(format!("{name}-{version}.jar"));
+    let status = Command::new(tool("jar"))
+        .args([
+            "cf",
+            jar.to_str().unwrap(),
+            "-C",
+            classes.to_str().unwrap(),
+            ".",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "jar");
+    jar
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+fn dependency_bumps_rerun_the_tests_that_used_the_bumped_jar() {
+    let p = Project::new();
+    // Jars outside the workspace, as a repository would hold them.
+    let libs = p.temp.path().join("libs");
+    let lib = build_jar(&libs, "lib", "1.0");
+    let dependency = |name: &str, jar: &Path| {
+        format!(
+            "    <dependency>\n      <groupId>example</groupId>\n      <artifactId>{name}</artifactId>\n      <version>0</version>\n      <scope>system</scope>\n      <systemPath>{}</systemPath>\n    </dependency>\n",
+            jar.display()
+        )
+    };
+    p.edit(
+        "pom.xml",
+        "  <dependencies>\n",
+        &format!("  <dependencies>\n{}", dependency("lib", &lib)),
+    );
+    write(
+        &p.root(),
+        "src/test/java/example/LibTest.java",
+        "package example;\n\nclass LibTest {\n    @org.junit.jupiter.api.Test\n    void versioned() {\n        org.junit.jupiter.api.Assertions.assertTrue(lib.Api.version().startsWith(\"1.\"));\n    }\n}\n",
+    );
+    // Constructed by every full context, so each of them ran the library.
+    write(
+        &p.root(),
+        "src/main/java/example/LibInfo.java",
+        "package example;\n\n@org.springframework.stereotype.Component\npublic class LibInfo {\n    final String version;\n\n    LibInfo() {\n        version = lib.Api.version();\n    }\n}\n",
+    );
+    let all = with(ALL, &["LibTest"]);
+    p.expect("first run", &all);
+
+    // A build-input edit that leaves the class path alone reruns nothing.
+    p.edit(
+        "pom.xml",
+        "<artifactId>records-fixture</artifactId>",
+        "<!-- note -->\n  <artifactId>records-fixture</artifactId>",
+    );
+    let selection = p.expect("build input edit without dependency change", &[]);
+    assert!(selection["reason"].as_str().unwrap().contains("clean"));
+
+    // A bump reruns the test that called the library and the contexts that constructed it.
+    let bumped = build_jar(&libs, "lib", "1.1");
+    p.edit("pom.xml", lib.to_str().unwrap(), bumped.to_str().unwrap());
+    let selection = p.expect("dependency bump", &with(BOOT, &["LibTest"]));
+    assert_eq!(
+        selection["reasons"]["example.LibTest"],
+        "Changed dependency: lib"
+    );
+    assert_eq!(
+        selection["reasons"]["example.GreetingTest"],
+        "Changed dependency: lib"
+    );
+    assert_eq!(
+        selection["reasons"]["example.FormatterTest"],
+        "Unchanged test record"
+    );
+
+    // An added artifact is not a bump: anything may react to a new class path entry.
+    let other = build_jar(&libs, "other", "1.0");
+    p.edit(
+        "pom.xml",
+        "  <dependencies>\n",
+        &format!("  <dependencies>\n{}", dependency("other", &other)),
+    );
+    let selection = p.expect("added dependency", &all);
+    assert_eq!(
+        selection["reasons"]["example.FormatterTest"],
+        "Build input changed: dependencies added or removed: +other"
+    );
+
+    // A test-JVM flag is a build-input edit the class path cannot show.
+    p.edit(
+        "pom.xml",
+        "-XX:TieredStopAtLevel=1</argLine>",
+        "-XX:TieredStopAtLevel=1 -Xss2m</argLine>",
+    );
+    let selection = p.expect("jvm argument", &all);
+    assert_eq!(
+        selection["reasons"]["example.FormatterTest"],
+        "Invocation, JVM properties or declared environment changed: jvm:arguments"
+    );
+}
+
 /// What a CI cache keeps between runs: records and their evidence, never run state.
 const CACHED: &[&str] = &[
     "records",
     "snapshots",
     "settings",
     "contexts",
+    "classpaths",
     "timings.json",
 ];
 

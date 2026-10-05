@@ -1,0 +1,15 @@
+{
+  "tool": "maven",
+  "modules": {
+    "api": [],
+    "app": [
+      "api",
+      "provider"
+    ],
+    "provider": [
+      "api"
+    ]
+  },
+  "build_fingerprint": "a8cb0b15a5a9954a049f03ca80660c2a5d49e48e",
+  "class_level": true
+}

@@ -38,6 +38,12 @@ struct Record {
     methods: BTreeMap<String, String>,
     /// Workspace-relative path to content hash; `-` for a file that did not exist.
     files: BTreeMap<String, String>,
+    /// Digest of the test class path's jars when the record was last extended.
+    #[serde(default)]
+    classpath: String,
+    /// Content hash to slot of each class-path jar whose code ran or whose entries were read.
+    #[serde(default)]
+    jars: BTreeMap<String, String>,
 }
 
 /// What a class looked like when a record was last extended. Fields missing from older
@@ -80,6 +86,9 @@ struct Raw {
     parallel: bool,
     errors: Vec<String>,
     dropped: Vec<String>,
+    /// Jars of the test class path outside the workspace.
+    #[serde(default)]
+    classpath: Vec<String>,
     tests: Vec<RawTest>,
 }
 
@@ -102,7 +111,7 @@ struct Summary {
 
 fn prepare(workspace: &Path) -> Result<PathBuf> {
     let dir = workspace.join(DIR);
-    for sub in ["records", "snapshots", "settings", "run"] {
+    for sub in ["records", "snapshots", "settings", "classpaths", "run"] {
         fs::create_dir_all(dir.join(sub))?;
     }
     let ignore = dir.join(".gitignore");
@@ -526,6 +535,154 @@ fn record_path(dir: &Path, test: &str) -> PathBuf {
     dir.join("records").join(format!("{test}.json"))
 }
 
+/// Marks library jars in the method names and paths the agent reports.
+const JAR: &str = "jar:";
+
+/// The slot a jar fills on the class path: its file name without the version, so that a bump
+/// keeps the slot while a swapped or added artifact changes the set of slots. The version is
+/// the name of the repository directory the jar sits in (Maven) or of the one above (Gradle).
+// ponytail: file-name slots; two artifacts with one name in different groups share a slot.
+fn slot(path: &str) -> String {
+    let path = Path::new(path);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = name.strip_suffix(".jar").unwrap_or(&name).to_owned();
+    let dirs = path
+        .ancestors()
+        .skip(1)
+        .take(2)
+        .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
+    for version in dirs {
+        if let Some((artifact, classifier)) = name.split_once(&format!("-{version}")) {
+            return format!("{artifact}{classifier}");
+        }
+    }
+    match name.find(|c: char| c.is_ascii_digit()) {
+        Some(i) if i > 1 && name.as_bytes()[i - 1] == b'-' => name[..i - 1].to_owned(),
+        _ => name,
+    }
+}
+
+/// Content hashes of jars, cached by size and modification time in `.sieve/jars.json`.
+struct Jars {
+    path: PathBuf,
+    cache: BTreeMap<String, (u64, u128, String)>,
+    dirty: bool,
+}
+
+impl Jars {
+    fn open(dir: &Path) -> Self {
+        let path = dir.join("jars.json");
+        Self {
+            cache: read_json(&path).unwrap_or_default(),
+            path,
+            dirty: false,
+        }
+    }
+
+    fn hash(&mut self, jar: &str) -> Option<String> {
+        let meta = fs::metadata(jar).ok()?;
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        if let Some((len, stamp, hash)) = self.cache.get(jar) {
+            if *len == meta.len() && *stamp == modified {
+                return Some(hash.clone());
+            }
+        }
+        let hash = bytecode::hash(&fs::read(jar).ok()?);
+        self.cache
+            .insert(jar.to_owned(), (meta.len(), modified, hash.clone()));
+        self.dirty = true;
+        Some(hash)
+    }
+
+    /// `(slot, hash)` of every readable jar, sorted.
+    fn listing(&mut self, jars: &[String]) -> Vec<(String, String)> {
+        let mut listing: Vec<(String, String)> = jars
+            .iter()
+            .filter_map(|jar| Some((slot(jar), self.hash(jar)?)))
+            .collect();
+        listing.sort();
+        listing
+    }
+
+    fn save(&self) -> Result<()> {
+        if self.dirty {
+            write_json(&self.path, &self.cache)?;
+        }
+        Ok(())
+    }
+}
+
+type Listing = Vec<(String, String)>;
+
+fn listing_path(dir: &Path, digest: &str) -> PathBuf {
+    dir.join("classpaths").join(format!("{digest}.json"))
+}
+
+/// Keeps a listing under its digest, for the records made against it.
+fn save_listing(dir: &Path, listing: &Listing) -> Result<String> {
+    let digest = bytecode::hash(&serde_json::to_vec(listing)?);
+    let path = listing_path(dir, &digest);
+    if !path.is_file() {
+        write_json(&path, listing)?;
+    }
+    Ok(digest)
+}
+
+/// Why a record's test must run after a build-input change, or `None` when only the contents
+/// of jars it never used changed. Anything else that differs between the class paths, such
+/// as an added or removed artifact, is not a bump and keeps the full rerun.
+fn dependency_change(
+    then: Option<&Listing>,
+    now: Option<&Listing>,
+    record: &Record,
+) -> Option<String> {
+    let (Some(then), Some(now)) = (then, now) else {
+        return Some("Build input changed".into());
+    };
+    // Listings are sorted, so equal slot sequences mean the same artifacts, each as often.
+    let a: Vec<&str> = then.iter().map(|(s, _)| s.as_str()).collect();
+    let b: Vec<&str> = now.iter().map(|(s, _)| s.as_str()).collect();
+    if a != b {
+        let mut diff: Vec<String> = Vec::new();
+        for (list, other, sign) in [(&b, &a, '+'), (&a, &b, '-')] {
+            let mut seen = other.clone();
+            for slot in list {
+                match seen.iter().position(|s| s == slot) {
+                    Some(i) => {
+                        seen.swap_remove(i);
+                    }
+                    None => diff.push(format!("{sign}{slot}")),
+                }
+            }
+        }
+        let more = diff.len().saturating_sub(5);
+        diff.truncate(5);
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        return Some(format!(
+            "Build input changed: dependencies added or removed: {}{more}",
+            diff.join(", ")
+        ));
+    }
+    let current: BTreeSet<&str> = now.iter().map(|(_, h)| h.as_str()).collect();
+    let used = record
+        .jars
+        .iter()
+        .find(|(hash, _)| !current.contains(hash.as_str()) && then.iter().any(|(_, h)| h == *hash));
+    used.map(|(_, slot)| format!("Changed dependency: {slot}"))
+}
+
 /// `sieve record --workspace PATH --raw FILE`: turns what the agent saw into test records.
 pub fn record(args: Vec<String>) -> Result<u8> {
     let options = options(args, &["--workspace", "--raw"])?;
@@ -570,6 +727,16 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     let snapshot = current.snapshot();
     let snapshot_id = bytecode::hash(&serde_json::to_vec(&snapshot)?);
     let mut snapshot_used = false;
+    let mut jars = Jars::open(&dir);
+    let listing = jars.listing(&raw.classpath);
+    let classpath = match listing.is_empty() {
+        true => String::new(),
+        false => save_listing(&dir, &listing)?,
+    };
+    let on_classpath: BTreeMap<&str, &str> = listing
+        .iter()
+        .map(|(s, h)| (h.as_str(), s.as_str()))
+        .collect();
     for test in &raw.tests {
         let path = record_path(&dir, &test.name);
         let hash = current.test_hash(&test.name);
@@ -604,19 +771,43 @@ pub fn record(args: Vec<String>) -> Result<u8> {
             ));
             continue;
         }
-        let mut methods: BTreeSet<&str> = test.methods.iter().map(String::as_str).collect();
+        let mut methods: BTreeSet<&str> = test
+            .methods
+            .iter()
+            .map(String::as_str)
+            .filter(|m| !m.starts_with(JAR))
+            .collect();
         let mut files: BTreeSet<String> = test
             .files
             .iter()
+            .filter(|f| !f.starts_with(JAR))
             .filter_map(|f| match f.strip_prefix(LISTED) {
                 Some(dir) => relative(&workspace, dir).map(|d| format!("{LISTED}{d}")),
                 None => relative(&workspace, f),
+            })
+            .collect();
+        // Jars outside the class path, such as other agents, are not the build's to bump.
+        let mut used: BTreeMap<String, String> = test
+            .methods
+            .iter()
+            .chain(&test.files)
+            .filter_map(|m| m.strip_prefix(JAR))
+            .filter_map(|jar| {
+                let hash = jars.hash(jar)?;
+                let slot = on_classpath.get(hash.as_str())?;
+                Some((hash, (*slot).to_owned()))
             })
             .collect();
         let mut spring = test.spring;
         if let Some(kept) = &kept {
             methods.extend(kept.methods.keys().map(String::as_str));
             files.extend(kept.files.keys().cloned());
+            used.extend(
+                kept.jars
+                    .iter()
+                    .filter(|(hash, _)| on_classpath.contains_key(hash.as_str()))
+                    .map(|(h, s)| (h.clone(), s.clone())),
+            );
             spring |= kept.spring;
         }
         let record = Record {
@@ -640,6 +831,8 @@ pub fn record(args: Vec<String>) -> Result<u8> {
                     (f, hash)
                 })
                 .collect(),
+            classpath: classpath.clone(),
+            jars: used,
         };
         snapshot_used = true;
         save_settings(&dir, &workspace, &record)?;
@@ -651,6 +844,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
             write_json(&path, &snapshot)?;
         }
     }
+    jars.save()?;
     collect_garbage(&dir)?;
     let name = raw_path
         .file_stem()
@@ -669,12 +863,13 @@ fn collect_garbage(dir: &Path) -> Result<()> {
     for entry in fs::read_dir(dir.join("records"))? {
         if let Some(record) = read_json::<Record>(&entry?.path()) {
             used.insert(format!("{}.json", record.snapshot));
+            used.insert(format!("{}.json", record.classpath));
             for hash in record.files.values() {
                 used.insert(settings_name(hash));
             }
         }
     }
-    for sub in ["snapshots", "settings"] {
+    for sub in ["snapshots", "settings", "classpaths"] {
         for entry in fs::read_dir(dir.join(sub))? {
             let entry = entry?;
             if !used.contains(entry.file_name().to_string_lossy().as_ref()) {
@@ -1182,6 +1377,10 @@ struct Decider<'a> {
     pending: bool,
     /// Per configuration file and recorded hash: what [`settings_reach`] found.
     settings: BTreeMap<(String, String), std::result::Result<Reach, String>>,
+    /// The test class path's jars as the agent sees them now.
+    classpath: Option<Listing>,
+    /// Listings by digest, as records refer to them.
+    listings: BTreeMap<String, Option<Listing>>,
 }
 
 /// The project classes that name a changed key, with the key, and whether the change could
@@ -1304,7 +1503,15 @@ impl Decider<'_> {
             return Some("Test class changed".into());
         }
         if record.build != current.build {
-            return Some("Build input changed".into());
+            // A build-input edit that only bumped versions reruns the users of the bumped jars.
+            let then = self
+                .listings
+                .entry(record.classpath.clone())
+                .or_insert_with(|| read_json(&listing_path(&self.dir, &record.classpath)))
+                .as_ref();
+            if let Some(reason) = dependency_change(then, self.classpath.as_ref(), record) {
+                return Some(reason);
+            }
         }
         // Classes whose code the test ran beyond constructing them. A context constructs
         // every component it loads; constructing one is not using it.
@@ -1500,6 +1707,7 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
             "--base",
             "--context",
             "--session",
+            "--classpath",
         ],
     )?;
     let workspace = workspace_option(&options)?;
@@ -1509,6 +1717,20 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     let session = options.get("--session").map_or("", String::as_str);
     let _execution = execution_guard(&dir, session)?;
     let context = options.get("--context").map_or("", String::as_str);
+    let classpath = match options.get("--classpath") {
+        Some(file) => {
+            let jars: Vec<String> = fs::read_to_string(file)?
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let mut cache = Jars::open(&dir);
+            let listing = cache.listing(&jars);
+            cache.save()?;
+            (!listing.is_empty()).then_some(listing)
+        }
+        None => None,
+    };
     let current = Current::load(&workspace)?;
     let now = current.snapshot();
     let tests = current.tests();
@@ -1521,6 +1743,8 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
         startup: BTreeSet::new(),
         pending: false,
         settings: BTreeMap::new(),
+        classpath,
+        listings: BTreeMap::new(),
     };
     let mut unreached = None;
     // Per context test with a record: components it constructed, and methods it ran.
@@ -2588,6 +2812,86 @@ fn print_summary(selection: &Selection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jar_slots_drop_the_version_and_keep_the_classifier() {
+        let maven =
+            "/r/com/fasterxml/jackson/core/jackson-databind/2.17.0/jackson-databind-2.17.0.jar";
+        assert_eq!(slot(maven), "jackson-databind");
+        let gradle =
+            "/g/files-2.1/org.testcontainers/postgresql/1.20.1/abc123/postgresql-1.20.1.jar";
+        assert_eq!(slot(gradle), "postgresql");
+        assert_eq!(slot("/r/example/lib/1.0/lib-1.0-tests.jar"), "lib-tests");
+        assert_eq!(slot("/elsewhere/lib/lib-1.0.jar"), "lib");
+        assert_eq!(slot("/elsewhere/lib/annotations-13.0.jar"), "annotations");
+        assert_eq!(slot("/elsewhere/gradle-worker.jar"), "gradle-worker");
+        assert_eq!(slot("/elsewhere/h2.jar"), "h2");
+    }
+
+    #[test]
+    fn version_bumps_rerun_the_users_of_the_bumped_jar_only() {
+        let listing = |jars: &[(&str, &str)]| -> Listing {
+            let mut l: Listing = jars
+                .iter()
+                .map(|(s, h)| (s.to_string(), h.to_string()))
+                .collect();
+            l.sort();
+            l
+        };
+        let then = listing(&[("a", "a1"), ("b", "b1"), ("junit", "j1")]);
+        let bumped = listing(&[("a", "a2"), ("b", "b1"), ("junit", "j1")]);
+        let uses_a = Record {
+            jars: [("a1", "a"), ("j1", "junit")]
+                .into_iter()
+                .map(|(h, s)| (h.into(), s.into()))
+                .collect(),
+            ..Record::default()
+        };
+        let uses_b = Record {
+            jars: [("b1", "b"), ("j1", "junit")]
+                .into_iter()
+                .map(|(h, s)| (h.into(), s.into()))
+                .collect(),
+            ..Record::default()
+        };
+        assert_eq!(
+            dependency_change(Some(&then), Some(&bumped), &uses_a).as_deref(),
+            Some("Changed dependency: a")
+        );
+        assert_eq!(dependency_change(Some(&then), Some(&bumped), &uses_b), None);
+        // A jar the record used that was never on the recorded class path cannot be a bump.
+        let other_agent = Record {
+            jars: [("x9", "jacoco")]
+                .into_iter()
+                .map(|(h, s)| (h.into(), s.into()))
+                .collect(),
+            ..Record::default()
+        };
+        assert_eq!(
+            dependency_change(Some(&then), Some(&bumped), &other_agent),
+            None
+        );
+        // Added, removed, or swapped artifacts are not bumps.
+        let added = listing(&[("a", "a1"), ("b", "b1"), ("c", "c1"), ("junit", "j1")]);
+        assert_eq!(
+            dependency_change(Some(&then), Some(&added), &uses_b).as_deref(),
+            Some("Build input changed: dependencies added or removed: +c")
+        );
+        let swapped = listing(&[("a", "a1"), ("d", "d1"), ("junit", "j1")]);
+        assert_eq!(
+            dependency_change(Some(&then), Some(&swapped), &uses_a).as_deref(),
+            Some("Build input changed: dependencies added or removed: +d, -b")
+        );
+        // Without both listings the old rule holds.
+        assert_eq!(
+            dependency_change(None, Some(&bumped), &uses_b).as_deref(),
+            Some("Build input changed")
+        );
+        assert_eq!(
+            dependency_change(Some(&then), None, &uses_b).as_deref(),
+            Some("Build input changed")
+        );
+    }
 
     fn shape(supers: &[&str]) -> Shape {
         Shape {

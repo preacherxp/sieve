@@ -71,7 +71,8 @@ map (deleted sources, resources, unreadable classes) falls back to the module se
 **Local mode** loads a Java agent into the test JVM. It records every project method and
 workspace file each test class touched, and on the next run drops classes whose records
 are unchanged. Spring wiring and `application.yml` keys are compared per member and per
-key, so most edits rerun only the tests that executed them.
+key, and a dependency bump reruns only the tests that ran code of the bumped jar, so most
+edits rerun only the tests that executed them.
 
 ```mermaid
 sequenceDiagram

@@ -13,6 +13,7 @@ import sieve.agent.asm.ClassVisitor;
 import sieve.agent.asm.ClassWriter;
 import sieve.agent.asm.MethodVisitor;
 import sieve.agent.asm.Opcodes;
+import sieve.probe.Probe;
 
 /**
  * Adds a method-entry probe to every method of the project's own classes, and a file probe to
@@ -30,11 +31,18 @@ final class Transformer implements ClassFileTransformer {
             "isDirectory", "isRegularFile");
     /** {@code java.io.File} methods that look at the file they are called on. */
     private static final Set<String> SELF_METHODS = Set.of("exists", "isFile", "isDirectory", "length", "list", "listFiles");
+    /**
+     * {@code java.util.zip.ZipFile} methods that read entries, class bytes and resources of a jar,
+     * or list them. Lookups are left out: a class loader probes every earlier jar for a miss.
+     */
+    private static final Set<String> ZIP_METHODS = Set.of("getInputStream", "entries", "stream");
 
     private final Set<Path> outputs = new java.util.LinkedHashSet<>();
     private final Path workspace;
     private final Set<String> jdk;
     private final java.util.Map<String, List<Path>> locations = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Code-source location to the library jar it is, or empty. */
+    private final java.util.Map<String, String> jars = new java.util.concurrent.ConcurrentHashMap<>();
 
     Transformer(List<Path> outputs, Path workspace, Set<String> jdk) {
         // Real paths, so that a symlinked or differently spelled checkout still matches.
@@ -67,16 +75,47 @@ final class Transformer implements ClassFileTransformer {
             for (Path dir : output(domain)) {
                 project |= Files.isRegularFile(dir.resolve(name + ".class"));
             }
-            if (!project) {
-                return null;
+            if (project) {
+                byte[] probed = methodProbes(name, bytes);
+                State.instrumented();
+                return probed;
             }
-            byte[] probed = methodProbes(name, bytes);
-            State.instrumented();
-            return probed;
         } catch (Throwable error) {
             State.error(name + ": " + error);
             return null;
         }
+        String jar = jar(domain);
+        if (jar.isEmpty()) {
+            return null;
+        }
+        // A library class: every method callable from outside its jar reports the jar, so that
+        // a dependency bump reruns the tests that executed it. One ASM cannot read counts for
+        // every test instead of discarding the run's records.
+        int id = State.method(Probe.JAR + jar);
+        try {
+            return libraryProbes(bytes, id);
+        } catch (Throwable error) {
+            Probe.always(id);
+            return null;
+        }
+    }
+
+    /** The real path of the jar outside the workspace a class was loaded from, or empty. */
+    private String jar(ProtectionDomain domain) {
+        CodeSource source = domain == null ? null : domain.getCodeSource();
+        URL location = source == null ? null : source.getLocation();
+        if (location == null || !"file".equals(location.getProtocol())) {
+            return "";
+        }
+        return jars.computeIfAbsent(location.toString(), key -> {
+            try {
+                Path path = real(Path.of(location.toURI()));
+                boolean library = path.getFileName().toString().endsWith(".jar") && !path.startsWith(workspace);
+                return library ? path.toString() : "";
+            } catch (java.net.URISyntaxException | RuntimeException error) {
+                return "";
+            }
+        });
     }
 
     /**
@@ -143,19 +182,32 @@ final class Transformer implements ClassFileTransformer {
         });
     }
 
+    /** Private methods are only called from their own class, whose other methods report already. */
+    private static byte[] libraryProbes(byte[] bytes, int id) {
+        return prepend(bytes, (code, owner, access, method, descriptor) -> {
+            if ((access & Opcodes.ACC_PRIVATE) == 0) {
+                code.visitLdcInsn(id);
+                code.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, "hit", HIT, false);
+            }
+        });
+    }
+
     /**
      * Reports the {@code File}, {@code String}, or {@code Path} that a method opens, lists, or
-     * probes: the first parameter, or the {@code File} itself.
+     * probes: the first parameter, or the {@code File} or {@code ZipFile} itself.
      */
     private static byte[] fileProbes(byte[] bytes) {
         return prepend(bytes, (code, owner, access, method, descriptor) -> {
             int slot = slot(owner, access, method, descriptor);
             if (slot >= 0) {
+                String probe = owner.equals(ZIP) ? "jar" : LISTINGS.contains(method) ? "list" : "file";
                 code.visitVarInsn(Opcodes.ALOAD, slot);
-                code.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, LISTINGS.contains(method) ? "list" : "file", FILE, false);
+                code.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, probe, FILE, false);
             }
         });
     }
+
+    private static final String ZIP = "java/util/zip/ZipFile";
 
     /** The local variable slot holding the file a method uses, or -1. */
     private static int slot(String owner, int access, String name, String type) {
@@ -164,6 +216,9 @@ final class Transformer implements ClassFileTransformer {
         }
         if (owner.equals("java/io/File")) {
             return SELF_METHODS.contains(name) ? 0 : -1;
+        }
+        if (owner.equals(ZIP)) {
+            return ZIP_METHODS.contains(name) ? 0 : -1;
         }
         if (name.equals("<init>")) {
             return type.startsWith("(Ljava/io/File;") ? 1 : -1;

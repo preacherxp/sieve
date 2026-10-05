@@ -346,9 +346,17 @@ test class's passing runs until the class itself changes.
 
 A test class is dropped when its last run passed and none of the following changed since:
 
-- the test class, its nested classes, the JDK, or build inputs (including parent POMs
-  outside the workspace);
-- Maven or Gradle invocation arguments, stable JVM system properties, or declared environment inputs
+- the test class, its nested classes, or the JDK;
+- build inputs (including parent POMs outside the workspace), unless the edit only bumped
+  dependency versions: the set of artifacts on the test class path is unchanged and only
+  jar contents differ. Then only the test classes that ran code of a changed jar, or read
+  its entries, rerun, together with the tests whose context startup did (`Changed
+  dependency: jackson-databind`). An added, removed, or swapped artifact, a jar without
+  classes, or a changed test-JVM flag (`argLine`) still reruns every test; so does any
+  other build edit that changes compiled classes or test-JVM properties. A build edit that
+  changes none of these, such as a Surefire option that only affects reporting, is treated
+  as behavior-neutral;
+- Maven or Gradle invocation arguments, test-JVM arguments, stable JVM system properties, or declared environment inputs
   (`"record_env": ["SERVICE_MODE"]` in `impact.json`). Properties that change with every
   commit without changing behavior can be excluded with `"record_ignore_properties":
   ["git.*", "build.number"]` (names, or prefixes ending in `*`); the `jgitver.*`
@@ -428,7 +436,7 @@ adoption, measurement, and the test-setup changes that pay off most.
 Records assume that every path a test can take has shown up in one of its passing runs
 since the test class last changed, and that tests do not depend on what earlier tests
 left behind. Not tracked: undeclared environment variables, external services,
-floating Docker image tags, dependency jars changed without a POM change, and lazily
+floating Docker image tags, jars that are not on the test class path (other agents), and lazily
 created beans, whose startup counts only for the test class that first used them. JVMs
 older than Java 17 (back to Java 8) load the agent but keep it inactive, so every test
 runs; so do class files newer than the vendored ASM can read. Surefire
@@ -544,6 +552,7 @@ machine's build output:
       .sieve/snapshots
       .sieve/settings
       .sieve/contexts
+      .sieve/classpaths
       .sieve/timings.json
     key: sieve-records-${{ github.sha }}
     restore-keys: sieve-records-

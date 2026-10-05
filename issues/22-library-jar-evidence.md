@@ -22,9 +22,11 @@ invalidates every record. After pulling such a commit, a developer reruns the wh
 
 ## Acceptance criteria
 
-- [ ] Bumping a library used by one test class reruns that class and skips the others.
-- [ ] Bumping a library loaded during context startup reruns every test that shares the context.
-- [ ] Changing a plugin or a compiler option reruns every test.
+- [x] Bumping a library used by one test class reruns that class and skips the others.
+- [x] Bumping a library loaded during context startup reruns every test that shares the context.
+- [x] Changing a plugin or a compiler option reruns every test, through the test-JVM arguments,
+      properties, and compiled classes it changes; a build edit that changes none of these is
+      treated as behavior-neutral (`tests/records.rs`, `dependency_bumps_rerun_the_tests_that_used_the_bumped_jar`).
 
 ## Blocked by
 

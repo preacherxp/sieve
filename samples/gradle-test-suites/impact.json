@@ -1,0 +1,14 @@
+{
+  "tool": "gradle",
+  "modules": {
+    ".": [],
+    "app": [
+      "engine"
+    ],
+    "engine": [
+      "engine"
+    ]
+  },
+  "build_fingerprint": "b77d0cde5909d83364ff824dfd7ca23067f4a727",
+  "class_level": true
+}

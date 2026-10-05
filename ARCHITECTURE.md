@@ -112,7 +112,7 @@ sieve run --records                         (records::run)
 ```
 
 `decide` drops a test class when its record passed and nothing it depends on changed: the
-test class, JDK, build inputs, invocation and JVM properties, declared environment inputs
+test class, JDK, build inputs, invocation, JVM properties and arguments, declared environment inputs
 (`record_env`), executed method bodies, read/listed files, class shapes of used classes
 and their hierarchy, Spring wiring of used or loaded components, or classes named by string
 constants. Constructing a class is not using it (ADR 0004): plain constructors and static
@@ -121,7 +121,10 @@ other code of the class. Wiring is compared per part (declaration, constructors,
 members, request mappings); configuration files per key (`settings.rs`, through the
 project classes that name a key); migration listings per appended file. When such a
 narrowed change could stop a context from starting and no full context test runs or has
-passed since, one runs as a startup check. Without a record, `--base` enables the static fallback only after a passing
+passed since, one runs as a startup check. A build-input edit is narrowed when the test
+class path keeps the same artifacts (`classpaths/`, slots by file name without version) and
+only jar contents changed: library methods carry a per-jar probe and `ZipFile` entry reads
+report their jar, so a bump reruns the tests that ran or read the jar. Without a record, `--base` enables the static fallback only after a passing
 wrapper run with the same invocation (`statically_unreached`). `bytecode.rs` provides the change-insensitive digests: FNV-1a
 over method bodies and class shapes with constant-pool references resolved and debug
 attributes ignored.

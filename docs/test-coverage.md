@@ -315,6 +315,38 @@ for parallel CI. No speed percentage should be inferred from test counts alone.
   the current small warm-cache benchmark.
 
 
+## Standalone robustness samples
+
+Two additional examples run without Docker or external services:
+
+| Sample | Dependency paths and mutations |
+| --- | --- |
+| [Runtime plugins](../samples/runtime-plugins/README.md) | Maven runtime dependency, `ServiceLoader`, provider properties, deleted service registration, parameterized Failsafe tests, independent status code, build edits and docs-only edits. |
+| [Separate test suites](../samples/gradle-test-suites/README.md) | Gradle `java-test-fixtures`, a separate integration-test source set and resource, transitive production callers, independent unit tests, build edits and docs-only edits. |
+
+[The sample checks](../tests/support/sample_projects.rs) define 14 mutations and
+compare native full execution with module-level and class-level selection. Their
+oracle declares exact test classes, invocation counts, failures and errors without
+reading selector output to derive expectations. Builds retain failure propagation;
+Gradle uses `--continue` to finish independent tasks. The docs-only cases run after
+populated builds and require zero reports, checking stale-report cleanup too.
+
+```bash
+# Fast graph, committed-fingerprint, and missing-history checks:
+cargo test --locked --test native sample_graphs
+# Native execution; optionally set IMPACT_TOOL=maven or IMPACT_TOOL=gradle:
+cargo test --locked --test native native_sample_mutations -- --ignored --nocapture
+```
+
+The existing CI `native_` filter runs the native sample check in each build-tool
+matrix entry. All mutations happen in temporary copies, including workspaces with
+spaces. `IMPACT_MAVEN` and `IMPACT_GRADLE` can override the build executables.
+
+Validated locally on 2026-10-05: all 14 mutations passed with Maven 3.9.16 (JDK 22)
+and Gradle 8.13/9.6.1 (JDK 21). `cargo test --locked` passed 97 tests, with 24 native
+checks ignored by default; the new native check was run explicitly for both tools.
+Formatting and Clippy passed. These changes have not run on GitHub Actions.
+
 Runtime tracing, previous class-dependency graphs, and selection-cache invalidation
 remain future capabilities. Add their dedicated coverage when those capabilities are
 implemented; do not count them as current support. `sieve replay --run` supplies the

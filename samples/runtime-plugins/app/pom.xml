@@ -1,0 +1,9 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>example</groupId><artifactId>runtime-plugins</artifactId><version>1</version></parent>
+  <artifactId>app</artifactId>
+  <dependencies>
+    <dependency><groupId>example</groupId><artifactId>api</artifactId><version>1</version></dependency>
+    <dependency><groupId>example</groupId><artifactId>provider</artifactId><version>1</version><scope>runtime</scope></dependency>
+  </dependencies>
+<properties><impact.skip.app>false</impact.skip.app></properties><build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><configuration><skipTests>${impact.skip.app}</skipTests></configuration></plugin><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId><configuration><skipTests>${impact.skip.app}</skipTests></configuration></plugin></plugins></build></project>

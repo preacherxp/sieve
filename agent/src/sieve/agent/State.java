@@ -39,6 +39,11 @@ final class State {
     private static String[] ignoredProperties = new String[0];
     private static boolean portable;
     private static String context;
+    /**
+     * When the agent started, before any test class was loaded. The process start time is not
+     * used: Linux reports it with second resolution, after classes compiled moments earlier.
+     */
+    private static final long STARTED = System.currentTimeMillis();
 
     private static final Map<String, Integer> IDS = new ConcurrentHashMap<>();
     private static final List<String> METHODS = Collections.synchronizedList(new ArrayList<>());
@@ -60,8 +65,9 @@ final class State {
     private static String active;
     private static boolean parallel;
     private static Set<String> skip;
+    private static List<String> classpath;
 
-    private static final Set<String> VOLATILE = Set.of("java.class.path", "sun.java.command", "surefire.real.class.path",
+    private static final Set<String> VOLATILE = Set.of("java.class.path", "sun.java.command", "surefire.real.class.path", "surefire.test.class.path",
             "java.vm.compressedOopsMode", "org.gradle.test.worker");
 
     /** Properties that version plugins set per commit and per dirty tree, such as jgitver's SHA. */
@@ -156,6 +162,7 @@ final class State {
                 values.put("env:" + name, value == null ? "absent" : "present:" + value);
             }
         }
+        values.put("jvm:arguments", arguments(locations));
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (Map.Entry<String, String> entry : values.entrySet()) {
@@ -170,6 +177,84 @@ final class State {
             return context;
         } catch (NoSuchAlgorithmException error) {
             throw new IllegalStateException(error);
+        }
+    }
+
+    /**
+     * The JVM's own arguments, such as {@code argLine} flags and other agents, without system
+     * properties (listed on their own) and without Sieve's agent.
+     */
+    private static String arguments(List<Map.Entry<String, String>> locations) {
+        try {
+            List<String> kept = new ArrayList<>();
+            for (String argument : java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments()) {
+                if (argument.startsWith("-D") || argument.startsWith("-javaagent:") && argument.contains("sieve-agent.jar")) {
+                    continue;
+                }
+                kept.add(portable ? placeholders(argument, locations) : argument);
+            }
+            return String.join(" ", kept);
+        } catch (Throwable error) {
+            return "unavailable";
+        }
+    }
+
+    /**
+     * The jars of the test class path outside the workspace. Jars without classes may still be
+     * read as resources by anyone: they count for every test class.
+     */
+    static synchronized List<String> classpath() {
+        if (classpath != null) {
+            return classpath;
+        }
+        // Surefire's manifest-only booter jar stands in for the class path in `java.class.path`
+        // on some versions, and its test class path property on others; the union covers both.
+        String value = System.getProperty("java.class.path", "") + File.pathSeparator
+                + System.getProperty("surefire.test.class.path", "");
+        Path root = workspace.toAbsolutePath().normalize();
+        Path real = root;
+        try {
+            real = workspace.toRealPath();
+        } catch (IOException ignored) {
+            // The absolute path stands for it.
+        }
+        Set<String> jars = new TreeSet<>();
+        for (String entry : value.split(File.pathSeparator)) {
+            if (entry.isEmpty() || !entry.endsWith(".jar")) {
+                continue;
+            }
+            Path path = Path.of(entry).toAbsolutePath().normalize();
+            try {
+                path = path.toRealPath();
+            } catch (IOException ignored) {
+                // Keep the normalized path.
+            }
+            if (!path.startsWith(root) && !path.startsWith(real) && Files.isRegularFile(path)) {
+                jars.add(path.toString());
+            }
+        }
+        classpath = List.copyOf(jars);
+        // Reading the jars here goes through the probed zip methods; park them in a bucket
+        // nobody reads.
+        Bucket previous = Probe.current;
+        Probe.current = new Bucket();
+        try {
+            for (String jar : classpath) {
+                if (!hasClasses(jar)) {
+                    Probe.always(method(Probe.JAR + jar));
+                }
+            }
+        } finally {
+            Probe.current = previous;
+        }
+        return classpath;
+    }
+
+    private static boolean hasClasses(String jar) {
+        try (java.util.jar.JarFile file = new java.util.jar.JarFile(jar, false)) {
+            return file.stream().anyMatch(entry -> entry.getName().endsWith(".class"));
+        } catch (IOException | RuntimeException error) {
+            return false;
         }
     }
 
@@ -304,11 +389,15 @@ final class State {
         }
         try {
             Path out = scratch("decide");
-            List<String> arguments = new ArrayList<>(List.of("decide", "--workspace", workspace.toString(), "--jdk", jdk(), "--out", out.toString(), "--context", context(), "--session", session));
+            Path jars = scratch("classpath");
+            Files.write(jars, classpath(), StandardCharsets.UTF_8);
+            List<String> arguments = new ArrayList<>(List.of("decide", "--workspace", workspace.toString(), "--jdk", jdk(), "--out", out.toString(), "--context", context(), "--session", session, "--classpath", jars.toString()));
             if (base != null && !base.isEmpty()) {
                 arguments.addAll(List.of("--base", base));
             }
-            if (call(arguments)) {
+            boolean decided = call(arguments);
+            Files.deleteIfExists(jars);
+            if (decided) {
                 Set<String> names = new TreeSet<>();
                 for (String line : Files.readAllLines(out, StandardCharsets.UTF_8)) {
                     if (!line.isBlank()) {
@@ -457,6 +546,8 @@ final class State {
     }
 
     private static String json() {
+        // Resource-only jars register their ids before the names are copied.
+        List<String> jars = classpath();
         String[] names;
         synchronized (METHODS) {
             names = METHODS.toArray(String[]::new);
@@ -472,12 +563,14 @@ final class State {
         string(out, context());
         out.append(",\"session\":");
         string(out, session);
-        out.append(",\"started\":").append(ProcessHandle.current().info().startInstant().map(java.time.Instant::toEpochMilli).orElse(0L));
+        out.append(",\"started\":").append(STARTED);
         out.append(",\"parallel\":").append(parallel || Probe.failed || parallelConfigured());
         out.append(",\"errors\":");
         strings(out, errors);
         out.append(",\"dropped\":");
         strings(out, new ArrayList<>(DROPPED));
+        out.append(",\"classpath\":");
+        strings(out, jars);
         out.append(",\"tests\":[");
         boolean first = true;
         for (Map.Entry<String, Run> entry : RUNS.entrySet()) {

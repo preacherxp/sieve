@@ -1,0 +1,36 @@
+subprojects {
+    apply plugin: 'java-library'
+    repositories { mavenCentral() }
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    dependencies {
+        testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+    }
+    tasks.withType(Test).configureEach { useJUnitPlatform() }
+}
+project(':engine') { apply plugin: 'java-test-fixtures' }
+project(':app') {
+    sourceSets {
+        integrationTest {
+            compileClasspath += sourceSets.main.output
+            runtimeClasspath += sourceSets.main.output
+        }
+    }
+    configurations {
+        integrationTestImplementation.extendsFrom testImplementation
+        integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+    }
+    dependencies {
+        implementation project(':engine')
+        integrationTestImplementation testFixtures(project(':engine'))
+    }
+    tasks.register('integrationTest', Test) {
+        testClassesDirs = sourceSets.integrationTest.output.classesDirs
+        classpath = sourceSets.integrationTest.runtimeClasspath
+        shouldRunAfter test
+    }
+    check.dependsOn integrationTest
+}

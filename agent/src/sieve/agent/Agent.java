@@ -51,7 +51,8 @@ public final class Agent {
             }
         }
         // File reads count when they go through the JDK's file APIs, which are already loaded.
-        List<Class<?>> jdk = new ArrayList<>(List.of(java.io.File.class, java.io.FileInputStream.class, java.io.RandomAccessFile.class));
+        List<Class<?>> jdk = new ArrayList<>(List.of(java.io.File.class, java.io.FileInputStream.class, java.io.RandomAccessFile.class,
+                java.util.zip.ZipFile.class));
         for (Class<?> c = FileSystems.getDefault().provider().getClass();
                 c != null && c != java.nio.file.spi.FileSystemProvider.class;
                 c = c.getSuperclass()) {

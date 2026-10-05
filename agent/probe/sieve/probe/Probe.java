@@ -52,6 +52,35 @@ public final class Probe {
     /** Marks listed directories in the recorded paths. */
     public static final String LISTED = "ls:";
 
+    /** Marks a library jar, in method names and recorded paths. */
+    public static final String JAR = "jar:";
+
+    /** Counts for every test class: a jar whose use cannot be attributed. */
+    public static void always(int id) {
+        UNATTRIBUTED.hit(id);
+    }
+
+    /**
+     * Entries of a jar outside the workspace were read, as class bytes or resources. Jars the
+     * build packaged inside the workspace are project code.
+     */
+    public static void jar(Object target) {
+        String root = Probe.root;
+        if (root == null || !(target instanceof java.util.zip.ZipFile zip)) {
+            return;
+        }
+        try {
+            String path = zip.getName();
+            String real = realRoot;
+            boolean inside = path.startsWith(root) || real != null && path.startsWith(real);
+            if (path.endsWith(".jar") && !inside) {
+                current.file(JAR + path);
+            }
+        } catch (Throwable error) {
+            failed = true;
+        }
+    }
+
     private static void record(Object target, String kind) {
         String root = Probe.root;
         if (root == null || target == null) {
