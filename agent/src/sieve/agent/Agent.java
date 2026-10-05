@@ -63,7 +63,9 @@ public final class Agent {
         }
         ClassFileTransformer transformer = new Transformer(outputs, Path.of(workspace), names);
         State.configure(Path.of(workspace), sieve, options.getProperty("mode", "select"), options.getProperty("base"),
-                options.getProperty("context", ""), options.getProperty("session", ""), options.getProperty("record_env", ""));
+                options.getProperty("context", ""), options.getProperty("session", ""), options.getProperty("record_env", ""),
+                options.getProperty("ignore_properties", ""),
+                Boolean.parseBoolean(options.getProperty("portable", "false")));
         instrumentation.addTransformer(transformer, true);
         try {
             instrumentation.retransformClasses(jdk.toArray(Class<?>[]::new));

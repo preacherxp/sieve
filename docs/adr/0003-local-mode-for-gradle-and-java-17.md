@@ -23,4 +23,4 @@ Static selection cannot make single-module projects faster. On a single-module S
 - One transformer implementation, at the cost of vendored third-party code that must be upgraded for every new class-file version. A test JVM whose class files ASM cannot read keeps the agent inactive, and every test runs.
 - Gradle local mode keeps the daemon and Gradle's own incremental compilation: Gradle removes the outputs of deleted sources itself, so Sieve never adds `clean` there.
 - Gradle may restore a `Test` task from its up-to-date check or build cache, which writes no records. That is safe only because identical task inputs mean identical classes and resources; issue 18 must confirm it before relying on it.
-- Records stay local. Producing or sharing them in CI is not part of this decision.
+- Records stay local. Producing or sharing them in CI is not part of this decision; ADR 0005 proposes it.

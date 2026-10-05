@@ -292,6 +292,23 @@ environment, and Sieve version, it reports `NONE` without starting Maven. Build 
 after `--` are appended; if they name goals or phases, they replace `verify`.
 Concurrent wrapper runs in one workspace are serialized through an OS file lock.
 
+Every `run`, in local and static mode, ends with a summary below the build output, which
+`--output` also records under `summary`:
+
+```text
+sieve: ran 1 of 11 test classes (9 of 117 test cases) in 6.1 s
+sieve: saved ~12.4 s of an estimated 18.5 s full run (67% less, 3.0x faster)
+```
+
+The test classes and cases that ran come from the build's XML reports. The skipped ones
+count with the cases and seconds they reported when they last ran, kept per top-level
+class in `.sieve/timings.json`; the estimated full run is this run plus those seconds. A
+skipped class's seconds include the Spring context or containers it started, unless an
+earlier class in that JVM had already started them, so the estimate tends to be low.
+Skipped test classes without a recorded run count as classes, and the summary then gives
+the time saved as a lower bound, or as unknown; abstract fixtures are not counted. Static
+selection keeps durations only where local mode already created `.sieve/`.
+
 On Gradle, `sieve run` starts one build on the Gradle daemon and never adds `clean`:
 Gradle's incremental compilation removes the output of deleted sources itself. By default
 it runs every `Test` task (`impactTests`, added by Sieve's init script) without linters or
@@ -320,7 +337,13 @@ A test class is dropped when its last run passed and none of the following chang
 - the test class, its nested classes, the JDK, or build inputs (including parent POMs
   outside the workspace);
 - Maven or Gradle invocation arguments, stable JVM system properties, or declared environment inputs
-  (`"record_env": ["SERVICE_MODE"]` in `impact.json`);
+  (`"record_env": ["SERVICE_MODE"]` in `impact.json`). Properties that change with every
+  commit without changing behavior can be excluded with `"record_ignore_properties":
+  ["git.*", "build.number"]` (names, or prefixes ending in `*`); the `jgitver.*`
+  properties that jgitver passes into the test JVM are always excluded. A test that reads an
+  excluded property is not rerun when it changes. When records are invalidated this way,
+  the reason names the changed properties; `.sieve/contexts/` keeps their names with a
+  digest of each value, never the values;
 - a method it executed (bodies are hashed without debug information, with constant-pool
   references resolved, so comment edits and renumbered constants change nothing);
 - a file it read, looked up, or listed;
@@ -397,8 +420,9 @@ floating Docker image tags, dependency jars changed without a POM change, and la
 created beans, whose startup counts only for the test class that first used them. JVMs
 older than Java 17 (back to Java 8) load the agent but keep it inactive, so every test
 runs; so do class files newer than the vendored ASM can read. Surefire
-with `useSystemClassLoader=false` is not supported. Multi-module projects and CI keep
-today's module- and class-level behavior. Plain Gradle runs without Sieve get no records.
+with `useSystemClassLoader=false` is not supported. Multi-module projects keep
+today's module- and class-level behavior; CI can share records (see
+[Records in CI](#records-in-ci)). Plain Gradle runs without Sieve get no records.
 
 The agent is Java (`agent/`), compiled by `build.rs` for Java 17 against small API stubs,
 with a vendored and relocated copy of ASM (`agent/asm`, BSD-3-Clause), and embedded in the
@@ -414,7 +438,8 @@ cargo test --locked --test records -- --include-ignored --test-threads=1
 
 ### Local speed-ups
 
-Local speed-ups are opt-in with `--with NAME[,NAME]`; `--without` overrides them.
+Local speed-ups are opt-in with `--with NAME[,NAME]`, or by default for the team with
+`"with": ["jgitver"]` in `impact.json`; `--without` overrides both.
 `--output` lists each one's state under `speedups`:
 
 - `reuse`: `TESTCONTAINERS_REUSE_ENABLE=true`, so containers declared `withReuse(true)`
@@ -483,6 +508,47 @@ PARENT` and then a native full build as the reference, and optionally a planted 
 commit's changed code. The report lists feedback time, phases, `clean` runs, and missed
 failures per commit and in total; any missed failure exits with 1. The walk switches local
 mode on for any single-module Maven or Gradle project, and leaves the workspace untouched.
+
+### Records in CI
+
+`sieve run --ci` is local mode with records that hold on other machines and checkouts. The
+invocation key uses the build tool's file name instead of its path, and leaves out `PATH` and
+`JAVA_HOME`; the JDK itself is still compared. In the test JVM's properties, the workspace,
+local Maven repository, home, JDK, and temporary directories become placeholders, so the
+test class path still names every dependency jar, and the host's identity (`user.name`,
+`os.version`, library paths, proxy hosts) is left out. Records from `--ci` and plain local
+runs never match each other.
+
+The default branch runs every test and refreshes the records (`sieve run --ci --full`); pull
+requests restore them and skip the test classes whose records are unchanged (`sieve run
+--ci`). Cache these paths between runs, but not the rest of `.sieve/`, which describes one
+machine's build output:
+
+```yaml
+- uses: actions/cache/restore@v4
+  with:
+    path: |
+      .sieve/records
+      .sieve/snapshots
+      .sieve/settings
+      .sieve/contexts
+      .sieve/timings.json
+    key: sieve-records-${{ github.sha }}
+    restore-keys: sieve-records-
+- run: sieve run --ci ${{ github.event_name != 'pull_request' && '--full' || '' }}
+- uses: actions/cache/save@v4
+  if: ${{ !cancelled() }}
+  with:
+    path: |  # the same paths
+    key: sieve-records-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+```
+
+GitHub Actions caches are scoped by branch: a pull request reads its own records first,
+then the default branch's, and never overwrites the default branch's records. Records are
+evidence about bytecode hashes, not about a commit, so records from any earlier commit stay
+valid: a test is skipped only when everything it executed and read is unchanged. Keep the
+full suite on the default branch, which catches what a selection misses at merge time. When
+`GITHUB_STEP_SUMMARY` is set, the run summary is also written to the job page.
 
 ## GitHub CI
 

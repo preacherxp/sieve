@@ -2,7 +2,11 @@
 use crate::Result;
 use quick_xml::{events::Event, Reader};
 use serde::Serialize;
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Default, Serialize)]
 pub(crate) struct Reports {
@@ -99,12 +103,89 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
 }
 
 pub(crate) fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
+    let mut reports = Reports::default();
+    for (prefix, path) in report_files(workspace, tool)? {
+        parse_report(&path, &prefix, &mut reports)?;
+    }
+    Ok(reports)
+}
+
+/// What a test class cost in the reports of the last build: executed test cases and seconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
+pub(crate) struct Cost {
+    pub(crate) cases: usize,
+    pub(crate) seconds: f64,
+}
+
+/// Costs per top-level test class (binary name without nested parts): the executed
+/// `testcase` elements, since Surefire's suite totals leave out `@Nested` classes, and the
+/// outermost suite's time, which includes class setup such as starting a Spring context.
+/// Gradle reports nested classes separately; they add to their outer class.
+pub(crate) fn class_costs(workspace: &Path, tool: &str) -> Result<BTreeMap<String, Cost>> {
+    let mut costs: BTreeMap<String, Cost> = BTreeMap::new();
+    for (_, path) in report_files(workspace, tool)? {
+        let mut reader = Reader::from_file(&path)?;
+        let mut buffer = Vec::new();
+        let mut class = None;
+        let (mut cases, mut seconds) = (0, 0.0);
+        let (mut in_case, mut skipped) = (false, false);
+        loop {
+            match reader.read_event_into(&mut buffer)? {
+                Event::Start(tag) | Event::Empty(tag)
+                    if tag.name().as_ref() == b"testsuite" && class.is_none() =>
+                {
+                    let attribute = |name: &[u8]| -> Result<String> {
+                        Ok(match tag.try_get_attribute(name)? {
+                            Some(value) => {
+                                value.decode_and_unescape_value(reader.decoder())?.into()
+                            }
+                            None => String::new(),
+                        })
+                    };
+                    let name = attribute(b"name")?;
+                    class = name.split('$').next().map(str::to_owned);
+                    seconds = attribute(b"time")?
+                        .replace(',', "")
+                        .parse::<f64>()
+                        .unwrap_or(0.0);
+                }
+                Event::Start(tag) if tag.name().as_ref() == b"testcase" => {
+                    (in_case, skipped) = (true, false);
+                }
+                Event::Empty(tag) if tag.name().as_ref() == b"testcase" => cases += 1,
+                Event::Start(tag) | Event::Empty(tag)
+                    if in_case && tag.name().as_ref() == b"skipped" =>
+                {
+                    skipped = true;
+                }
+                Event::End(tag) if tag.name().as_ref() == b"testcase" => {
+                    in_case = false;
+                    if !skipped {
+                        cases += 1;
+                    }
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+            buffer.clear();
+        }
+        if let Some(class) = class.filter(|c| !c.is_empty()) {
+            let cost = costs.entry(class).or_default();
+            cost.cases += cases;
+            cost.seconds += seconds;
+        }
+    }
+    Ok(costs)
+}
+
+/// Every native XML report below the workspace, with its `module:suite` prefix.
+fn report_files(workspace: &Path, tool: &str) -> Result<Vec<(String, PathBuf)>> {
     let maven = match tool {
         "maven" => true,
         "gradle" => false,
         _ => return Err(format!("Unknown build tool: {tool}").into()),
     };
-    let mut reports = Reports::default();
+    let mut files = Vec::new();
     let mut modules = vec![".".to_owned()];
     for entry in fs::read_dir(workspace)? {
         let entry = entry?;
@@ -155,10 +236,10 @@ pub(crate) fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 if name.starts_with("TEST-") && name.ends_with(".xml") {
-                    parse_report(&entry.path(), &format!("{module}:{suite}"), &mut reports)?;
+                    files.push((format!("{module}:{suite}"), entry.path()));
                 }
             }
         }
     }
-    Ok(reports)
+    Ok(files)
 }

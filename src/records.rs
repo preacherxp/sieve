@@ -1243,6 +1243,49 @@ fn settings_reach(
     })
 }
 
+/// Names the inputs that differ between two test-JVM contexts, from the descriptions the
+/// agent writes to `contexts/`: each input's name with a digest of its value.
+fn context_change(dir: &Path, old: &str, new: &str) -> String {
+    const CHANGED: &str = "Invocation, JVM properties or declared environment changed";
+    let read = |digest: &str| -> Option<BTreeMap<String, String>> {
+        if digest.is_empty() || !digest.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let text = fs::read_to_string(dir.join("contexts").join(format!("{digest}.txt"))).ok()?;
+        Some(
+            text.lines()
+                .filter_map(|line| line.split_once(' '))
+                .map(|(hash, name)| (name.to_owned(), hash.to_owned()))
+                .collect(),
+        )
+    };
+    let (Some(old), Some(new)) = (read(old), read(new)) else {
+        return CHANGED.into();
+    };
+    let names: Vec<String> = old
+        .keys()
+        .chain(new.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|name| old.get(*name) != new.get(*name))
+        .map(|name| match name.as_str() {
+            "invocation" => "the sieve invocation (build arguments, speed-ups, Java/Maven \
+                             environment)"
+                .to_owned(),
+            name => name
+                .strip_prefix("property:")
+                .or_else(|| name.strip_prefix("env:"))
+                .unwrap_or(name)
+                .to_owned(),
+        })
+        .collect();
+    match names.len() {
+        0 => CHANGED.into(),
+        1..=5 => format!("{CHANGED}: {}", names.join(", ")),
+        n => format!("{CHANGED}: {} and {} more", names[..5].join(", "), n - 5),
+    }
+}
+
 impl Decider<'_> {
     /// Why the test must run, or `None` when its record shows that nothing it used changed.
     fn check(&mut self, test: &str, record: &Record, jdk: &str, context: &str) -> Option<String> {
@@ -1255,7 +1298,7 @@ impl Decider<'_> {
             return Some(format!("JDK changed from {}", record.jdk));
         }
         if context.is_empty() || record.context != context {
-            return Some("Invocation, JVM properties or declared environment changed".into());
+            return Some(context_change(&self.dir, &record.context, context));
         }
         if record.test != current.test_hash(test) {
             return Some("Test class changed".into());
@@ -1646,6 +1689,7 @@ pub fn agent_jar() -> Result<PathBuf> {
 /// Writes the agent options and returns the `-javaagent` option that loads the agent. It
 /// reaches test JVMs through `JDK_JAVA_OPTIONS`, which every `java` launch reads whatever the
 /// POM's `argLine` says; the agent ignores the build tool's own JVM.
+#[allow(clippy::too_many_arguments)]
 fn agent_option(
     workspace: &Path,
     dir: &Path,
@@ -1653,7 +1697,8 @@ fn agent_option(
     base: Option<&str>,
     context: &str,
     session: &str,
-    record_env: &[String],
+    config: &Config,
+    portable: bool,
 ) -> Result<String> {
     let jar = agent_jar()?;
     let exe = env::current_exe()?.canonicalize()?;
@@ -1668,7 +1713,12 @@ fn agent_option(
         ("base", base.unwrap_or_default().into()),
         ("context", context.into()),
         ("session", session.into()),
-        ("record_env", record_env.join(",")),
+        ("record_env", config.record_env.join(",")),
+        (
+            "ignore_properties",
+            config.record_ignore_properties.join(","),
+        ),
+        ("portable", portable.to_string()),
     ] {
         // Properties files treat backslashes as escapes.
         props += &format!("{key}={}\n", value.replace('\\', "\\\\"));
@@ -1734,13 +1784,7 @@ pub fn env_command(args: Vec<String>) -> Result<u8> {
         // A plain Maven launch has no previously validated wrapper invocation. Its absent
         // records must run even when the caller supplies a green Git base.
         java_options(&agent_option(
-            &workspace,
-            &dir,
-            "select",
-            None,
-            "",
-            "",
-            &config.record_env
+            &workspace, &dir, "select", None, "", "", &config, false
         )?)
     );
     Ok(0)
@@ -2183,16 +2227,31 @@ pub struct Run {
     pub executable: Option<String>,
     pub levers: Levers,
     pub extra: Vec<String>,
+    /// Records that hold on other machines and checkouts: no absolute paths, tool locations,
+    /// or host identity in the invocation and test-JVM context.
+    pub ci: bool,
 }
+
+/// Environment variables whose values are tool locations, which `--ci` leaves out.
+const LOCATIONS: &[&str] = &["JAVA_HOME", "PATH"];
 
 fn invocation(
     config: &Config,
     executable: &str,
     extra: &[String],
     levers: &Levers,
+    portable: bool,
 ) -> Result<String> {
     let mut h = bytecode::Hasher::default();
-    h.field(executable.as_bytes())
+    let tool = match portable {
+        // The same wrapper or build tool, wherever it is installed.
+        true => Path::new(executable)
+            .file_name()
+            .map_or_else(|| executable.into(), |n| n.to_string_lossy()),
+        false => executable.into(),
+    };
+    h.field(portable.to_string().as_bytes())
+        .field(tool.as_bytes())
         .field(&serde_json::to_vec(extra)?)
         .field(format!("{levers:?}").as_bytes());
     let mut names: BTreeSet<&str> = [
@@ -2208,6 +2267,9 @@ fn invocation(
     .into_iter()
     .collect();
     names.extend(config.record_env.iter().map(String::as_str));
+    if portable {
+        names.retain(|name| !LOCATIONS.contains(name));
+    }
     for name in names {
         h.field(name.as_bytes())
             .field(&serde_json::to_vec(&env::var(name).ok())?);
@@ -2260,7 +2322,9 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         executable,
         levers,
         extra,
+        ci,
     } = run;
+    let started = std::time::Instant::now();
     let explicit_executable = executable.is_some();
     let mut executable =
         executable.unwrap_or_else(|| crate::setup::default_executable(workspace, &config.tool));
@@ -2294,7 +2358,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let goals = has_goals(&config.tool, &extra);
     let tree = tree(config, workspace)?;
     let build = build_inputs(workspace)?;
-    let context = invocation(config, &executable, &extra, &levers)?;
+    let context = invocation(config, &executable, &extra, &levers, ci)?;
     let mut key = bytecode::Hasher::default();
     key.field(&serde_json::to_vec(&tree)?)
         .field(build.as_bytes())
@@ -2323,7 +2387,18 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     if !full && !explicit && !goals && last.as_ref().is_some_and(|l| l.passed && l.key == key) {
         selection.mode = "NONE";
         selection.reason = "No changes since the last passing run; no build started".into();
+        summarize_run(
+            &dir,
+            workspace,
+            config,
+            false,
+            &BTreeSet::new(),
+            None,
+            started,
+            &mut selection,
+        );
         write(&selection)?;
+        print_summary(&selection);
         return Ok(0);
     }
     // Gradle's incremental compilation removes the output of deleted sources itself.
@@ -2372,7 +2447,8 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         fallback_base,
         &context,
         &session,
-        &config.record_env,
+        config,
+        ci,
     )?;
     let run_dir = dir.join("run");
     fs::remove_dir_all(&run_dir)?;
@@ -2430,7 +2506,26 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     if !failed.is_empty() {
         selection.reason = format!("{}; failed: {}", selection.reason, failed.len());
     }
+    // Every test class the JVMs discovered, unless named tests limited discovery.
+    let suite: BTreeSet<String> = selection
+        .tests
+        .iter()
+        .chain(&selection.skipped)
+        .cloned()
+        .collect();
+    let skipped = selection.skipped.clone();
+    summarize_run(
+        &dir,
+        workspace,
+        config,
+        true,
+        &skipped,
+        (!explicit).then_some(&suite),
+        started,
+        &mut selection,
+    );
     write(&selection)?;
+    print_summary(&selection);
     let passed = status.success() && failed.is_empty();
     write_json(
         &state,
@@ -2444,6 +2539,50 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     )?;
     // The exit status stays Maven's, which ignored failures leave at success.
     Ok(if status.success() { 0 } else { 1 })
+}
+
+/// Adds the run summary to the selection.
+#[allow(clippy::too_many_arguments)]
+fn summarize_run(
+    dir: &Path,
+    workspace: &Path,
+    config: &Config,
+    built: bool,
+    skipped: &BTreeSet<String>,
+    suite: Option<&BTreeSet<String>>,
+    started: std::time::Instant,
+    selection: &mut Selection,
+) {
+    let test_dirs: Vec<PathBuf> = outputs(workspace)
+        .into_iter()
+        .filter(|(_, test)| *test)
+        .map(|(dir, _)| dir)
+        .collect();
+    match crate::summary::finish(
+        true,
+        dir,
+        workspace,
+        &config.tool,
+        built,
+        skipped,
+        suite,
+        &test_dirs,
+        started.elapsed().as_secs_f64(),
+    ) {
+        Ok(summary) => selection.summary = Some(summary),
+        // The summary is informational: a problem with it never fails the run.
+        Err(error) => eprintln!("sieve: no summary: {error}"),
+    }
+}
+
+/// Prints the summary last, below the build output and the selection.
+fn print_summary(selection: &Selection) {
+    if let Some(summary) = &selection.summary {
+        for line in summary.lines() {
+            eprintln!("{line}");
+        }
+        summary.publish();
+    }
 }
 
 #[cfg(test)]
@@ -2755,6 +2894,40 @@ mod tests {
             args,
             ["-Djgitver.skip=true", "-Dspring-boot.repackage.skip=true"]
         );
+    }
+
+    #[test]
+    fn context_changes_name_the_inputs_without_values() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("contexts")).unwrap();
+        let describe = |digest: &str, lines: &[&str]| {
+            fs::write(
+                temp.path().join("contexts").join(format!("{digest}.txt")),
+                lines.join("\n") + "\n",
+            )
+            .unwrap();
+        };
+        describe(
+            "aa",
+            &["01 invocation", "02 property:user.dir", "03 env:STAGE"],
+        );
+        describe(
+            "bb",
+            &["01 invocation", "09 property:user.dir", "04 property:extra"],
+        );
+        assert_eq!(
+            context_change(temp.path(), "aa", "bb"),
+            "Invocation, JVM properties or declared environment changed: STAGE, extra, user.dir"
+        );
+        describe("cc", &["05 invocation"]);
+        assert!(context_change(temp.path(), "aa", "cc").contains("the sieve invocation"));
+        // Missing or unsafe descriptions keep the generic reason.
+        for (old, new) in [("aa", "dd"), ("../aa", "bb"), ("", "bb")] {
+            assert_eq!(
+                context_change(temp.path(), old, new),
+                "Invocation, JVM properties or declared environment changed"
+            );
+        }
     }
 
     #[test]

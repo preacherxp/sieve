@@ -32,7 +32,11 @@ List the sources of generated code, such as OpenAPI specifications, under `gener
 edit to them then cleans the build first, so that no stale generated class survives.
 List environment variables that affect tests under `record_env`; changing any of them
 invalidates the records. Invocation arguments and stable JVM system properties also invalidate
-records. A configured plain `sieve run` without `"records": true` uses static selection
+records; `record_ignore_properties` excludes system properties that change with every
+commit, and jgitver's `jgitver.*` properties are always excluded. jgitver also changes the
+project version on every commit, which reruns every test reading a filtered resource that
+embeds it, such as a Spring `application.yml`: add `"with": ["jgitver"]` so that local runs
+skip jgitver. A configured plain `sieve run` without `"records": true` uses static selection
 and runs the full suite when no base is supplied. Class selection remains a separate
 opt-in through `"class_level": true`.
 `.sieve/` ignores itself in Git; nothing else needs committing besides `impact.json`.

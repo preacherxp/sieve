@@ -62,6 +62,16 @@ impl Project {
     }
 
     fn run_with(&self, options: &[&str], extra: &[&str]) -> (i32, Value, usize) {
+        self.run_in(&[], options, extra)
+    }
+
+    /// `run_with` with additional environment variables for Maven and the test JVM.
+    fn run_in(
+        &self,
+        env: &[(&str, &str)],
+        options: &[&str],
+        extra: &[&str],
+    ) -> (i32, Value, usize) {
         let before = self.starts();
         let selection = self.temp.path().join("selection.json");
         let _ = fs::remove_file(&selection);
@@ -83,7 +93,11 @@ impl Project {
             args.push("-o");
         }
         args.extend(extra);
-        let output = self.command(&args).output().unwrap();
+        let output = self
+            .command(&args)
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
         let value = serde_json::from_slice(&fs::read(&selection).unwrap_or_default())
             .unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&output.stderr)));
         (output.status.code().unwrap(), value, self.starts() - before)
@@ -192,6 +206,13 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
     let p = Project::new();
     let first = p.expect("first run", ALL);
     assert!(first["reason"].as_str().unwrap().contains("clean"));
+    // The summary counts the suite, without abstract fixtures, and saves nothing yet.
+    let summary = &first["summary"];
+    assert_eq!(summary["classes_run"], ALL.len(), "{summary:#}");
+    assert_eq!(summary["classes_total"], ALL.len(), "{summary:#}");
+    assert_eq!(summary["cases_run"], summary["cases_total"], "{summary:#}");
+    assert_eq!(summary["saved_seconds"], 0.0, "{summary:#}");
+    assert!(summary.get("unmeasured").is_none(), "{summary:#}");
     let record: Value = serde_json::from_slice(
         &fs::read(p.root().join(".sieve/records/example.OrderFlowTest.json")).unwrap(),
     )
@@ -209,6 +230,12 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
     let (code, selection, starts) = p.run(&[]);
     assert_eq!((code, starts), (0, 0), "{selection:#}");
     assert_eq!(selection["mode"], "NONE");
+    assert_eq!(selection["summary"]["classes_run"], 0);
+    assert_eq!(selection["summary"]["classes_total"], ALL.len());
+    assert_eq!(
+        selection["summary"]["cases_total"],
+        first["summary"]["cases_total"]
+    );
 
     // A build without edits runs no tests, and without `clean`.
     let calculator = "src/main/java/example/Calculator.java";
@@ -229,6 +256,14 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
         "int sum = a + b;\n        return sum;",
     );
     let selection = p.expect("body edit", &["AdditionTest"]);
+    let summary = &selection["summary"];
+    assert_eq!(summary["classes_run"], 1, "{summary:#}");
+    assert_eq!(summary["classes_total"], ALL.len(), "{summary:#}");
+    assert_eq!(summary["cases_total"], first["summary"]["cases_total"]);
+    assert!(
+        summary["saved_seconds"].as_f64().unwrap() > 0.0,
+        "{summary:#}"
+    );
     assert_eq!(
         selection["reasons"]["example.AdditionTest"],
         "Changed method: example/Calculator#add(II)I"
@@ -1071,4 +1106,140 @@ fn gradle_records_skip_unchanged_tests_on_one_daemon_build() {
         set(&["GreeterTest"]),
         "{selection:#}"
     );
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+fn version_plugin_properties_do_not_invalidate_records() {
+    let p = Project::new();
+    // As jgitver does, the build itself passes per-commit values into the test JVM; the
+    // environment variables feeding them are not part of the invocation.
+    p.edit(
+        "pom.xml",
+        "<argLine>@{argLine} -XX:TieredStopAtLevel=1</argLine>",
+        "<argLine>@{argLine} -XX:TieredStopAtLevel=1</argLine>\n          <systemPropertyVariables>\n            <jgitver.git_sha1_full>${env.SAMPLE_SHA}</jgitver.git_sha1_full>\n            <build.number>${env.SAMPLE_BUILD}</build.number>\n            <sample.mode>${env.SAMPLE_MODE}</sample.mode>\n          </systemPropertyVariables>",
+    );
+    p.edit(
+        "impact.json",
+        "\"records\": true",
+        "\"records\": true,\n  \"record_ignore_properties\": [\"build.*\"]",
+    );
+    let run = |sha: &str, build: &str, mode: &str| {
+        p.run_in(
+            &[
+                ("SAMPLE_SHA", sha),
+                ("SAMPLE_BUILD", build),
+                ("SAMPLE_MODE", mode),
+            ],
+            &[],
+            &[],
+        )
+    };
+    let (code, first, _) = run("commit-one-sha", "1", "a");
+    assert_eq!(code, 0, "{first:#}");
+    assert_eq!(names(&first["tests"]), set(ALL), "{first:#}");
+    // Descriptions name the inputs but never store their values.
+    for entry in fs::read_dir(p.root().join(".sieve/contexts")).unwrap() {
+        let text = fs::read_to_string(entry.unwrap().path()).unwrap();
+        assert!(!text.contains("commit-one-sha"), "{text}");
+        assert!(text.contains("property:sample.mode"), "{text}");
+        assert!(!text.contains("property:jgitver."), "{text}");
+        assert!(!text.contains("property:build.number"), "{text}");
+    }
+
+    // A new commit SHA and build number keep every record.
+    let calculator = "src/main/java/example/Calculator.java";
+    p.edit(
+        calculator,
+        "return a + b;",
+        "int sum = a + b;\n        return sum;",
+    );
+    let (code, next, _) = run("commit-two-sha", "2", "a");
+    assert_eq!(code, 0, "{next:#}");
+    assert_eq!(names(&next["tests"]), set(&["AdditionTest"]), "{next:#}");
+
+    // Other properties still invalidate records, and the reason names them.
+    p.edit(calculator, "return sum;", "return a + b;");
+    let (code, changed, _) = run("commit-two-sha", "2", "b");
+    assert_eq!(code, 0, "{changed:#}");
+    assert_eq!(names(&changed["tests"]), set(ALL), "{changed:#}");
+    assert_eq!(
+        changed["reasons"]["example.FormatterTest"],
+        "Invocation, JVM properties or declared environment changed: sample.mode"
+    );
+}
+
+/// What a CI cache keeps between runs: records and their evidence, never run state.
+const CACHED: &[&str] = &[
+    "records",
+    "snapshots",
+    "settings",
+    "contexts",
+    "timings.json",
+];
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+fn ci_records_hold_in_another_checkout_with_other_tool_locations() {
+    // The default branch records every test.
+    let main = Project::new();
+    let (code, full, _) = main.run_with(&["--ci", "--full"], &[]);
+    assert_eq!(code, 0, "{full:#}");
+    assert_eq!(names(&full["tests"]), set(ALL), "{full:#}");
+
+    // A pull request runs in a fresh checkout at another path, through another Maven
+    // wrapper, with another PATH, and restores only the cached records.
+    let pull = Project::new();
+    assert_ne!(pull.root(), main.root());
+    for name in CACHED {
+        let from = main.root().join(".sieve").join(name);
+        let to = pull.root().join(".sieve").join(name);
+        if from.is_dir() {
+            copy(&from, &to);
+        } else {
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(&from, &to).unwrap();
+        }
+    }
+    pull.edit(
+        "src/main/java/example/Calculator.java",
+        "return a + b;",
+        "int sum = a + b;\n        return sum;",
+    );
+    let path = format!(
+        "{}:{}",
+        pull.root().join("not-a-tool-dir").display(),
+        std::env::var("PATH").unwrap()
+    );
+    let (code, selected, _) = pull.run_in(&[("PATH", &path)], &["--ci"], &[]);
+    assert_eq!(code, 0, "{selected:#}");
+    assert_eq!(
+        names(&selected["tests"]),
+        set(&["AdditionTest"]),
+        "{selected:#}"
+    );
+    assert_eq!(
+        selected["reasons"]["example.FormatterTest"],
+        "Unchanged test record"
+    );
+    let summary = &selected["summary"];
+    assert_eq!(summary["classes_total"], ALL.len(), "{summary:#}");
+    assert!(
+        summary["saved_seconds"].as_f64().unwrap() > 0.0,
+        "{summary:#}"
+    );
+
+    // Without --ci the same records name the machine-specific inputs that differ.
+    let local = Project::new();
+    for name in ["records", "contexts"] {
+        copy(
+            &main.root().join(".sieve").join(name),
+            &local.root().join(".sieve").join(name),
+        );
+    }
+    let (code, rerun, _) = local.run(&[]);
+    assert_eq!(code, 0, "{rerun:#}");
+    assert_eq!(names(&rerun["tests"]), set(ALL), "{rerun:#}");
+    let reason = rerun["reasons"]["example.FormatterTest"].as_str().unwrap();
+    assert!(reason.starts_with("Invocation, JVM properties"), "{reason}");
 }

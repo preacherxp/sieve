@@ -10,6 +10,7 @@ mod replay;
 mod reports;
 mod settings;
 mod setup;
+mod summary;
 mod timing;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -48,6 +49,13 @@ struct Config {
     /// Environment variables that local test records depend on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     record_env: Vec<String>,
+    /// Test-JVM system properties that local test records ignore: names, or prefixes ending
+    /// in `*`. `jgitver.*` is always ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    record_ignore_properties: Vec<String>,
+    /// Speed-ups that local `run` enables by default, as with `--with`; `--without` overrides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    with: Vec<String>,
 }
 
 const DEFAULT_IGNORE: &[&str] = &["README.md", "docs/**", "/README.md", "/docs/**"];
@@ -97,6 +105,9 @@ struct Selection {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     speedups: BTreeMap<String, String>,
     reason: String,
+    /// `run` only: tests run against the suite, and the estimated time saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<summary::Summary>,
 }
 
 impl Config {
@@ -148,6 +159,21 @@ impl Config {
         }) {
             return Err(format!("Invalid record_env variable: {name:?}").into());
         }
+        if let Some(pattern) = self.record_ignore_properties.iter().find(|p| {
+            let name = p.strip_suffix('*').unwrap_or(p);
+            name.is_empty()
+                || name.contains('*')
+                || !name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+        }) {
+            return Err(format!("Invalid record_ignore_properties entry: {pattern:?}").into());
+        }
+        records::Levers {
+            on: self.with.iter().cloned().collect(),
+            off: BTreeSet::new(),
+        }
+        .validate()?;
         Ok(())
     }
 
@@ -209,6 +235,7 @@ impl Config {
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
+            summary: None,
             reason: reason.into(),
         }
     }
@@ -276,6 +303,7 @@ impl Config {
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
+            summary: None,
         }
     }
 }
@@ -595,6 +623,7 @@ fn main_result() -> Result<u8> {
     let mut output = None;
     let mut executable = None;
     let mut levers = records::Levers::default();
+    let mut ci = false;
     let mut extra = Vec::new();
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -607,6 +636,12 @@ fn main_result() -> Result<u8> {
         }
         if arg == "--records" {
             records = true;
+            continue;
+        }
+        // CI: local mode with records portable between machines and checkouts.
+        if arg == "--ci" {
+            records = true;
+            ci = true;
             continue;
         }
         let value = args
@@ -622,12 +657,12 @@ fn main_result() -> Result<u8> {
             _ => return Err(format!("Unknown option: {arg}").into()),
         }
     }
-    levers.validate()?;
     if full && base.is_some() {
         return Err("Use either --base or --full".into());
     }
+    let started = std::time::Instant::now();
     if records && command != "run" {
-        return Err("--records is supported only by run".into());
+        return Err("--records and --ci are supported only by run".into());
     }
     let workspace = workspace
         .unwrap_or_else(|| PathBuf::from("."))
@@ -637,6 +672,8 @@ fn main_result() -> Result<u8> {
         Err(error) if local_default => Config::local_default(&workspace).ok_or(error)?,
         config => config?,
     };
+    levers.on.extend(config.with.iter().cloned());
+    levers.validate()?;
     let local = records || config.records == Some(true);
     if local && command == "run" {
         if local_default {
@@ -649,6 +686,7 @@ fn main_result() -> Result<u8> {
             executable,
             levers,
             extra,
+            ci,
         };
         return records::run(&config, &workspace, run);
     }
@@ -714,6 +752,7 @@ fn main_result() -> Result<u8> {
     remove_stale_reports(&config, &selection, &workspace)?;
     let temp = tempfile::tempdir()?;
     let mut filter = None;
+    let mut unselected = BTreeSet::new();
     if config.class_level && selection.mode == "MODULES" {
         eprintln!("{json}Compiling for class-level selection");
         // The comparison base generates its sources while the workspace compiles.
@@ -748,7 +787,7 @@ fn main_result() -> Result<u8> {
             return Ok(1);
         }
         // Analysis problems keep the module selection instead of failing the build.
-        let unselected = base
+        unselected = base
             .map(|base| base.and_then(|base| base.changes(&selection.modules, &workspace)))
             .transpose()
             .and_then(|generated| {
@@ -769,7 +808,7 @@ fn main_result() -> Result<u8> {
         let text = if config.tool == "maven" {
             // Surefire drops its default nested-class exclude once an excludes file is given.
             let mut excludes = String::from("**/*$*\n");
-            for name in unselected {
+            for name in &unselected {
                 excludes += &format!("{}.*\n", name.replace('.', "/"));
             }
             excludes
@@ -787,11 +826,36 @@ fn main_result() -> Result<u8> {
     }
     eprintln!("{json}");
     let status = Command::new(executable)
-        .current_dir(workspace)
+        .current_dir(&workspace)
         .args(build_args(&config, &selection, filter.as_deref()))
         .args(script_args)
         .args(extra)
         .status()?;
+    let modules: BTreeSet<String> = config.modules.keys().cloned().collect();
+    // The summary is informational: a problem with it never fails the run. Durations persist
+    // only where local mode keeps `.sieve/`: static selection leaves the workspace alone.
+    let sieve_dir = workspace.join(".sieve");
+    match summary::finish(
+        sieve_dir.is_dir(),
+        &sieve_dir,
+        &workspace,
+        &config.tool,
+        true,
+        &unselected,
+        None,
+        &summary::test_dirs(&workspace, &modules, &config.tool),
+        started.elapsed().as_secs_f64(),
+    ) {
+        Ok(summary) => {
+            for line in summary.lines() {
+                eprintln!("{line}");
+            }
+            summary.publish();
+            selection.summary = Some(summary);
+            write(&selection)?;
+        }
+        Err(error) => eprintln!("sieve: no summary: {error}"),
+    }
     Ok(if status.success() { 0 } else { 1 })
 }
 
@@ -854,6 +918,34 @@ mod tests {
                 glob(pattern.as_bytes(), path.as_bytes()),
                 expected,
                 "{pattern} {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_mode_settings_are_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = |extra: serde_json::Value| -> Config {
+            let mut value = serde_json::json!({"tool": "maven", "modules": {".": []}});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(value).unwrap()
+        };
+        let valid = config(serde_json::json!({
+            "with": ["jgitver"], "record_ignore_properties": ["git.*", "build.number"]
+        }));
+        assert!(valid.validate(temp.path()).is_ok());
+        for extra in [
+            serde_json::json!({"with": ["turbo"]}),
+            serde_json::json!({"record_ignore_properties": ["*"]}),
+            serde_json::json!({"record_ignore_properties": ["a*b"]}),
+            serde_json::json!({"record_ignore_properties": ["a b"]}),
+        ] {
+            assert!(
+                config(extra.clone()).validate(temp.path()).is_err(),
+                "{extra}"
             );
         }
     }

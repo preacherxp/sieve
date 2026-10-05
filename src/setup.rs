@@ -414,6 +414,8 @@ fn maven_config(
         generated: Vec::new(),
         records: None,
         record_env: Vec::new(),
+        record_ignore_properties: Vec::new(),
+        with: Vec::new(),
     };
     let mut edits = Vec::new();
     for (module, model) in models {
@@ -547,6 +549,8 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         config.generated = previous.generated;
         config.records = previous.records;
         config.record_env = previous.record_env;
+        config.record_ignore_properties = previous.record_ignore_properties;
+        config.with = previous.with;
         let known: std::collections::BTreeSet<_> = config.modules.keys().cloned().collect();
         for (module, dependencies) in &mut config.modules {
             dependencies.extend(
