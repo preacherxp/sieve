@@ -2,7 +2,7 @@
 
 Sieve is a Rust CLI that decides which JVM tests a change can affect and runs them through
 the project's own Maven or Gradle build. When it cannot be sure, it runs the full suite.
-This page maps the code; [README.md](README.md) documents behavior and flags,
+This page maps the code; [README.md](README.md) is the overview, [docs/reference.md](docs/reference.md) documents behavior and flags,
 [CONTEXT.md](CONTEXT.md) the vocabulary, and [docs/adr](docs/adr) the major decisions.
 A browsable version with diagrams lives in [site/guide.html](site/guide.html).
 

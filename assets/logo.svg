@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 120" width="420" height="120" role="img" aria-labelledby="t d">
+  <title id="t">Sieve</title>
+  <desc id="d">A round mesh holding grey dots back while a few blue dots pass through, next to the word sieve.</desc>
+  <defs>
+    <clipPath id="rim"><circle cx="60" cy="60" r="44"/></clipPath>
+  </defs>
+  <g id="mark">
+    <!-- mesh -->
+    <g clip-path="url(#rim)" stroke="#2c6cb0" stroke-width="2.5" stroke-linecap="round">
+      <path d="M60 16v88M40 16v88M80 16v88M20 16v88M100 16v88" opacity=".9"/>
+      <path d="M16 60h88M16 40h88M16 80h88" opacity=".9"/>
+    </g>
+    <circle cx="60" cy="60" r="44" fill="none" stroke="#163a66" stroke-width="6"/>
+    <!-- held back (on top of the mesh) -->
+    <g fill="#c5d0dc">
+      <circle cx="33" cy="28" r="6"/>
+      <circle cx="69" cy="22" r="7"/>
+      <circle cx="92" cy="44" r="5"/>
+      <circle cx="50" cy="48" r="7"/>
+      <circle cx="84" cy="70" r="6"/>
+      <circle cx="30" cy="72" r="5"/>
+      <circle cx="68" cy="88" r="6"/>
+    </g>
+    <!-- selected: passed through the mesh -->
+    <g fill="#f6c445">
+      <circle cx="60" cy="110" r="4"/>
+      <circle cx="47" cy="116" r="3"/>
+      <circle cx="74" cy="117" r="3"/>
+    </g>
+  </g>
+  <g id="wordmark" font-family="Inter, 'Helvetica Neue', Arial, sans-serif">
+    <text x="130" y="76" font-size="58" font-weight="700" fill="#163a66" letter-spacing="-1">sieve</text>
+    <text x="134" y="100" font-size="15" fill="#2c6cb0">test selection for Maven &amp; Gradle</text>
+  </g>
+</svg>

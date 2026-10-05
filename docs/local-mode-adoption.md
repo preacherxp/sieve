@@ -4,7 +4,7 @@ Local mode gives developers on a single-module Maven or Gradle service short fee
 an edit, `sieve run` runs only the test classes whose recorded behavior the edit can
 change, and it starts no build at all when nothing changed since the last green run. This
 guide takes a service from zero to measured. The mechanics are described in the
-[README](../README.md#local-mode-test-records).
+[reference](reference.md#local-mode-test-records).
 
 ## Check the prerequisites
 
