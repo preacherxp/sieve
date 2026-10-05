@@ -465,7 +465,7 @@
               <p>Opt-in: <code>"class_level": true</code>. The extra compile can outweigh savings in cheap suites.</p>
               <dl><dt>Evidence</dt><dd>Bytecode of the revision under test</dd><dt>Narrows</dt><dd>Test classes</dd><dt>Code</dt><dd><code>classes.rs</code>, <code>generated.rs</code></dd></dl></article>
             <article class="card"><span class="idx">iii</span><h3>Local mode</h3>
-              <p>Opt-in: <code>sieve run --records</code> or <code>"records": true</code>. Single-module Maven, developer machines.</p>
+              <p>Opt-in: <code>sieve run --records</code> or <code>"records": true</code>. Single-module Maven or Gradle; <code>--ci</code> shares records through the CI cache.</p>
               <dl><dt>Evidence</dt><dd>Runtime records of earlier passing runs</dd><dt>Narrows</dt><dd>Test classes</dd><dt>Code</dt><dd><code>records.rs</code>, <code>agent/</code></dd></dl></article>
           </div>
           <p>A configured <code>run</code> without a base selects <code>ALL</code> unless local mode is enabled.
@@ -643,7 +643,8 @@
           <ol class="rules">
             <li><b>Subtypes.</b> A changed or affected type affects its subtypes.</li>
             <li><b>Implementations.</b> A changed implementation affects callers of its interfaces and superclasses (DI, <code>ServiceLoader</code>), not sibling implementations. Decorators count as callers.</li>
-            <li><b>Inlined constants.</b> Changed non-private <code>static final</code> constants affect every class whose source names them, repeated for derived constants, plus every class without a findable source.</li>
+            <li><b>Inlined constants.</b> Changed non-private <code>static final</code> constants and Kotlin <code>const val</code>s affect every class whose source names them, repeated for derived constants, plus every class without a findable source.</li>
+            <li><b>Kotlin inline functions.</b> A caller keeps a copy of an <code>inline</code> body, not a call. Its <code>SourceDebugExtension</code> source map names the file the copy came from (as a path, or as <code>kotlinc</code> 2 writes it, the class compiled from it), so a changed body affects every class that inlined it, across modules.</li>
             <li><b>Components.</b> A reached DI component selects every context test (Spring, Micronaut, Quarkus, Helidon, Weld, Arquillian, Modulith), narrowed by Spring Boot slice rules.</li>
             <li><b>Scanning tests.</b> ArchUnit, Modulith <code>ApplicationModules</code>, package-selecting suites, Cucumber, ClassGraph and Reflections leave no reference, so any change selects them.</li>
             <li><b>Named in text.</b> A class named in Spring XML, logging or a library service file under <code>src/</code> that reaches a change falls back to <code>MODULES</code>; <code>spring.factories</code> and <code>*.imports</code> classes join every context instead.</li>
@@ -685,10 +686,13 @@
         <section class="sec" id="local" aria-labelledby="h6s">
           <div class="sec-head"><span class="num">06</span><h2 id="h6s">Local mode</h2>
             <p class="kicker">Static analysis runs every Spring context test for any component edit. Runtime records narrow that
-              on developer machines: single-module Maven, Java 24+ test JVM, one Maven start. Opt in with
+              on developer machines and, with <code>--ci</code>, in CI: single-module Maven or Gradle, Java 17+ test JVM, one build start. Opt in with
               <code class="nw">sieve run --records</code> or <code>"records": true</code>.
               <a href="../docs/adr/0001-record-runtime-evidence-for-context-tests.md">ADR 0001</a> ·
-              <a href="../docs/adr/0002-select-tests-inside-the-test-jvm.md">ADR 0002</a></p></div>
+              <a href="../docs/adr/0002-select-tests-inside-the-test-jvm.md">ADR 0002</a> ·
+              <a href="../docs/adr/0003-local-mode-for-gradle-and-java-17.md">ADR 0003</a> ·
+              <a href="../docs/adr/0004-construction-is-not-use.md">ADR 0004</a> ·
+              <a href="../docs/adr/0005-share-portable-records-through-ci.md">ADR 0005</a></p></div>
 
           <figure class="fig">
             <div class="fig-bar"><span><b>Fig. 5</b>Before Maven starts</span><span>records::run</span></div>
@@ -739,7 +743,7 @@
                 <g><path class="e d" d="M269 438 H97" marker-end="url(#ah)"/><text class="lab" x="103" y="431">exit status</text><text class="m" x="103" y="454">--output: reasons · skipped · speedups</text></g>
               </svg>
             </div>
-            <figcaption>Selection rules stay in Rust; the agent only asks and reports. It reaches the test JVM through <code>JDK_JAVA_OPTIONS</code>, so POM <code>argLine</code> settings such as JaCoCo's are kept.</figcaption>
+            <figcaption>Selection rules stay in Rust; the agent only asks and reports. On Maven it reaches the test JVM through <code>JDK_JAVA_OPTIONS</code>, so POM <code>argLine</code> settings such as JaCoCo's are kept; on Gradle the init script adds it to each <code>Test</code> task, leaving the daemons alone.</figcaption>
           </figure>
 
           <figure class="fig">
@@ -796,18 +800,21 @@
           <div class="table"><table>
             <thead><tr><th>Class</th><th>Role</th></tr></thead>
             <tbody>
-              <tr><td><code>Boot</code></td><td>Entry point compiled for Java 8, since <code>JDK_JAVA_OPTIONS</code> reaches every <code>java</code> launch. Hands off on Java 24+.</td></tr>
+              <tr><td><code>Boot</code></td><td>Entry point compiled for Java 8, since <code>JDK_JAVA_OPTIONS</code> reaches every <code>java</code> launch. Hands off on Java 17+.</td></tr>
               <tr><td><code>Agent</code></td><td>Reads the options file written by <code>sieve</code>; stays inactive in the build tool's own JVM.</td></tr>
-              <tr><td><code>Transformer</code></td><td>Class-File API: method-entry probes on project classes, file probes on JDK file APIs.</td></tr>
+              <tr><td><code>Transformer</code></td><td>Vendored ASM, relocated to <code>sieve.agent.asm</code>: method-entry probes on project classes, entry probes on library classes that report their jar, file probes on JDK file APIs.</td></tr>
               <tr><td><code>Probe</code> · <code>Bucket</code></td><td>Bootstrap-loaded sinks: methods and files per test class, per context startup, and the rest. Never touch files.</td></tr>
               <tr><td><code>Filter</code></td><td>JUnit <code>PostDiscoveryFilter</code>: drops the classes <code>sieve decide</code> lists, prunes emptied containers.</td></tr>
               <tr><td><code>Listener</code></td><td>Attributes probe hits to the running top-level class, records outcomes, detects parallel execution.</td></tr>
               <tr><td><code>spring/*</code></td><td><code>ContextHook</code>, <code>ContextUse</code>, <code>BootRun</code>: startup work counts for every class using the context, cached or not.</td></tr>
-              <tr><td><code>State</code></td><td>Per-JVM state and the subprocess conversation with the binary.</td></tr>
+              <tr><td><code>State</code></td><td>Per-JVM state and the subprocess conversation with the binary. Sends the raw context (agent options, system properties, JVM arguments) on standard input; <code>sieve</code> filters and hashes it.</td></tr>
             </tbody>
           </table></div>
-          <p>Records check invocation arguments, stable JVM properties and environment variables
-            declared under <code>record_env</code>. <code>sieve env</code> uses separate callback
+          <p>Records check invocation arguments, stable JVM properties (minus <code>record_ignore_properties</code>
+            and version-plugin values) and environment variables declared under <code>record_env</code>.
+            With <code>--ci</code>, machine-specific paths become placeholders and host identity is left out,
+            so records restored from the CI cache hold in another checkout. Library jars are evidence too:
+            a dependency bump reruns the tests that ran the bumped jar, and an added or removed artifact reruns everything. <code>sieve env</code> uses separate callback
             files; its callbacks run every test and write no records while a local wrapper owns
             the workspace lock. Ordinary Maven or IDE builds can still alter native outputs;
             output fingerprints invalidate the shortcut and classes rewritten during tests
@@ -816,8 +823,8 @@
             <code>repackage</code> speed-ups are opt-in through <code>--with</code>. Records still assume observed paths cover test
             behavior and tests are independent; undeclared environment inputs, external services, floating image tags and jars changed
             without a build-input change need full-suite validation.</p>
-          <p><a href="../build.rs">build.rs</a> compiles the agent against API stubs in three layers (<code>Boot</code> for Java 8,
-            most classes for 17, <code>Transformer</code> for 24) and embeds both jars with <code>include_bytes!</code>, so binary
+          <p><a href="../build.rs">build.rs</a> compiles the agent with any JDK 17+ <code>javac</code>: the probe, API stubs and vendored ASM for 17,
+            <code>Boot</code> for Java 8, the rest for 17. It embeds both jars with <code>include_bytes!</code>, so binary
             and agent cannot drift. <code>--no-default-features</code> leaves the agent and local mode out.</p>
         </section>
 
@@ -858,11 +865,14 @@
               <tr><td><code>replay</code></td><td>Real first-parent history: selection per commit; with <code>--run</code>, missed failures against the full suite; <code>--walk</code> for local mode.</td></tr>
               <tr><td><code>catalog</code></td><td>Feedback time per edit kind; <code>--plant</code> injects bugs into changed bodies and fails on any missed failure.</td></tr>
               <tr><td><code>classify</code></td><td>Weights edit kinds by recent commits.</td></tr>
+              <tr><td><code>--test native</code></td><td>Hand-written mutations of every sample, Kotlin ones included: native full build against module- and class-level runs, with exact classes, invocation counts and failures.</td></tr>
+              <tr><td><code>--test records</code></td><td>Local mode end to end on Maven and Gradle: records, Spring contexts, <code>--ci</code> records in another checkout, and Dependabot-style version bumps of real dependencies.</td></tr>
             </tbody>
           </table></div>
 <pre data-lang="shell">cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo test --locked --test records -- --include-ignored --test-threads=1
 target/debug/sieve fixtures verify --tool both --scenario all --selected --class-level \
   --output validation-results/class-level</pre>
         </section>
@@ -885,7 +895,7 @@ target/debug/sieve fixtures verify --tool both --scenario all --selected --class
               <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code></td></tr>
               <tr><td><a href="../agent/">agent/</a> · <a href="../build.rs">build.rs</a></td><td>Test-JVM agent and its build</td><td><code>Boot</code> · <code>Filter</code> · <code>State</code></td></tr>
               <tr><td>fixtures · replay · catalog · timing</td><td>Validation and measurement</td><td><code>fixtures::main</code> · <code>replay::main</code> · <code>catalog::main</code></td></tr>
-              <tr><td><a href="../projects/">projects/</a> · <a href="../samples/">samples/</a></td><td>Fixtures (<code>maven</code>/<code>gradle</code> parity pair, <code>single-*</code>, <code>records</code>, <code>containers</code>) and demos (<code>bookstore</code>, <code>webshop</code>, <code>selective-performance</code>)</td><td><a href="../scenarios.json">scenarios.json</a></td></tr>
+              <tr><td><a href="../projects/">projects/</a> · <a href="../samples/">samples/</a></td><td>Fixtures (<code>maven</code>/<code>gradle</code> parity pair, <code>single-*</code>, <code>records</code>, <code>version-bump</code>, <code>containers</code>) and demos (<code>bookstore</code>, <code>webshop</code>, <code>runtime-plugins</code>, <code>gradle-test-suites</code>, <code>selective-performance</code>, Kotlin <code>kotlin-invoices</code> and <code>kotlin-shipping</code>)</td><td><a href="../scenarios.json">scenarios.json</a></td></tr>
             </tbody>
           </table></div>
         </section>
@@ -920,7 +930,7 @@ sieve run    --workspace /tmp/impact-tax --base HEAD   <span class="c"># fails o
             <li>Selection JSON is written before tests run, outside the workspace or in an ignored folder.</li>
             <li><code>scenarios.json</code> stays independent of selector code.</li>
             <li>Probes never change observed behavior; a possibly unrecorded read discards the run's records.</li>
-            <li>Local mode is for developer machines. CI keeps static selection and a full-suite job.</li>
+            <li>The default branch keeps a full-suite job; CI selection, static or from <code>--ci</code> records, only shortens pull requests.</li>
           </ol>
         </section>
 

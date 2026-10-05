@@ -1,0 +1,11 @@
+{
+  "tool": "maven",
+  "modules": {
+    "orders": [
+      "rates"
+    ],
+    "rates": []
+  },
+  "build_fingerprint": "c95991b60dbcb3fd091d537926489cf8da55ebbe",
+  "class_level": true
+}

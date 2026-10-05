@@ -378,7 +378,9 @@ fn element_value<'a>(
     Ok(())
 }
 
-/// Source paths listed in the `*F` sections of a JSR-45 source map.
+/// Source paths listed in the `*F` sections of a JSR-45 source map. An entry's path line
+/// holds either the source path or, as `kotlinc` 2 writes it, the class compiled from the
+/// file; the file name joined to the path's directory covers both.
 fn smap_files(smap: &str) -> Vec<String> {
     let mut files = Vec::new();
     let mut in_files = false;
@@ -395,7 +397,12 @@ fn smap_files(smap: &str) -> Vec<String> {
             match (with_path, lines.clone().next()) {
                 (true, Some(path)) => {
                     lines.next();
-                    files.push(path.trim().to_owned());
+                    let (path, name) = (path.trim(), name.trim());
+                    files.push(match path.rsplit_once('/') {
+                        _ if name.is_empty() => path.to_owned(),
+                        Some((dir, _)) => format!("{dir}/{name}"),
+                        None => name.to_owned(),
+                    });
                 }
                 _ => files.push(name.trim().to_owned()),
             }
@@ -1724,6 +1731,13 @@ mod tests {
         let smap = "SMAP\nCaller.kt\nKotlin\n*S Kotlin\n*F\n+ 1 Caller.kt\na/Caller.kt\n\
                     + 2 Inline.kt\nb/Inline.kt\n3 Bare.kt\n*L\n1#1,5:1\n*E\n";
         assert_eq!(smap_files(smap), ["a/Caller.kt", "b/Inline.kt", "Bare.kt"]);
+        // kotlinc 2 names the class compiled from each file instead of the file's path.
+        let smap = "SMAP\nSumsTest.kt\nKotlin\n*S Kotlin\n*F\n+ 1 SumsTest.kt\nexample/SumsTest\n\
+                    + 2 Sums.kt\nexample/SumsKt\n+ 3 Top.kt\nTopKt\n*L\n1#1,12:1\n*E\n";
+        assert_eq!(
+            smap_files(smap),
+            ["example/SumsTest.kt", "example/Sums.kt", "Top.kt"]
+        );
     }
 
     #[test]

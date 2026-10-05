@@ -180,8 +180,8 @@ flowchart TB
 | `src/` | CLI modules above and the Gradle init script |
 | `agent/` | Java agent, bootstrap probe, API stubs, vendored ASM |
 | `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `replay`, `workflows` |
-| `projects/` | Fixtures: `maven`/`gradle` parity pair, `single-*`, `records`, `containers` |
-| `samples/` | `bookstore`, `webshop` (5 Spring WebFlux services), `selective-performance` |
+| `projects/` | Fixtures: `maven`/`gradle` parity pair, `single-*`, `records`, `version-bump`, `containers` |
+| `samples/` | `bookstore`, `webshop` (5 Spring WebFlux services), `selective-performance`, Kotlin: `kotlin-invoices` (Gradle), `kotlin-shipping` (Maven) |
 | `scenarios.json` | Independent oracle for fixture mutations; the selector never reads it |
 | `docs/adr/` | Decisions: runtime evidence, in-JVM selection, Gradle local mode, construction is not use, CI records |
 

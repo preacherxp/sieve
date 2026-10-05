@@ -1,0 +1,12 @@
+{
+  "tool": "gradle",
+  "modules": {
+    ".": [],
+    "invoice": [
+      "money"
+    ],
+    "money": []
+  },
+  "build_fingerprint": "8319b13b05304ed3898f2823c9bd802fa7cdd03e",
+  "class_level": true
+}

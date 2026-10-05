@@ -6,8 +6,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -18,8 +16,6 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.TreeMap;
-import java.util.HexFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import sieve.probe.Bucket;
 import sieve.probe.Probe;
@@ -33,12 +29,9 @@ final class State {
     private static String sieve;
     private static String mode = "off";
     private static String base;
-    private static String invocation = "";
     private static String session = "";
-    private static String[] recordEnv = new String[0];
-    private static String[] ignoredProperties = new String[0];
-    private static boolean portable;
-    private static String context;
+    private static Properties options = new Properties();
+    private static String inputs;
     /**
      * When the agent started, before any test class was loaded. The process start time is not
      * used: Linux reports it with second resolution, after classes compiled moments earlier.
@@ -67,136 +60,37 @@ final class State {
     private static Set<String> skip;
     private static List<String> classpath;
 
-    private static final Set<String> VOLATILE = Set.of("java.class.path", "sun.java.command", "surefire.real.class.path", "surefire.test.class.path",
-            "java.vm.compressedOopsMode", "org.gradle.test.worker");
-
-    /** Properties that version plugins set per commit and per dirty tree, such as jgitver's SHA. */
-    private static final List<String> VOLATILE_PREFIXES = List.of("jgitver.");
-
-    /**
-     * Portable records leave out the host's identity, which tests do not depend on; the JDK is
-     * checked separately. Locations inside other properties become placeholders instead.
-     */
-    private static final Set<String> HOST = Set.of("user.name", "os.version", "java.library.path",
-            "http.nonProxyHosts", "ftp.nonProxyHosts", "socksNonProxyHosts", "apple.awt.application.name");
-
-    /** Locations that differ between machines and checkouts, longest first, as placeholders. */
-    private static List<Map.Entry<String, String>> locations() {
-        Map<String, String> found = new LinkedHashMap<>();
-        found.put(workspace.toAbsolutePath().normalize().toString(), "${workspace}");
-        try {
-            found.put(workspace.toRealPath().toString(), "${workspace}");
-        } catch (IOException ignored) {
-            // The absolute path stands for it.
-        }
-        for (String[] property : new String[][] {{"localRepository", "${repository}"}, {"maven.repo.local", "${repository}"},
-                {"java.home", "${java.home}"}, {"user.home", "${home}"}, {"java.io.tmpdir", "${tmp}"}}) {
-            String value = System.getProperty(property[0]);
-            if (value != null && value.length() > 1) {
-                String path = value.endsWith(File.separator) ? value.substring(0, value.length() - 1) : value;
-                found.putIfAbsent(path, property[1]);
-            }
-        }
-        List<Map.Entry<String, String>> sorted = new ArrayList<>(found.entrySet());
-        sorted.sort((a, b) -> b.getKey().length() - a.getKey().length());
-        return sorted;
-    }
-
-    private static String placeholders(String value, List<Map.Entry<String, String>> locations) {
-        for (Map.Entry<String, String> location : locations) {
-            value = value.replace(location.getKey(), location.getValue());
-        }
-        return value;
-    }
-
     private State() {}
 
-    static synchronized void configure(Path workspace, String sieve, String mode, String base, String invocation, String session, String recordEnv, String ignoredProperties, boolean portable) {
+    static synchronized void configure(Path workspace, String sieve, Properties options) {
         State.workspace = workspace;
         State.sieve = sieve;
-        State.mode = mode;
-        State.base = base;
-        State.invocation = invocation;
-        State.session = session;
-        State.recordEnv = recordEnv.split(",");
-        State.ignoredProperties = ignoredProperties.isEmpty() ? new String[0] : ignoredProperties.split(",");
-        State.portable = portable;
-    }
-
-    /** Built-in volatile prefixes and {@code record_ignore_properties}: names, or prefixes ending in {@code *}. */
-    private static boolean ignored(String name) {
-        for (String prefix : VOLATILE_PREFIXES) {
-            if (name.startsWith(prefix)) {
-                return true;
-            }
-        }
-        for (String pattern : ignoredProperties) {
-            if (pattern.endsWith("*") ? name.startsWith(pattern.substring(0, pattern.length() - 1)) : name.equals(pattern)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Freeze at discovery: Surefire applies its test properties after agent premain. */
-    private static String context() {
-        if (context != null) {
-            return context;
-        }
-        Map<String, String> values = new TreeMap<>();
-        values.put("invocation", invocation);
-        List<Map.Entry<String, String>> locations = portable ? locations() : List.of();
-        for (String name : System.getProperties().stringPropertyNames()) {
-            // Classpath and command point at fresh Surefire booter files; compressed-oops
-            // placement varies with ASLR; Gradle numbers its test workers per daemon. Project
-            // output and the JDK are checked separately.
-            if (VOLATILE.contains(name) || ignored(name) || portable && HOST.contains(name)) {
-                continue;
-            }
-            String value = System.getProperty(name);
-            values.put("property:" + name, portable && value != null ? placeholders(value, locations) : value);
-        }
-        for (String name : recordEnv) {
-            if (!name.isEmpty()) {
-                String value = System.getenv(name);
-                values.put("env:" + name, value == null ? "absent" : "present:" + value);
-            }
-        }
-        values.put("jvm:arguments", arguments(locations));
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            for (Map.Entry<String, String> entry : values.entrySet()) {
-                for (String value : List.of(entry.getKey(), entry.getValue())) {
-                    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-                    digest.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.length).array());
-                    digest.update(bytes);
-                }
-            }
-            context = HexFormat.of().formatHex(digest.digest());
-            describe(context, values);
-            return context;
-        } catch (NoSuchAlgorithmException error) {
-            throw new IllegalStateException(error);
-        }
+        State.mode = options.getProperty("mode", "select");
+        State.base = options.getProperty("base");
+        State.session = options.getProperty("session", "");
+        State.options = options;
     }
 
     /**
-     * The JVM's own arguments, such as {@code argLine} flags and other agents, without system
-     * properties (listed on their own) and without Sieve's agent.
+     * The options, system properties, and JVM arguments that {@code sieve} turns into the
+     * context digest. Frozen at discovery: Surefire applies its test properties after premain.
      */
-    private static String arguments(List<Map.Entry<String, String>> locations) {
-        try {
-            List<String> kept = new ArrayList<>();
-            for (String argument : java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments()) {
-                if (argument.startsWith("-D") || argument.startsWith("-javaagent:") && argument.contains("sieve-agent.jar")) {
-                    continue;
-                }
-                kept.add(portable ? placeholders(argument, locations) : argument);
-            }
-            return String.join(" ", kept);
-        } catch (Throwable error) {
-            return "unavailable";
+    private static String inputs() {
+        if (inputs != null) {
+            return inputs;
         }
+        StringBuilder out = new StringBuilder("{\"options\":");
+        object(out, options);
+        out.append(",\"properties\":");
+        object(out, System.getProperties());
+        out.append(",\"arguments\":");
+        try {
+            strings(out, java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments());
+        } catch (Throwable error) {
+            out.append("null");
+        }
+        inputs = out.append("}\n").toString();
+        return inputs;
     }
 
     /**
@@ -255,32 +149,6 @@ final class State {
             return file.stream().anyMatch(entry -> entry.getName().endsWith(".class"));
         } catch (IOException | RuntimeException error) {
             return false;
-        }
-    }
-
-    /**
-     * Lists the context's inputs by name with a digest of each value, so that {@code sieve} can
-     * name what changed. Values are not stored: properties may carry names or credentials.
-     */
-    private static void describe(String digest, Map<String, String> values) {
-        try {
-            Path file = workspace.resolve(".sieve").resolve("contexts").resolve(digest + ".txt");
-            if (Files.exists(file)) {
-                return;
-            }
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
-            StringBuilder text = new StringBuilder();
-            for (Map.Entry<String, String> entry : values.entrySet()) {
-                byte[] hash = sha.digest(String.valueOf(entry.getValue()).getBytes(StandardCharsets.UTF_8));
-                String name = entry.getKey().replace('\n', ' ').replace('\r', ' ');
-                text.append(HexFormat.of().formatHex(hash, 0, 8)).append(' ').append(name).append('\n');
-            }
-            Files.createDirectories(file.getParent());
-            Path temp = Files.createTempFile(file.getParent(), digest, ".tmp");
-            Files.writeString(temp, text, StandardCharsets.UTF_8);
-            Files.move(temp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException | NoSuchAlgorithmException | RuntimeException error) {
-            // Diagnostics only; selection does not depend on the description.
         }
     }
 
@@ -353,8 +221,8 @@ final class State {
     }
 
     /**
-     * Runs {@code sieve} with output going to a log: a forked test JVM's standard streams may
-     * carry the build tool's own protocol.
+     * Runs {@code sieve} with the context inputs on its standard input, and output going to a
+     * log: a forked test JVM's standard streams may carry the build tool's own protocol.
      */
     private static boolean call(List<String> arguments) {
         try {
@@ -366,6 +234,11 @@ final class State {
                     .redirectErrorStream(true)
                     .redirectOutput(ProcessBuilder.Redirect.appendTo(log))
                     .start();
+            try (java.io.OutputStream in = process.getOutputStream()) {
+                in.write(inputs().getBytes(StandardCharsets.UTF_8));
+            } catch (IOException error) {
+                // It exited without reading them, and its status tells why.
+            }
             int status = process.waitFor();
             if (status != 0) {
                 System.err.println("sieve: " + arguments.get(0) + " failed with status " + status + "; see " + log);
@@ -383,7 +256,7 @@ final class State {
             return skip;
         }
         skip = Set.of();
-        context();
+        inputs();
         if (!enabled() || !mode.equals("select") || explicit() || parallelConfigured()) {
             return skip;
         }
@@ -391,7 +264,7 @@ final class State {
             Path out = scratch("decide");
             Path jars = scratch("classpath");
             Files.write(jars, classpath(), StandardCharsets.UTF_8);
-            List<String> arguments = new ArrayList<>(List.of("decide", "--workspace", workspace.toString(), "--jdk", jdk(), "--out", out.toString(), "--context", context(), "--session", session, "--classpath", jars.toString()));
+            List<String> arguments = new ArrayList<>(List.of("decide", "--workspace", workspace.toString(), "--jdk", jdk(), "--out", out.toString(), "--session", session, "--classpath", jars.toString()));
             if (base != null && !base.isEmpty()) {
                 arguments.addAll(List.of("--base", base));
             }
@@ -418,7 +291,7 @@ final class State {
     }
 
     static synchronized void classStarted(String name) {
-        context();
+        inputs();
         if (active != null && !active.equals(name)) {
             parallel = true;
         }
@@ -559,8 +432,6 @@ final class State {
         }
         StringBuilder out = new StringBuilder("{\"jdk\":");
         string(out, jdk());
-        out.append(",\"context\":");
-        string(out, context());
         out.append(",\"session\":");
         string(out, session);
         out.append(",\"started\":").append(STARTED);
@@ -605,6 +476,22 @@ final class State {
             out.append('}');
         }
         return out.append("]}\n").toString();
+    }
+
+    private static void object(StringBuilder out, Properties values) {
+        out.append('{');
+        String separator = "";
+        for (String name : values.stringPropertyNames()) {
+            String value = values.getProperty(name);
+            if (value != null) {
+                out.append(separator);
+                string(out, name);
+                out.append(':');
+                string(out, value);
+                separator = ",";
+            }
+        }
+        out.append('}');
     }
 
     private static void strings(StringBuilder out, List<String> values) {

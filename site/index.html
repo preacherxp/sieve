@@ -355,7 +355,7 @@
         <div>
           <p class="pill"><i></i> sieve · Maven · Gradle</p>
           <h1>Reduce CI time on Java and Kotlin changes.</h1>
-          <p class="lede">Sieve runs tests only in the modules a diff can affect, and in every module that depends on them. The rest of the suite is not started. A build file, or a base Git cannot see, still runs <strong>everything</strong>.</p>
+          <p class="lede">Sieve runs only the tests a diff can reach: the changed modules and their dependents, the test classes whose bytecode leads to the change, or the classes whose last run touched it. The rest of the suite is not started. A build file, or a base Git cannot see, still runs <strong>everything</strong>.</p>
           <div class="install" id="install">
             <div class="switch" role="radiogroup" aria-label="How to install">
               <button type="button" role="radio" data-install="ci" aria-checked="true">CI job</button>
@@ -366,26 +366,28 @@
                 <pre><code id="ci-snippet">- uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- run: |
-    rustup toolchain install \
-      1.92.0 --profile minimal
-    cargo install --git \
-      https://github.com/preacherxp/sieve \
-      --locked
+    persist-credentials: false
 - run: >-
-    sieve run --workspace .
-    --base "$BASE"
+    cargo install --locked --rev &lt;sha&gt;
+    --git https://github.com/preacherxp/sieve
+- run: |
+    args=(--full)
+    if [ "$EVENT" = pull_request ]; then
+      args=(--base "$BASE")
+    fi
+    sieve run --workspace . "${args[@]}"
   env:
+    EVENT: ${{ github.event_name }}
     BASE: ${{ github.event.pull_request.base.sha }}</code></pre>
                 <button type="button" data-copy-target="ci-snippet">Copy</button>
               </div>
-              <p class="fine">Run <code>sieve init</code> once and commit <code>impact.json</code>. Rust 1.92 builds the CLI. Pin <code>--rev</code> to a commit you have verified. With no base, the full suite runs.</p>
+              <p class="fine">Run <code>sieve init</code> once and commit <code>impact.json</code>. Rust 1.92+ and a JDK 17+ <code>javac</code> build the CLI. Pin <code>--rev</code> to a commit you have verified. Pull requests select against their base; every other event runs the full suite.</p>
             </div>
             <div data-install-panel="cli" hidden>
               <ol class="setup">
                 <li>
-                  <code>cargo install --git https://github.com/<wbr>preacherxp/<wbr>sieve --locked</code>
-                  <button type="button" data-copy="cargo install --git https://github.com/preacherxp/sieve --locked">Copy</button>
+                  <code>curl -fsSL https://raw.githubusercontent.com/<wbr>preacherxp/<wbr>sieve/<wbr>master/<wbr>install.sh | sh</code>
+                  <button type="button" data-copy="curl -fsSL https://raw.githubusercontent.com/preacherxp/sieve/master/install.sh | sh">Copy</button>
                 </li>
                 <li>
                   <code>sieve init</code>
@@ -396,7 +398,7 @@
                   <button type="button" data-copy="sieve run --workspace . --base origin/main">Copy</button>
                 </li>
               </ol>
-              <p class="fine">Preview with <code>sieve select</code>. Use your real base branch. Rust 1.92+, Git, and the JDK the build already needs.</p>
+              <p class="fine">Prebuilt for Linux x86_64/arm64 and macOS Apple silicon; elsewhere, <code>cargo install --git https://github.com/preacherxp/sieve --locked</code> (Rust 1.92+, JDK 17+ <code>javac</code>). Preview with <code>sieve select</code>. Use your real base branch.</p>
             </div>
           </div>
         </div>
@@ -449,16 +451,18 @@
           <li class="card">
             <span class="index">03</span>
             <h3>Let the build tool run them.</h3>
-            <p>Maven gets <code>clean verify</code> and skip flags. Gradle gets <code>clean check</code> and <code>-Pimpact.modules</code>. No base, or a build-file change, and the flags stay off so the full suite runs.</p>
+            <p>Maven gets <code>clean verify</code> and skip flags. Gradle gets <code>clean check</code> and <code>-Pimpact.modules</code>. With <code>"class_level": true</code>, Sieve compiles first and passes only the test classes whose bytecode reaches the change. No base, or a build-file change, and the flags stay off so the full suite runs.</p>
           </li>
         </ol>
         <div class="limits">
           <h2>Where it will not save time.</h2>
           <ul>
-            <li class="card"><p><strong>The grain is the module.</strong> TaxRules.java also runs CurrencyLabelTest, because they share pricing. You skip modules, not individual classes. There is no recording agent.</p></li>
+            <li class="card"><p><strong>Finer grain costs a build.</strong> By default you skip modules: TaxRules.java also runs CurrencyLabelTest, because they share pricing. <code>class_level</code> narrows to test classes, Kotlin inline functions and constants included, but starts the build tool twice, so cheap suites get slower.</p></li>
             <li class="card"><p><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</p></li>
             <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>docs/</code>, and any <code>ignore</code> globs in <code>impact.json</code> do not compile or test. The job cleans and stops.</p></li>
             <li class="card"><p><strong>Setup is for a simple layout.</strong> One package, or direct child modules whose directory names match. Nested trees, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</p></li>
+            <li class="card"><p><strong>Records need one module.</strong> Local mode (<code>--records</code>) records what each test class ran and read, on single-module Maven or Gradle with a Java 17+ test JVM. A dependency bump then reruns only the tests that ran the bumped jar. <code>--ci</code> shares records through the CI cache.</p></li>
+            <li class="card"><p><strong>Keep the full suite somewhere.</strong> Selection assumes tests are independent and that the inputs it sees are all there is. Run everything on the default branch, so a missed failure fails at merge, never silently.</p></li>
           </ul>
         </div>
       </section>

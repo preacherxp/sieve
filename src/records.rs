@@ -77,8 +77,6 @@ type Snapshot = BTreeMap<String, Shape>;
 struct Raw {
     jdk: String,
     #[serde(default)]
-    context: String,
-    #[serde(default)]
     session: String,
     /// When the test JVM started, in epoch milliseconds.
     #[serde(default)]
@@ -691,6 +689,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     let raw: Raw = serde_json::from_slice(&fs::read(&raw_path)?)?;
     let dir = prepare(&workspace)?;
     let _execution = execution_guard(&dir, &raw.session)?;
+    let context = jvm_context(&workspace, &dir);
     let _lock = Lock::acquire(&dir, "lock")?;
     let mut summary = Summary {
         ran: raw.tests.iter().map(|t| t.name.clone()).collect(),
@@ -699,8 +698,8 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     };
     // Without complete evidence only failures are kept; older records stay as they were, and
     // their hashes no longer match whatever changed since.
-    let trusted = !raw.parallel && raw.errors.is_empty() && !raw.context.is_empty();
-    if raw.context.is_empty() {
+    let trusted = !raw.parallel && raw.errors.is_empty() && !context.is_empty();
+    if context.is_empty() {
         summary
             .notes
             .push("Agent supplied no invocation context; no records kept".into());
@@ -740,8 +739,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     for test in &raw.tests {
         let path = record_path(&dir, &test.name);
         let hash = current.test_hash(&test.name);
-        let kept =
-            read_json::<Record>(&path).filter(|r| r.test == hash && r.context == raw.context);
+        let kept = read_json::<Record>(&path).filter(|r| r.test == hash && r.context == context);
         if !test.passed {
             let mut record = kept.unwrap_or_else(|| Record {
                 test: hash,
@@ -814,7 +812,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
             test: hash,
             passed: true,
             jdk: raw.jdk.clone(),
-            context: raw.context.clone(),
+            context: context.clone(),
             spring,
             build: current.build.clone(),
             resources: current.resources.clone(),
@@ -1442,8 +1440,167 @@ fn settings_reach(
     })
 }
 
-/// Names the inputs that differ between two test-JVM contexts, from the descriptions the
-/// agent writes to `contexts/`: each input's name with a digest of its value.
+/// What the agent saw of the test JVM at discovery, sent on standard input rather than in a
+/// file: property values may carry credentials.
+#[derive(Deserialize)]
+struct Inputs {
+    /// The agent options `agent_option` wrote.
+    options: BTreeMap<String, String>,
+    properties: BTreeMap<String, String>,
+    /// The JVM's own arguments, unless it could not list them.
+    arguments: Option<Vec<String>>,
+}
+
+/// Classpath and command point at fresh Surefire booter files; compressed-oops placement
+/// varies with ASLR; Gradle numbers its test workers per daemon. Project output and the JDK
+/// are checked separately.
+const VOLATILE: &[&str] = &[
+    "java.class.path",
+    "sun.java.command",
+    "surefire.real.class.path",
+    "surefire.test.class.path",
+    "java.vm.compressedOopsMode",
+    "org.gradle.test.worker",
+];
+
+/// Properties that version plugins set per commit and per dirty tree, such as jgitver's SHA.
+const VOLATILE_PREFIXES: &[&str] = &["jgitver."];
+
+/// Portable records leave out the host's identity, which tests do not depend on; the JDK is
+/// checked separately. Locations inside other properties become placeholders instead.
+const HOST: &[&str] = &[
+    "user.name",
+    "os.version",
+    "java.library.path",
+    "http.nonProxyHosts",
+    "ftp.nonProxyHosts",
+    "socksNonProxyHosts",
+    "apple.awt.application.name",
+];
+
+/// The test-JVM context digest from the agent's inputs on standard input, or empty without
+/// them. Also lists the context's inputs in `contexts/` for `context_change`.
+fn jvm_context(workspace: &Path, dir: &Path) -> String {
+    let Ok(inputs) = serde_json::from_reader::<_, Inputs>(std::io::stdin().lock()) else {
+        return String::new();
+    };
+    let option = |key: &str| inputs.options.get(key).map_or("", String::as_str);
+    let portable = option("portable") == "true";
+    let ignored: Vec<&str> = option("ignore_properties")
+        .split(',')
+        .filter(|p| !p.is_empty())
+        .collect();
+    let ignored = |name: &str| {
+        VOLATILE.contains(&name)
+            || VOLATILE_PREFIXES.iter().any(|p| name.starts_with(p))
+            || ignored.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefix) => name.starts_with(prefix),
+                None => name == *p,
+            })
+            || portable && HOST.contains(&name)
+    };
+    // Locations that differ between machines and checkouts, longest first.
+    let mut locations: Vec<(String, &str)> = Vec::new();
+    if portable {
+        let separator = std::path::MAIN_SEPARATOR_STR;
+        let workspaces = [option("workspace").to_owned(), plain(workspace)];
+        let properties = [
+            ("localRepository", "${repository}"),
+            ("maven.repo.local", "${repository}"),
+            ("java.home", "${java.home}"),
+            ("user.home", "${home}"),
+            ("java.io.tmpdir", "${tmp}"),
+        ]
+        .into_iter()
+        .filter_map(|(name, placeholder)| {
+            Some((inputs.properties.get(name)?.clone(), placeholder))
+        });
+        for (path, placeholder) in workspaces
+            .into_iter()
+            .map(|w| (w, "${workspace}"))
+            .chain(properties)
+        {
+            let path = path.strip_suffix(separator).unwrap_or(&path).to_owned();
+            if path.len() > 1 && !locations.iter().any(|(p, _)| *p == path) {
+                locations.push((path, placeholder));
+            }
+        }
+        locations.sort_by_key(|(path, _)| std::cmp::Reverse(path.len()));
+    }
+    let placeholders = |value: &str| {
+        locations
+            .iter()
+            .fold(value.to_owned(), |v, (path, placeholder)| {
+                v.replace(path, placeholder)
+            })
+    };
+    let mut values = BTreeMap::new();
+    values.insert("invocation".to_owned(), option("context").to_owned());
+    for (name, value) in &inputs.properties {
+        if !ignored(name) {
+            values.insert(format!("property:{name}"), placeholders(value));
+        }
+    }
+    for name in option("record_env").split(',').filter(|n| !n.is_empty()) {
+        let value = env::var_os(name).map_or("absent".into(), |v| {
+            format!("present:{}", v.to_string_lossy())
+        });
+        values.insert(format!("env:{name}"), value);
+    }
+    // Without system properties, listed on their own, and without Sieve's agent.
+    let arguments = inputs
+        .arguments
+        .as_ref()
+        .map_or("unavailable".into(), |arguments| {
+            arguments
+                .iter()
+                .filter(|a| {
+                    !(a.starts_with("-D")
+                        || a.starts_with("-javaagent:") && a.contains("sieve-agent.jar"))
+                })
+                .map(|a| placeholders(a))
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    values.insert("jvm:arguments".into(), arguments);
+    let mut h = bytecode::Hasher::default();
+    for (name, value) in &values {
+        h.field(name.as_bytes()).field(value.as_bytes());
+    }
+    let digest = h.finish();
+    describe(dir, &digest, &values);
+    digest
+}
+
+/// Lists the context's inputs by name with a digest of each value, so that `context_change`
+/// can name what changed. Values are not stored: properties may carry names or credentials.
+fn describe(dir: &Path, digest: &str, values: &BTreeMap<String, String>) {
+    let file = dir.join("contexts").join(format!("{digest}.txt"));
+    if file.exists() {
+        return;
+    }
+    let text: String = values
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "{} {}\n",
+                bytecode::hash(value.as_bytes()),
+                name.replace(['\n', '\r'], " ")
+            )
+        })
+        .collect();
+    // Diagnostics only; selection does not depend on the description.
+    let _ = (|| -> Result<()> {
+        fs::create_dir_all(dir.join("contexts"))?;
+        let mut temp = tempfile::NamedTempFile::new_in(dir.join("contexts"))?;
+        temp.write_all(text.as_bytes())?;
+        temp.persist(&file)?;
+        Ok(())
+    })();
+}
+
+/// Names the inputs that differ between two test-JVM contexts, from the descriptions
+/// `describe` writes to `contexts/`: each input's name with a digest of its value.
 fn context_change(dir: &Path, old: &str, new: &str) -> String {
     const CHANGED: &str = "Invocation, JVM properties or declared environment changed";
     let read = |digest: &str| -> Option<BTreeMap<String, String>> {
@@ -1705,7 +1862,6 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
             "--jdk",
             "--out",
             "--base",
-            "--context",
             "--session",
             "--classpath",
         ],
@@ -1716,7 +1872,7 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     let dir = prepare(&workspace)?;
     let session = options.get("--session").map_or("", String::as_str);
     let _execution = execution_guard(&dir, session)?;
-    let context = options.get("--context").map_or("", String::as_str);
+    let context = &jvm_context(&workspace, &dir);
     let classpath = match options.get("--classpath") {
         Some(file) => {
             let jars: Vec<String> = fs::read_to_string(file)?

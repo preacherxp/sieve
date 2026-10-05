@@ -8,10 +8,11 @@ use std::{
 };
 use support::*;
 
-/// A copy of `projects/records` in a Git repository, run through a Maven wrapper that counts
-/// its starts.
+/// A copy of `projects/records` in a Git repository, run through a Maven (or Gradle) wrapper
+/// that counts its starts.
 struct Project {
     temp: tempfile::TempDir,
+    gradle: bool,
 }
 
 impl Project {
@@ -20,19 +21,37 @@ impl Project {
     }
 
     fn of(fixture: &str) -> Self {
+        Self::with_tool(fixture, false)
+    }
+
+    /// A fixture with both build files, built by Gradle.
+    fn gradle(fixture: &str) -> Self {
+        Self::with_tool(fixture, true)
+    }
+
+    fn with_tool(fixture: &str, gradle: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("project");
         copy(&Path::new(ROOT).join(fixture), &root);
-        let maven = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
-        let wrapper = temp.path().join("mvn-counting");
+        let (variable, default) = match gradle {
+            true => ("IMPACT_GRADLE", "gradle"),
+            false => ("IMPACT_MAVEN", "mvn"),
+        };
+        let tool = std::env::var(variable).unwrap_or_else(|_| default.into());
+        let wrapper = temp.path().join("tool-counting");
         executable(
             &wrapper,
             &format!(
-                "#!/bin/sh\necho start >> '{}'\nexec '{maven}' \"$@\"\n",
+                "#!/bin/sh\necho start >> '{}'\nexec '{tool}' \"$@\"\n",
                 temp.path().join("starts").display()
             ),
         );
-        let project = Self { temp };
+        if gradle {
+            let config = root.join("impact.json");
+            let text = fs::read_to_string(&config).unwrap();
+            fs::write(&config, text.replace("\"maven\"", "\"gradle\"")).unwrap();
+        }
+        let project = Self { temp, gradle };
         git(root.to_str().unwrap(), &["init", "-q"]);
         commit(&project.root(), "base");
         project
@@ -75,7 +94,7 @@ impl Project {
         let before = self.starts();
         let selection = self.temp.path().join("selection.json");
         let _ = fs::remove_file(&selection);
-        let wrapper = self.temp.path().join("mvn-counting");
+        let wrapper = self.temp.path().join("tool-counting");
         let root = self.root();
         let mut args = vec![
             "run",
@@ -90,7 +109,7 @@ impl Project {
         args.extend(["--", "-q"]);
         let offline = std::env::var_os("IMPACT_OFFLINE").is_some();
         if offline {
-            args.push("-o");
+            args.push(if self.gradle { "--offline" } else { "-o" });
         }
         args.extend(extra);
         let output = self
@@ -1287,6 +1306,107 @@ fn dependency_bumps_rerun_the_tests_that_used_the_bumped_jar() {
     assert_eq!(
         selection["reasons"]["example.FormatterTest"],
         "Invocation, JVM properties or declared environment changed: jvm:arguments"
+    );
+}
+
+/// Dependabot-style bumps in `projects/version-bump`, each as `(file, from, to)`: commons-lang3,
+/// Jackson (with its transitive core and annotations), test-scoped AssertJ, and the JUnit BOM.
+fn version_bumps_rerun_only_the_tests_that_ran_the_library(
+    p: Project,
+    bumps: [(&str, &str, &str); 4],
+) {
+    let bump = |i: usize| {
+        let (file, from, to) = bumps[i];
+        p.edit(file, from, to);
+    };
+    let all = ["MoneyTest", "OrderJsonTest", "ReceiptTest", "SlugTest"];
+    p.expect("first run", &all);
+
+    // Receipt reaches commons-lang3 only through Slug, which static references show as well.
+    bump(0);
+    let selection = p.expect("commons-lang3 bump", &["ReceiptTest", "SlugTest"]);
+    assert_eq!(
+        selection["reasons"]["example.ReceiptTest"],
+        "Changed dependency: commons-lang3"
+    );
+    assert_eq!(
+        selection["reasons"]["example.MoneyTest"],
+        "Unchanged test record"
+    );
+
+    // Records now hold the new jar, so Slug and Receipt stay out. A bump that moves
+    // transitive artifacts along names one of them.
+    bump(1);
+    let selection = p.expect("jackson bump", &["OrderJsonTest"]);
+    let reason = selection["reasons"]["example.OrderJsonTest"]
+        .as_str()
+        .unwrap();
+    assert!(
+        reason.starts_with("Changed dependency: jackson-"),
+        "{reason}"
+    );
+
+    bump(2);
+    let selection = p.expect("test-scoped assertj bump", &["MoneyTest"]);
+    assert_eq!(
+        selection["reasons"]["example.MoneyTest"],
+        "Changed dependency: assertj-core"
+    );
+
+    // Every test ran JUnit.
+    bump(3);
+    p.expect("junit bump", &all);
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+fn maven_version_bumps_rerun_only_the_tests_that_ran_the_library() {
+    version_bumps_rerun_only_the_tests_that_ran_the_library(
+        Project::of("projects/version-bump"),
+        [
+            (
+                "pom.xml",
+                "<commons-lang3.version>3.17.0",
+                "<commons-lang3.version>3.18.0",
+            ),
+            (
+                "pom.xml",
+                "<jackson.version>2.19.0",
+                "<jackson.version>2.19.2",
+            ),
+            (
+                "pom.xml",
+                "<version>3.27.4</version>",
+                "<version>3.27.7</version>",
+            ),
+            (
+                "pom.xml",
+                "<version>5.14.3</version>",
+                "<version>5.14.4</version>",
+            ),
+        ],
+    );
+}
+
+#[test]
+#[ignore = "requires a Java 24+ JDK and Gradle 8.14+ on PATH (or IMPACT_GRADLE)"]
+fn gradle_version_bumps_rerun_only_the_tests_that_ran_the_library() {
+    version_bumps_rerun_only_the_tests_that_ran_the_library(
+        Project::gradle("projects/version-bump"),
+        [
+            (
+                "build.gradle",
+                "commons-lang3:3.17.0",
+                "commons-lang3:3.18.0",
+            ),
+            (
+                "build.gradle",
+                "jackson-databind:2.19.0",
+                "jackson-databind:2.19.2",
+            ),
+            ("build.gradle", "assertj-core:3.27.4", "assertj-core:3.27.7"),
+            ("build.gradle", "junit-bom:5.14.3", "junit-bom:5.14.4"),
+        ],
     );
 }
 
