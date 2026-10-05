@@ -259,7 +259,8 @@ fn ignored_submodules_still_count_as_changes() {
         module.to_str().unwrap(),
         &["commit", "-q", "--allow-empty", "-m", "Two"],
     );
-    git(workspace, &["add", "vendor/library"]);
+    // Newer Git skips `ignore = all` submodules in `git add` unless forced.
+    git(workspace, &["add", "-f", "vendor/library"]);
     git(workspace, &["commit", "-qm", "Update library"]);
     let selection = select(workspace, &base);
     assert_eq!(selection["mode"], "ALL", "{selection}");
