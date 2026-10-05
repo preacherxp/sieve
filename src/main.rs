@@ -599,7 +599,7 @@ fn main_result() -> Result<u8> {
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "sieve <select|run> [--workspace PATH] [--base REV | --full]\n\
-                  [--records] [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
+                  [--records | --ci] [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
                   sieve <init|refresh> [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
                   sieve env [--workspace PATH] [--base REV]\n\
                   sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
@@ -608,6 +608,7 @@ fn main_result() -> Result<u8> {
                   sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\n\
                   Local mode requires `run --records` or impact.json with records: true\n\
                   (single-module Maven, Java 24+; the first run records every test).\n\
+                  --ci keeps records that hold on other machines, for sharing through a CI cache.\n\
                   Static selection requires impact.json and the build adapters in README.md; no base or\n\
                   unavailable Git history selects ALL. run propagates build failures."
         );

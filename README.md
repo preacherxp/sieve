@@ -20,7 +20,17 @@ invocations after reinstalling. Run `sieve refresh` for existing installations,
 review the graph/POM diff, and commit it. Legacy configurations select the full
 suite until refreshed.
 
-Install from this checkout:
+Install a prebuilt binary (Linux x86_64/arm64, macOS Apple silicon; no Rust or JDK needed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/preacherxp/sieve/master/install.sh | sh
+```
+
+It installs to `~/.local/bin` (override with `SIEVE_INSTALL_DIR`) and verifies the
+release checksum. Set `SIEVE_VERSION=v0.1.0` to pin a release. Releases are built by
+`.github/workflows/release.yml` when a `v*` tag is pushed.
+
+Or install from this checkout:
 
 ```bash
 cargo install --path . --locked
