@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sieve — architecture guide</title>
   <meta name="description" content="How Sieve selects Java and Kotlin tests: module-level, class-level, and local-mode selection, the build adapters, the test-JVM agent, and the validation tooling.">
-  <meta name="theme-color" content="#f3efe6" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#121417" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3efe6">
+  <script>try { const dark = (localStorage.getItem("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark"; document.documentElement.dataset.theme = dark ? "dark" : "light"; if (dark) document.querySelector('meta[name="theme-color"]').content = "#121417"; } catch {}</script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%231b1f24' width='32' height='32' rx='7'/%3E%3Cpath d='M6 13h20M6 17h20M10 9v12M16 9v12M22 9v12' stroke='%23f3efe6' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='25' r='2.4' fill='%23e0562b'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -40,29 +40,28 @@
       --none-t: #f7ecd0;
       --radius: 14px;
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --paper: #121417;
-        --paper-2: #1a1d21;
-        --card: #1a1d22;
-        --fig: #16191d;
-        --ink: #ece7dc;
-        --ink-2: #aeb4ba;
-        --ink-3: #737a82;
-        --rule: #2b3037;
-        --rule-2: #3c434c;
-        --grid: rgba(236, 231, 220, 0.035);
-        --edge: #98a0a8;
-        --code: #0c0e10;
-        --all: #f0703f;
-        --modules: #6d93ff;
-        --subset: #58b67e;
-        --none: #dca93a;
-        --all-t: #3a2219;
-        --modules-t: #1c2641;
-        --subset-t: #19301f;
-        --none-t: #362b12;
-      }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --paper: #121417;
+      --paper-2: #1a1d21;
+      --card: #1a1d22;
+      --fig: #16191d;
+      --ink: #ece7dc;
+      --ink-2: #aeb4ba;
+      --ink-3: #737a82;
+      --rule: #2b3037;
+      --rule-2: #3c434c;
+      --grid: rgba(236, 231, 220, 0.035);
+      --edge: #98a0a8;
+      --code: #0c0e10;
+      --all: #f0703f;
+      --modules: #6d93ff;
+      --subset: #58b67e;
+      --none: #dca93a;
+      --all-t: #3a2219;
+      --modules-t: #1c2641;
+      --subset-t: #19301f;
+      --none-t: #362b12;
     }
 
     *, *::before, *::after { box-sizing: border-box; }
@@ -214,7 +213,7 @@
     .fx .life { stroke: var(--rule-2); stroke-dasharray: 2 5; }
     .fx .act { fill: var(--modules-t); stroke: var(--modules); }
     .fx .note { fill: var(--none-t); stroke: color-mix(in srgb, var(--none) 55%, transparent); }
-    @media (prefers-color-scheme: dark) { .fx .term text, .fx .term .ts { fill: #101215; } .fx .T-ink text { fill: var(--paper); } }
+    [data-theme="dark"] :is(.fx .term text, .fx .term .ts) { fill: #101215; } [data-theme="dark"] .fx .T-ink text { fill: var(--paper); }
     .ah { fill: var(--edge); } .ah-all { fill: var(--all); } .ah-run { fill: var(--modules); } .ah-ok { fill: var(--subset); }
 
     html.js .fig .n { opacity: 0; transform: translateY(6px); transition: opacity .55s ease, transform .55s ease; }
