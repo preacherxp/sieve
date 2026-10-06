@@ -287,7 +287,7 @@ cp "$MODELS/$module.xml" "$output"
 }
 
 #[test]
-fn maven_setup_reads_the_reactor_once() {
+fn maven_setup_reads_the_reactor_once_and_finds_shared_tests() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir(temp.path().join("project")).unwrap();
     let root = temp.path().join("project").canonicalize().unwrap();
@@ -366,8 +366,14 @@ cp "$MODELS/$model.xml" "$output"
         config["modules"],
         json!({"app": ["core", "testkit"], "core": [], "testkit": []})
     );
+    assert_eq!(config["shared_tests"], json!(["testkit"]));
     // One Maven start for the reactor, one for the module it could not match.
     let calls = fs::read_to_string(models.join("calls")).unwrap();
     assert_eq!(calls.lines().count(), 2, "{calls}");
     assert!(calls.lines().last().unwrap().contains("-N"), "{calls}");
+    // Refresh keeps shared test modules declared by hand, like additional edges.
+    let mut edited = config.clone();
+    edited["shared_tests"] = json!(["core", "testkit"]);
+    write(&root, "impact.json", serde_json::to_vec(&edited).unwrap());
+    assert_eq!(init("refresh")["shared_tests"], json!(["core", "testkit"]));
 }

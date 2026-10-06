@@ -225,8 +225,25 @@ fn native_graph_runtime_resources_test_artifacts_and_failures() {
         if tool == "gradle" {
             assert_eq!(config["modules"]["."], json!(["app"]));
         }
+        // Maven's consumer uses testkit's test-jar; Gradle's uses test fixtures, not `src/test`.
+        let shared = if tool == "maven" {
+            json!(["testkit"])
+        } else {
+            json!([])
+        };
+        assert_eq!(config["shared_tests"], shared, "{tool}: {config}");
         git(root.to_str().unwrap(), &["init", "-q"]);
         commit(root, "installed graph");
+        // Nothing uses the provider's tests: a test-only edit stays in its module.
+        let provider_test = "provider/src/test/java/example/ProviderTest.java";
+        let original = fs::read_to_string(root.join(provider_test)).unwrap();
+        write(root, provider_test, format!("{original}\n// test only\n"));
+        assert_eq!(
+            select(root.to_str().unwrap(), "HEAD")["modules"],
+            json!(["provider"]),
+            "{tool}"
+        );
+        write(root, provider_test, original);
         let native_args = if tool == "maven" {
             vec!["-B", "-ntp", "clean", "verify"]
         } else {

@@ -63,7 +63,8 @@ Three selection paths share one `Selection` type and one build runner:
 | Local mode | `run --records` | what each test executed and read last time | test classes | developer machines |
 
 **Module-level** follows the graph in `impact.json` and runs `verify -pl <selected> -am`
-(Maven) or `:<module>:check` (Gradle).
+(Maven) or `:<module>:check` (Gradle). A test-only change stays in its module unless
+another module uses its tests (`shared_tests`, found by `init`).
 
 **Class-level** compiles the selected modules, then walks reverse references through
 constant pools, supertypes, string-named classes, and Kotlin inline maps. Changed DI

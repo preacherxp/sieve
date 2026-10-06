@@ -78,22 +78,24 @@ Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
 Run `sieve refresh --workspace PATH` after build changes,
 using the same profiles/properties as CI (for Maven, for example, `-- -Pci`).
-Refresh preserves additional declared edges between surviving modules; review obsolete
-edges manually. A fingerprint of conventional workspace build inputs tells when the graph
-may be stale, including after the build edit was committed, such as a dependency bump
-merged without a refresh. A module selection then asks the build for its current graph,
-with the profiles, properties, settings, and init scripts passed after `--`. When every
-module and edge it reports is in `impact.json`, the selection stands and its reason asks
-for a refresh; anything new, or a graph that cannot be read, selects `ALL`. A configuration
-without a fingerprint selects `ALL` until refreshed. The fingerprint cannot detect changes
-to external models, environment variables, or undeclared runtime dependencies.
+Refresh preserves additional declared edges and shared test modules between surviving
+modules; review obsolete edges manually. A fingerprint of conventional workspace build
+inputs tells when the graph may be stale, including after the build edit was committed,
+such as a dependency bump merged without a refresh. A module selection then asks the build
+for its current graph, with the profiles, properties, settings, and init scripts passed after
+`--`. When every module, edge, and shared test module it reports is in `impact.json`, the
+selection stands and its reason asks for a refresh; anything new, or a graph that cannot be
+read, selects `ALL`. A configuration without a fingerprint selects `ALL` until refreshed.
+The fingerprint cannot detect changes to external models, environment variables, or
+undeclared runtime dependencies.
 Custom dependency substitution and dependencies introduced through external artifacts
 need manual graph review. Automatic setup collects declared inter-project edges, and also
 edges the build itself creates: for Maven, a sibling module used as a build plugin, a plugin
 dependency, an annotation processor path, or an unpacked artifact, and a sibling directory
 named in the effective build configuration (such as a shared OpenAPI specification); for
-Gradle, a source set directory inside another project. Maven reads the effective models of
-the whole reactor in one start.
+Gradle, a source set directory inside another project, and files of another project, such
+as `project(':a').sourceSets.test.output`. Maven reads the effective models of the whole
+reactor in one start.
 
 Prerequisites: Rust 1.92+ and a JDK 17+ `javac` to install/build the CLI, Git for change
 detection, and the JDK/build tool required by your project. `build.rs` compiles the
@@ -120,7 +122,8 @@ main sample's Spring 6 dependency requires Java 17.
     "pricing": [],
     "checkout": ["pricing"],
     "runtime": []
-  }
+  },
+  "shared_tests": []
 }
 ```
 
@@ -130,10 +133,20 @@ A single-module package uses `".": []`. The conventional source layout is
 1. Find the merge base between `--base` and HEAD.
 2. Collect committed, staged, unstaged, deleted, renamed, and untracked changed paths.
 3. Drop paths matching `ignore`, select changed source/resource modules, and follow
-   reverse dependency edges.
+   reverse dependency edges. A change under `<module>/src/test/` stays in its module
+   unless the module is listed in `shared_tests`: other modules see test code only through
+   a test artifact.
 4. Build only the selected modules and run their unit/integration tests through the
    native build tool: Maven `verify -pl <selected> -am` (dependencies build with their
    tests skipped), Gradle `:<module>:check` per selected module.
+
+`shared_tests` lists the modules whose `src/test` code other modules use: through a Maven
+`test-jar` (`<type>test-jar</type>` or `<classifier>tests</classifier>`), a Maven build use
+(plugin, processor, unpacked artifact, or directory), a Gradle dependency on a named
+configuration of another project, another project's files, or a source directory inside
+another project. Setup writes it; Gradle `testFixtures` live in `src/testFixtures` and reach
+their consumers like main code. Add a module by hand when its tests reach others in a way
+setup cannot see. A configuration without the key treats every module as shared.
 
 For the samples, pricing changes select pricing and checkout: **10 classes / 12 test
 invocations**. Checkout changes select **4 classes / 5 invocations**. Runtime changes
@@ -143,9 +156,10 @@ Changes matching the optional `ignore` globs in `impact.json` select NONE, inclu
 paths inside module source directories such as `src/site/**`. Patterns are relative to
 the workspace; a leading `/` anchors them at the repository root.
 `*` and `?` stay within one path segment and `**` crosses segments. Without `ignore`,
-the default is `["README.md", "docs/**", "/README.md", "/docs/**"]`; an explicit list
-replaces it. The default never hides module sources, such as those of a module named
-`docs`. The samples also ignore the repository's `VALIDATION.md`. Other changes
+the default is `["**/*.md", "**/*.adoc", "docs/**", "/*.md", "/*.adoc", "/docs/**"]`:
+Markdown and AsciiDoc files anywhere in the workspace, `docs/`, and the repository's
+top-level documentation. An explicit list replaces it. The default never hides module
+sources, such as a Markdown resource or the sources of a module named `docs`. Other changes
 outside recognized source directories, including build scripts, dependency versions,
 configuration, and shared repository inputs, select ALL. Do not ignore build scripts,
 `impact.json`, or other test inputs: ignored changes never trigger tests. An unavailable base or Git

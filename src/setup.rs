@@ -442,6 +442,7 @@ fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<C
         }
     }
     let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut shared = BTreeSet::new();
     for (module, (xml, values)) in &models {
         let mut dependencies = BTreeSet::new();
         for (start, end) in element_ranges(xml, &["project", "dependencies", "dependency"])? {
@@ -457,14 +458,21 @@ fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<C
             };
             if let Some(sibling) = coordinates.get(&format!("{group}:{artifact}")) {
                 dependencies.insert(sibling.clone());
+                // A test-jar carries the sibling's test classes to this module.
+                if value("type") == Some("test-jar") || value("classifier") == Some("tests") {
+                    shared.insert(sibling.clone());
+                }
             }
         }
-        dependencies.extend(build_uses(values, &coordinates, workspace, module));
+        // Plugins, processors, unpacked artifacts, and directories may carry test code too.
+        let uses = build_uses(values, &coordinates, workspace, module);
+        shared.extend(uses.iter().filter(|used| *used != module).cloned());
+        dependencies.extend(uses);
         dependencies.remove(module);
         graph.insert(module.clone(), dependencies.into_iter().collect());
     }
     Ok(serde_json::from_value(serde_json::json!({
-        "tool": "maven", "modules": graph,
+        "tool": "maven", "modules": graph, "shared_tests": shared,
     }))?)
 }
 
@@ -552,8 +560,8 @@ fn model_args(tool: &str, extra: &[String]) -> Vec<String> {
 }
 
 /// Why `config` no longer describes the build's module graph, or `None` when it still declares
-/// every module and dependency edge the build reports. Additional declared edges are kept on
-/// purpose, as `refresh` keeps them.
+/// every module, dependency edge, and shared test module the build reports. Additional declared
+/// edges are kept on purpose, as `refresh` keeps them.
 pub fn stale(
     config: &Config,
     workspace: &Path,
@@ -577,7 +585,14 @@ pub fn stale(
             return Ok(Some(format!("{module} now depends on {dependency}")));
         }
     }
-    Ok(None)
+    Ok(match (&config.shared_tests, &found.shared_tests) {
+        (Some(_), None) => Some("the build did not report shared test modules".into()),
+        (Some(declared), Some(found)) => found
+            .iter()
+            .find(|module| !declared.contains(module))
+            .map(|module| format!("other modules now use the tests of {module}")),
+        (None, _) => None,
+    })
 }
 
 pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
@@ -682,6 +697,12 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
             );
             dependencies.sort();
             dependencies.dedup();
+        }
+        // Shared test modules declared by hand survive, like additional edges.
+        if let (Some(shared), Some(declared)) = (&mut config.shared_tests, previous.shared_tests) {
+            shared.extend(declared.into_iter().filter(|m| known.contains(m)));
+            shared.sort();
+            shared.dedup();
         }
     }
     // Build discovery and every planned POM edit must succeed before changing project files.

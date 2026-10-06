@@ -28,6 +28,11 @@ struct Config {
     modules: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     build_fingerprint: Option<String>,
+    /// Modules whose `src/test` code other modules use, through a test-jar, a test output, or a
+    /// shared directory. A test-only change in any other module selects that module alone.
+    /// Absent means every module may share its tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shared_tests: Option<Vec<String>>,
     /// Globs for changes that select nothing. Relative to the workspace; a leading `/`
     /// anchors the pattern at the repository root. Absent means `DEFAULT_IGNORE`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,7 +63,15 @@ struct Config {
     with: Vec<String>,
 }
 
-const DEFAULT_IGNORE: &[&str] = &["README.md", "docs/**", "/README.md", "/docs/**"];
+/// Documentation outside module sources. Module sources stay test inputs whatever their name.
+const DEFAULT_IGNORE: &[&str] = &[
+    "**/*.md",
+    "**/*.adoc",
+    "docs/**",
+    "/*.md",
+    "/*.adoc",
+    "/docs/**",
+];
 
 const REPOSITORY: &str = "@repository/";
 
@@ -152,6 +165,14 @@ impl Config {
         {
             return Err(format!("Invalid generated pattern: {pattern:?}").into());
         }
+        if let Some(module) = self
+            .shared_tests
+            .iter()
+            .flatten()
+            .find(|m| !self.modules.contains_key(*m))
+        {
+            return Err(format!("Invalid shared_tests module: {module:?}").into());
+        }
         if let Some(name) = self.record_env.iter().find(|name| {
             name.is_empty()
                 || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
@@ -206,6 +227,16 @@ impl Config {
             .any(|pattern| glob(pattern.as_bytes(), path.as_bytes()))
     }
 
+    /// The module whose sources (`<module>/src/**`) hold a workspace path.
+    fn module_of<'p>(&self, path: &'p str) -> Option<&'p str> {
+        if self.modules.contains_key(".") && path.starts_with("src/") {
+            return Some(".");
+        }
+        path.split_once('/')
+            .filter(|(module, rest)| self.modules.contains_key(*module) && rest.starts_with("src/"))
+            .map(|(module, _)| module)
+    }
+
     /// `prefix` is the workspace path below the repository root, used by `/` patterns.
     fn ignored(&self, path: &str, prefix: &str) -> bool {
         let repository = match path.strip_prefix(REPOSITORY) {
@@ -220,8 +251,16 @@ impl Config {
         };
         match &self.ignore {
             Some(patterns) => patterns.iter().any(|p| matches(p)),
-            None => DEFAULT_IGNORE.iter().any(|p| matches(p)),
+            // The default patterns never hide module sources, such as a `docs` module's.
+            None => self.module_of(path).is_none() && DEFAULT_IGNORE.iter().any(|p| matches(p)),
         }
+    }
+
+    /// Whether other modules may use the module's `src/test` code.
+    fn shares_tests(&self, module: &str) -> bool {
+        self.shared_tests
+            .as_ref()
+            .is_none_or(|shared| shared.iter().any(|m| m == module))
     }
 
     fn all(&self, reason: impl Into<String>) -> Selection {
@@ -242,24 +281,21 @@ impl Config {
 
     fn select(&self, changed: BTreeSet<String>, prefix: &str) -> Selection {
         let mut selected = BTreeSet::new();
+        // Changed modules whose change can reach the modules depending on them.
+        let mut reaching = BTreeSet::new();
         let mut sources = BTreeSet::new();
         for path in &changed {
-            let module = if self.modules.contains_key(".") && path.starts_with("src/") {
-                Some(".")
-            } else {
-                path.split_once('/')
-                    .filter(|(module, rest)| {
-                        self.modules.contains_key(*module) && rest.starts_with("src/")
-                    })
-                    .map(|(module, _)| module)
-            };
-            // The default patterns never hide module sources, such as a `docs` module's.
-            if self.ignored(path, prefix) && (self.ignore.is_some() || module.is_none()) {
+            if self.ignored(path, prefix) {
                 continue;
             }
-            if let Some(module) = module {
+            if let Some(module) = self.module_of(path) {
                 selected.insert(module.to_owned());
                 sources.insert(path.clone());
+                // Other modules see test code only through a shared test artifact.
+                let inside = path.strip_prefix(&format!("{module}/")).unwrap_or(path);
+                if !inside.starts_with("src/test/") || self.shares_tests(module) {
+                    reaching.insert(module.to_owned());
+                }
                 continue;
             }
             // Build/configuration changes may alter the module graph or test discovery.
@@ -268,19 +304,20 @@ impl Config {
             return result;
         }
         loop {
-            let before = selected.len();
+            let before = reaching.len();
             for (module, dependencies) in &self.modules {
                 if dependencies
                     .iter()
-                    .any(|dependency| selected.contains(dependency))
+                    .any(|dependency| reaching.contains(dependency))
                 {
-                    selected.insert(module.clone());
+                    reaching.insert(module.clone());
                 }
             }
-            if selected.len() == before {
+            if reaching.len() == before {
                 break;
             }
         }
+        selected.extend(reaching);
         let reason = if changed.is_empty() {
             "No changes"
         } else if selected.is_empty() {
@@ -926,6 +963,77 @@ mod tests {
     }
 
     #[test]
+    fn test_only_changes_reach_dependents_through_shared_tests_only() {
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"core": [], "app": ["core"], "web": ["app"]},
+            "shared_tests": []
+        }))
+        .unwrap();
+        let select = |config: &Config, paths: &[&str]| {
+            let changed = paths.iter().map(|p| p.to_string()).collect();
+            let modules = config.select(changed, "").modules;
+            modules.into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(
+            select(&config, &["core/src/test/java/a/CoreTest.java"]),
+            ["core"]
+        );
+        assert_eq!(
+            select(&config, &["core/src/test/resources/in.json"]),
+            ["core"]
+        );
+        // Main code and test fixtures reach the modules that depend on them.
+        let everything = ["app", "core", "web"];
+        assert_eq!(
+            select(&config, &["core/src/main/java/a/Core.java"]),
+            everything
+        );
+        assert_eq!(
+            select(&config, &["core/src/testFixtures/java/a/F.java"]),
+            everything
+        );
+        // A module that a change reaches still passes it on, whatever else changed in it.
+        assert_eq!(
+            select(
+                &config,
+                &["core/src/main/java/a/Core.java", "app/src/test/java/T.java"]
+            ),
+            everything
+        );
+        config.shared_tests = Some(vec!["core".into()]);
+        assert_eq!(
+            select(&config, &["core/src/test/java/a/CoreTest.java"]),
+            everything
+        );
+        // Without the list, as in configurations written before it existed, nothing narrows.
+        config.shared_tests = None;
+        assert_eq!(
+            select(&config, &["core/src/test/java/a/CoreTest.java"]),
+            everything
+        );
+        let root: Config = serde_json::from_value(serde_json::json!({
+            "tool": "gradle", "modules": {".": ["core"], "core": []}, "shared_tests": []
+        }))
+        .unwrap();
+        assert_eq!(select(&root, &["src/test/java/RootTest.java"]), ["."]);
+        assert_eq!(
+            select(&root, &["core/src/test/java/CoreTest.java"]),
+            ["core"]
+        );
+        assert_eq!(
+            select(&root, &["core/src/main/java/Core.java"]),
+            [".", "core"]
+        );
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("core")).unwrap();
+        let unknown: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"core": []}, "shared_tests": ["gone"]
+        }))
+        .unwrap();
+        assert!(unknown.validate(temp.path()).is_err());
+    }
+
+    #[test]
     fn glob_segments() {
         for (pattern, path, expected) in [
             ("README.md", "README.md", true),
@@ -985,11 +1093,22 @@ mod tests {
         let mode = |config: &Config, path: &str, prefix: &str| {
             config.select(BTreeSet::from([path.into()]), prefix).mode
         };
-        // Defaults cover workspace and repository READMEs and docs, nothing else.
+        // Defaults cover documentation outside module sources, and the repository's top-level
+        // and `docs/` documentation, nothing else.
         assert_eq!(mode(&config, "README.md", "app"), "NONE");
         assert_eq!(mode(&config, "@repository/docs/x.md", "app"), "NONE");
-        assert_eq!(mode(&config, "VALIDATION.md", ""), "ALL");
-        assert_eq!(mode(&config, "core/README.md", ""), "ALL");
+        assert_eq!(mode(&config, "@repository/CHANGELOG.md", "app"), "NONE");
+        assert_eq!(mode(&config, "VALIDATION.md", ""), "NONE");
+        assert_eq!(mode(&config, "core/README.md", ""), "NONE");
+        assert_eq!(mode(&config, "core/docs/guide.adoc", ""), "NONE");
+        assert_eq!(
+            mode(&config, "core/src/main/resources/help.md", ""),
+            "MODULES"
+        );
+        assert_eq!(mode(&config, "@repository/other/README.md", "app"), "ALL");
+        assert_eq!(mode(&config, "core/notes.txt", ""), "ALL");
+        // Local mode hashes the same paths: module sources stay inputs.
+        assert!(!config.ignored("core/src/test/resources/expected.md", ""));
         config.ignore = Some(vec!["**/*.md".into(), "/other/**".into()]);
         assert_eq!(mode(&config, "core/README.md", ""), "NONE");
         assert_eq!(mode(&config, "@repository/other/src/A.java", "app"), "NONE");
@@ -1088,6 +1207,7 @@ mod tests {
             build_args(&config, &root, None)[3..5],
             [":check", ":pricing:check"]
         );
+        // A cycle terminates with both of its modules.
         config
             .modules
             .get_mut("pricing")
@@ -1096,7 +1216,7 @@ mod tests {
         assert_eq!(
             config
                 .select(
-                    BTreeSet::from(["checkout/src/test/java/NewTest.java".into()]),
+                    BTreeSet::from(["checkout/src/main/java/New.java".into()]),
                     ""
                 )
                 .modules
