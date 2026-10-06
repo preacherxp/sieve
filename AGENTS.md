@@ -8,7 +8,8 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 - Sieve is a Rust CLI named `sieve`. It currently supports Java and
   Kotlin/JVM projects using Maven or Gradle, with conservative module selection.
   Projects can opt into bytecode-based class-level selection
-  (`"class_level": true`); it compiles the selected modules before running tests.
+  (`"class_level": true`); it selects test classes inside the build once the selected
+  modules compile, on Maven through an embedded core extension (`-Dmaven.ext.class.path`).
 - Local mode (`"records": true`, single-module Maven or Gradle, Java 17+ test JVM) is for developer
   machines, not CI: it keeps per-test records in `.sieve/` and loads an embedded agent
   through `JDK_JAVA_OPTIONS` (Maven) or Sieve's init script (Gradle). Do not enable it in

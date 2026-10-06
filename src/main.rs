@@ -612,8 +612,8 @@ fn class_dirs(config: &Config, workspace: &Path, listing: &Path) -> Result<Vec<(
         .collect())
 }
 
-/// What a Gradle build needs to select test classes once the selected modules compiled: `run`
-/// writes it, and the init script's `impactSelect` task hands it to `sieve classes`.
+/// What a build needs to select test classes once the selected modules compiled: `run` writes
+/// it, and Gradle's `impactSelect` task or the Maven extension hands it to `sieve classes`.
 #[derive(Deserialize, Serialize)]
 struct ClassRequest {
     workspace: PathBuf,
@@ -621,13 +621,22 @@ struct ClassRequest {
     sources: BTreeSet<String>,
     changed: BTreeSet<String>,
     reason: String,
-    /// The class directories, as `impactClasses` lists them.
-    listing: PathBuf,
-    /// For the `Test` tasks: `all`, or `filter` and the test classes to run, one per line.
-    selected: PathBuf,
-    /// For `run`: the refined selection and the unselected test classes.
-    result: PathBuf,
+    /// Scratch files. Gradle: the `classes.json` listing, `selected.txt` for the `Test` tasks
+    /// (`all`, or `filter` and the test classes to run), and `refined.json` for `run`. Maven:
+    /// each module's excludes file and part of the refined selection, below `modules/`.
+    dir: PathBuf,
     output: Option<PathBuf>,
+}
+
+impl ClassRequest {
+    fn selection(&self, config: &Config) -> Selection {
+        let mut selection = config.all(self.reason.clone());
+        selection.mode = "MODULES";
+        selection.modules = self.modules.clone();
+        selection.sources = self.sources.clone();
+        selection.changed = self.changed.clone();
+        selection
+    }
 }
 
 /// The refined selection that `sieve classes` reports back to `run`.
@@ -642,23 +651,70 @@ struct Refined {
     unselected: BTreeSet<String>,
 }
 
-/// `sieve classes --request FILE`: class-level selection inside a Gradle build, after the
-/// selected modules compiled and before their tests run. Analysis problems keep every test.
-fn classes_command(args: Vec<String>) -> Result<u8> {
-    let [flag, file] = args.as_slice() else {
-        return Err("Usage: sieve classes --request FILE".into());
-    };
-    if flag != "--request" {
-        return Err("Usage: sieve classes --request FILE".into());
+impl Refined {
+    fn of(selection: Selection, unselected: BTreeSet<String>) -> Self {
+        Refined {
+            mode: selection.mode.into(),
+            tests: selection.tests,
+            reasons: selection.reasons,
+            reason: selection.reason,
+            unselected,
+        }
     }
+}
+
+/// Folds what the build selected into `selection`: one part from Gradle, one per Maven module
+/// whose tests ran. A module that fell back ran every test, and the run says so.
+fn merge_refined(
+    parts: Vec<Refined>,
+    selection: &mut Selection,
+    unselected: &mut BTreeSet<String>,
+) {
+    if parts.is_empty() {
+        return;
+    }
+    for part in &parts {
+        selection.tests.extend(part.tests.iter().cloned());
+        selection.reasons.extend(part.reasons.clone());
+        unselected.extend(part.unselected.iter().cloned());
+    }
+    selection.mode = if parts.iter().any(|p| p.mode == "MODULES") {
+        "MODULES"
+    } else if selection.tests.is_empty() {
+        "NONE"
+    } else {
+        "SUBSET"
+    };
+    if let Some(part) = parts.iter().find(|p| p.mode == selection.mode) {
+        selection.reason = part.reason.clone();
+    }
+}
+
+/// `sieve classes --request FILE [--module DIR]`: class-level selection inside the build, after
+/// the selected modules compiled and before their tests run. Gradle asks once for every module.
+/// The Maven extension asks for each module right before its tests, and reads the path of the
+/// module's excludes file from standard output, which stays empty when every test runs.
+/// Analysis problems keep every test.
+fn classes_command(args: Vec<String>) -> Result<u8> {
+    let (file, module) = match args.as_slice() {
+        [flag, file] if flag == "--request" => (file, None),
+        [flag, file, option, dir] if flag == "--request" && option == "--module" => {
+            (file, Some(dir))
+        }
+        _ => return Err("Usage: sieve classes --request FILE [--module DIR]".into()),
+    };
     let request: ClassRequest = serde_json::from_slice(&fs::read(file)?)?;
     let config = Config::read(&request.workspace)?;
-    let mut selection = config.all(request.reason.clone());
-    selection.mode = "MODULES";
-    selection.modules = request.modules.clone();
-    selection.sources = request.sources.clone();
-    selection.changed = request.changed.clone();
-    let unselected = class_dirs(&config, &request.workspace, &request.listing)
+    match module {
+        Some(dir) => maven_classes(&config, &request, Path::new(dir)),
+        None => gradle_classes(&config, &request),
+    }
+}
+
+fn gradle_classes(config: &Config, request: &ClassRequest) -> Result<u8> {
+    let mut selection = request.selection(config);
+    let listing = request.dir.join("classes.json");
+    let unselected = class_dirs(config, &request.workspace, &listing)
         .and_then(|dirs| classes::load(&dirs))
         .and_then(|classes| selection.refine(&classes, &request.workspace, false))
         .unwrap_or_else(|error| {
@@ -673,21 +729,94 @@ fn classes_command(args: Vec<String>) -> Result<u8> {
             .iter()
             .fold("filter\n".to_owned(), |text, test| text + test + "\n")
     };
-    fs::write(&request.selected, filter)?;
+    fs::write(request.dir.join("selected.txt"), filter)?;
     // The decision is written before any test runs, so CI can publish it.
     let json = serde_json::to_string_pretty(&selection)? + "\n";
     if let Some(output) = &request.output {
         fs::write(output, &json)?;
     }
     eprintln!("{json}");
-    let refined = Refined {
-        mode: selection.mode.into(),
-        tests: selection.tests,
-        reasons: selection.reasons,
-        reason: selection.reason,
-        unselected,
+    let refined = serde_json::to_vec(&Refined::of(selection, unselected))?;
+    fs::write(request.dir.join("refined.json"), refined)?;
+    Ok(0)
+}
+
+/// One Maven module's selection, right before its tests run. The module and the modules it
+/// depends on compiled already, and a change anywhere else cannot reach its tests.
+fn maven_classes(config: &Config, request: &ClassRequest, dir: &Path) -> Result<u8> {
+    let Ok(relative) = dir
+        .canonicalize()?
+        .strip_prefix(&request.workspace)
+        .map(Path::to_owned)
+    else {
+        return Ok(0);
     };
-    fs::write(&request.result, serde_json::to_vec(&refined)?)?;
+    let module = match relative.to_str() {
+        Some("") => ".".to_owned(),
+        Some(path) => path.replace('\\', "/"),
+        None => return Ok(0),
+    };
+    // Modules outside the selection skip their tests anyway.
+    if !request.modules.contains(&module) {
+        return Ok(0);
+    }
+    let mut visible = BTreeSet::from([module.clone()]);
+    loop {
+        let before = visible.len();
+        for known in visible.clone() {
+            visible.extend(config.modules.get(&known).into_iter().flatten().cloned());
+        }
+        if visible.len() == before {
+            break;
+        }
+    }
+    let mut selection = request.selection(config);
+    selection.modules = BTreeSet::from([module.clone()]);
+    selection
+        .sources
+        .retain(|path| config.module_of(path).is_some_and(|m| visible.contains(m)));
+    let dirs: Vec<(PathBuf, bool)> = visible
+        .iter()
+        .flat_map(|m| {
+            let target = request.workspace.join(m).join("target");
+            [
+                (target.join("classes"), false),
+                (target.join("test-classes"), true),
+            ]
+        })
+        .collect();
+    let unselected = classes::load(&dirs)
+        .and_then(|classes| selection.refine(&classes, &request.workspace, true))
+        .unwrap_or_else(|error| {
+            selection.reason = format!("Class-level selection unavailable: {error}");
+            BTreeSet::new()
+        });
+    // The excludes name this module's test classes, whatever its dependencies hold.
+    let tests = request.workspace.join(&module).join("target/test-classes");
+    let unselected: BTreeSet<String> = unselected
+        .into_iter()
+        .filter(|name| {
+            tests
+                .join(format!("{}.class", name.replace('.', "/")))
+                .is_file()
+        })
+        .collect();
+    let every = selection.mode == "MODULES";
+    let parts = request.dir.join("modules");
+    fs::create_dir_all(&parts)?;
+    let name = setup::skip_property(&module).replace("impact.skip.", "");
+    let refined = serde_json::to_vec(&Refined::of(selection, unselected.clone()))?;
+    fs::write(parts.join(format!("{name}.json")), refined)?;
+    if !every {
+        // Surefire drops its default nested-class exclude once an excludes file is given.
+        let mut excludes = String::from("**/*$*\n");
+        for name in &unselected {
+            excludes += &format!("{}.*\n", name.replace('.', "/"));
+        }
+        let path = parts.join(format!("{name}.excludes"));
+        fs::write(&path, excludes)?;
+        println!("{}", path.display());
+    }
     Ok(0)
 }
 
@@ -901,42 +1030,57 @@ fn main_result() -> Result<u8> {
     let mut filter = None;
     let mut unselected = BTreeSet::new();
     let class_level = config.class_level && selection.mode == "MODULES";
-    // Gradle selects test classes inside its one build, between compiling and testing.
+    // The comparison base generates the sources of changed generated inputs in a worktree.
+    let inputs: BTreeSet<String> = selection
+        .sources
+        .iter()
+        .filter(|path| config.generated_input(path))
+        .cloned()
+        .collect();
+    // Test classes are selected inside the one build that runs them, between compiling and
+    // testing: by Gradle's `impactSelect`, or by Sieve's Maven extension. A Maven build that
+    // compares generated sources, or loads extensions of its own the same way, compiles first.
+    let own_extensions = extra.iter().any(|a| a.contains("maven.ext.class.path"))
+        || fs::read_to_string(workspace.join(".mvn/maven.config"))
+            .is_ok_and(|c| c.contains("maven.ext.class.path"));
+    let extension = match config.tool.as_str() {
+        "maven" if class_level && inputs.is_empty() && !own_extensions => {
+            records::maven_extension().ok()
+        }
+        _ => None,
+    };
     let mut request = None;
     let mut selecting = Vec::new();
-    if class_level && config.tool == "gradle" {
-        let path = temp.path().join("request.json");
+    if class_level && (config.tool == "gradle" || extension.is_some()) {
+        let dir = temp.path().to_path_buf();
+        let path = dir.join("request.json");
         let asked = ClassRequest {
             workspace: workspace.clone(),
             modules: selection.modules.clone(),
             sources: selection.sources.clone(),
             changed: selection.changed.clone(),
             reason: selection.reason.clone(),
-            listing: temp.path().join("classes.json"),
-            selected: temp.path().join("selected.txt"),
-            result: temp.path().join("refined.json"),
+            dir: dir.clone(),
             output: output.clone(),
         };
         fs::write(&path, serde_json::to_vec(&asked)?)?;
-        selecting = vec![
-            format!("-Pimpact.classes={}", asked.listing.display()),
-            format!("-Pimpact.selected={}", asked.selected.display()),
-            format!("-Pimpact.request={}", path.display()),
-            format!(
-                "-Pimpact.sieve={}",
-                env::current_exe()?.canonicalize()?.display()
-            ),
-        ];
+        let exe = env::current_exe()?.canonicalize()?;
+        selecting = match &extension {
+            Some(jar) => vec![
+                format!("-Dmaven.ext.class.path={}", jar.display()),
+                format!("-Dsieve.request={}", path.display()),
+                format!("-Dsieve.exe={}", exe.display()),
+            ],
+            None => vec![
+                format!("-Pimpact.classes={}", dir.join("classes.json").display()),
+                format!("-Pimpact.selected={}", dir.join("selected.txt").display()),
+                format!("-Pimpact.request={}", path.display()),
+                format!("-Pimpact.sieve={}", exe.display()),
+            ],
+        };
         request = Some(asked);
     } else if class_level {
         eprintln!("{json}Compiling for class-level selection");
-        // The comparison base generates its sources while the workspace compiles.
-        let inputs: BTreeSet<String> = selection
-            .sources
-            .iter()
-            .filter(|path| config.generated_input(path))
-            .cloned()
-            .collect();
         let base = match &comparison {
             Some((prefix, merge_base)) if !inputs.is_empty() && config.tool == "maven" => {
                 Some(generated::Base::start(
@@ -997,20 +1141,24 @@ fn main_result() -> Result<u8> {
         .args(script_args)
         .args(extra)
         .status()?;
-    // A Gradle build that got as far as selecting reports the refined selection.
-    let refined = request
-        .and_then(|request| fs::read(request.result).ok())
-        .and_then(|bytes| serde_json::from_slice::<Refined>(&bytes).ok());
-    if let Some(refined) = refined {
-        selection.mode = match refined.mode.as_str() {
-            "SUBSET" => "SUBSET",
-            "NONE" => "NONE",
-            _ => "MODULES",
+    // A build that got as far as selecting reports what it selected.
+    if let Some(request) = request {
+        let files: Vec<PathBuf> = if config.tool == "gradle" {
+            vec![request.dir.join("refined.json")]
+        } else {
+            fs::read_dir(request.dir.join("modules"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|e| e == "json"))
+                .collect()
         };
-        selection.tests = refined.tests;
-        selection.reasons = refined.reasons;
-        selection.reason = refined.reason;
-        unselected = refined.unselected;
+        let parts = files
+            .iter()
+            .filter_map(|file| serde_json::from_slice::<Refined>(&fs::read(file).ok()?).ok())
+            .collect();
+        merge_refined(parts, &mut selection, &mut unselected);
     }
     let modules: BTreeSet<String> = config.modules.keys().cloned().collect();
     // The summary is informational: a problem with it never fails the run. Durations persist
@@ -1199,6 +1347,59 @@ mod tests {
         for bad in ["a//b", "../x", "a/./b", "/abs", "a/", "a/../b"] {
             assert!(!valid_module(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn refined_parts_merge_into_one_selection() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"a": [], "b": ["a"]}
+        }))
+        .unwrap();
+        let names = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<BTreeSet<_>>();
+        let part = |mode: &str, tests: &[&str], unselected: &[&str]| Refined {
+            mode: mode.into(),
+            tests: names(tests),
+            reasons: tests
+                .iter()
+                .map(|t| (t.to_string(), "reaches".into()))
+                .collect(),
+            reason: format!("{mode} reason"),
+            unselected: names(unselected),
+        };
+        let merged = |parts: Vec<Refined>| {
+            let mut selection = config.all("module selection");
+            selection.mode = "MODULES";
+            let mut unselected = BTreeSet::new();
+            merge_refined(parts, &mut selection, &mut unselected);
+            (selection, unselected)
+        };
+        let (selection, unselected) = merged(vec![
+            part("SUBSET", &["a.T"], &["a.U"]),
+            part("NONE", &[], &["b.V"]),
+        ]);
+        assert_eq!(
+            (selection.mode, selection.reason.as_str()),
+            ("SUBSET", "SUBSET reason")
+        );
+        assert_eq!(selection.tests, names(&["a.T"]));
+        assert_eq!(unselected, names(&["a.U", "b.V"]));
+        let (selection, _) = merged(vec![part("NONE", &[], &[]), part("NONE", &[], &["b.V"])]);
+        assert_eq!(selection.mode, "NONE");
+        // A module that fell back ran every test.
+        let (selection, _) = merged(vec![
+            part("SUBSET", &["a.T"], &[]),
+            part("MODULES", &[], &[]),
+        ]);
+        assert_eq!(
+            (selection.mode, selection.reason.as_str()),
+            ("MODULES", "MODULES reason")
+        );
+        // A build that reported nothing keeps the module selection.
+        let (selection, _) = merged(Vec::new());
+        assert_eq!(
+            (selection.mode, selection.reason.as_str()),
+            ("MODULES", "module selection")
+        );
     }
 
     #[test]

@@ -66,10 +66,11 @@ Three selection paths share one `Selection` type and one build runner:
 (Maven) or `:<module>:check` (Gradle). A test-only change stays in its module unless
 another module uses its tests (`shared_tests`, found by `init`).
 
-**Class-level** compiles the selected modules, then walks reverse references through
-constant pools, supertypes, string-named classes, and Kotlin inline maps. Changed DI
-components select every context test; Spring Boot slices narrow that. Anything it cannot
-map (deleted sources, resources, unreadable classes) falls back to the module selection.
+**Class-level** reads the selected modules' class files inside the build, once they compile,
+and walks reverse references through constant pools, supertypes, string-named classes, and
+Kotlin inline maps. Changed DI components select every context test; Spring Boot slices
+narrow that. Anything it cannot map (deleted sources, resources, unreadable classes) falls
+back to the module selection.
 
 **Local mode** loads a Java agent into the test JVM. It records every project method and
 workspace file each test class touched, and on the next run drops classes whose records
@@ -123,10 +124,10 @@ xychart-beta
     bar [13, 73]
 ```
 
-On Maven, class-level selection costs a second build-tool start, so cheap suites get
-slower: a single-module sample with a 6 s setup went from 7.4 s to 2.3 s, while the same
-sample with no setup went from 1.4 s to 2.2 s. Leave `class_level` off for cheap Maven
-suites. Gradle selects inside one build, between compiling and testing.
+Class-level selection picks test classes inside the build that runs them, between
+compiling and testing: Gradle through the init script, Maven through a Sieve core extension.
+On a single-module Maven sample, a change that one of two tests reaches took 1.5 s, against
+7.5 s natively when the other test has a 6 s setup and 1.4 s when it has none.
 
 Full data, machines, and caveats: [docs/performance.md](docs/performance.md).
 
@@ -190,12 +191,12 @@ flowchart TB
 | Path | Contents |
 |---|---|
 | `src/` | CLI modules above and the Gradle init script |
-| `agent/` | Java agent, bootstrap probe, API stubs, vendored ASM |
+| `agent/` | Java agent, bootstrap probe, API stubs, vendored ASM, Maven extension (`agent/maven`) |
 | `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `replay`, `workflows` |
 | `projects/` | Fixtures: `maven`/`gradle` parity pair, `single-*`, `records`, `version-bump`, `containers` |
 | `samples/` | `bookstore`, `webshop` (5 Spring WebFlux services), `selective-performance`, Kotlin: `kotlin-invoices` (Gradle), `kotlin-shipping` (Maven) |
 | `scenarios.json` | Independent oracle for fixture mutations; the selector never reads it |
-| `docs/adr/` | Decisions: runtime evidence, in-JVM selection, Gradle local mode, construction is not use, CI records |
+| `docs/adr/` | Decisions: runtime evidence, in-JVM selection, Gradle local mode, construction is not use, CI records, Maven class selection in the build |
 
 Invariants: unknown change widens to `ALL`; build and test failures propagate; selection
 JSON is written before tests run; fixture expectations stay independent of selector code.

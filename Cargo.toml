@@ -9,7 +9,8 @@ repository = "https://github.com/preacherxp/sieve"
 
 [features]
 default = ["agent"]
-# Embeds the test-JVM agent that records and selects tests; needs a JDK 17+ javac to build.
+# Embeds the test-JVM agent that records and selects tests, and the Maven extension that
+# selects test classes inside the build; needs a JDK 17+ javac to build.
 agent = []
 
 [dependencies]

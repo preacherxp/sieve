@@ -636,7 +636,7 @@
                 <g><rect class="fb" x="20" y="372" width="885" height="38" rx="12"/><text class="t fb-t" x="36" y="396">Fallback · keep MODULES</text><text class="s" x="228" y="396">deleted source · package-info / module-info · non-JVM file under src/ · unreadable class · resource-named class</text></g>
               </svg>
             </div>
-            <figcaption>The graph spans unselected modules, because a path from a test to a change may pass through a dependency. Maven's second build skips <code>clean</code> and reuses the compiled main classes; Gradle selects inside one build, in <code>impactSelect</code> between compiling and testing.</figcaption>
+            <figcaption>Selection runs inside the build that runs the tests, between compiling and testing: Gradle's <code>impactSelect</code> once, Sieve's Maven extension before each module's tests, from that module's classes and its dependencies'. A path from a test to a change may pass through any module the test can reach.</figcaption>
           </figure>
 
           <ol class="rules">
@@ -667,7 +667,8 @@
               <p><code>sieve init</code> reads effective models, writes the graph and fingerprint, and adds per-module
                 <code>impact.skip.&lt;module&gt;</code> properties wired to Surefire/Failsafe <code>skipTests</code>.
                 <code>-am</code> dependencies compile, test JARs still work, their tests stay skipped.</p>
-              <dl><dt>Edges</dt><dd>declared deps, sibling build plugins, plugin deps, processor paths, unpacked artifacts, sibling dirs in config</dd></dl></article>
+              <dl><dt>Edges</dt><dd>declared deps, sibling build plugins, plugin deps, processor paths, unpacked artifacts, sibling dirs in config</dd>
+                <dt>classes</dt><dd>a core extension (<code>-Dmaven.ext.class.path</code>) points Surefire and Failsafe at each module's excludes</dd></dl></article>
             <article class="card"><h3>Gradle <small>gradle.init.gradle</small></h3>
               <p>A bundled init script passed with <code>--init-script</code>. No build-file edits, Groovy and Kotlin DSL,
                 configuration-cache safe, Gradle 7.6.3+.</p>

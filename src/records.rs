@@ -2038,6 +2038,10 @@ const JARS: &[(&str, &[u8])] = &[
         "sieve-probe.jar",
         include_bytes!(concat!(env!("OUT_DIR"), "/sieve-probe.jar")),
     ),
+    (
+        "sieve-maven.jar",
+        include_bytes!(concat!(env!("OUT_DIR"), "/sieve-maven.jar")),
+    ),
 ];
 
 #[cfg(not(feature = "agent"))]
@@ -2064,6 +2068,11 @@ pub fn agent_jar() -> Result<PathBuf> {
         }
     }
     Ok(dir.join(JARS[0].0))
+}
+
+/// The Maven extension that selects test classes inside the build, extracted with the agent.
+pub fn maven_extension() -> Result<PathBuf> {
+    Ok(agent_jar()?.with_file_name("sieve-maven.jar"))
 }
 
 /// Writes the agent options and returns the `-javaagent` option that loads the agent. It

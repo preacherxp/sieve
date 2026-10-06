@@ -47,16 +47,18 @@ sieve run --base REV
   ├─ [fingerprint mismatch && MODULES]
   │    └─ setup::stale       rediscover the graph; impact.json still covers it → keep MODULES
   │                          (reason asks for refresh), else ALL ("run sieve refresh")
-  ├─ [class_level && MODULES]
-  │    ├─ compile_args       Maven: clean test-compile -pl … -am
-  │    │                     Gradle: no step; impactSelect runs `sieve classes` inside the
-  │    │                     build, after compiling and before the Test tasks
-  │    ├─ generated::Base    (optional) merge-base worktree runs generate-test-sources,
-  │    │                     diffed generated sources replace the declared inputs
-  │    ├─ classes::load      parse every module's class files (incl. unselected modules)
+  ├─ [class_level && MODULES]   inside the build, between compiling and testing:
+  │    ├─ sieve classes      Gradle: impactSelect, once for the selected modules
+  │    │                     Maven: the extension, before each module's Surefire/Failsafe,
+  │    │                     from the module's classes and its dependencies'
+  │    ├─ classes::load      parse the class files of the modules it considers
   │    └─ Selection::refine  classes::affected → SUBSET / NONE, or keep MODULES on fallback
+  │    Maven with a changed `generated` input compiles first instead:
+  │    ├─ compile_args       clean test-compile -pl … -am
+  │    └─ generated::Base    merge-base worktree runs generate-test-sources,
+  │                          diffed generated sources replace the declared inputs
   └─ build_args              Maven: clean verify -pl … -am -Dimpact.skip.<m>=…
-                                    [+ surefire/failsafe excludesFile]
+                                    [+ -Dmaven.ext.class.path=sieve-maven.jar, or excludesFile]
                              Gradle: clean :m:check -Pimpact.modules=… [-Pimpact.selected=…]
 ```
 
@@ -87,7 +89,8 @@ unreadable classes) return `Impact::Fallback`, which keeps the module selection.
   start and adds per-module `impact.skip.<module>` properties wired to Surefire/Failsafe
   `skipTests`, so `-am` dependencies compile without running their tests. `refresh`
   rewrites the graph and fingerprint and preserves extra declared edges and shared test
-  modules.
+  modules. For class-level runs, the core extension in `agent/maven` (ADR 0006) points each
+  module's Surefire and Failsafe at the excludes that `sieve classes --module` writes.
 - **Gradle** (`src/gradle.init.gradle`): an init script passed with `--init-script`.
   Its `impactInit` task reports the project graph for `init`; it disables `Test` tasks outside
   `impact.modules`. For class-level runs it adds `impactCompile`, `impactClasses`, and
@@ -181,7 +184,7 @@ catch it.
 | Path | Contents |
 |---|---|
 | `src/` | CLI (see table below), Gradle init script |
-| `agent/` | Java agent sources, bootstrap probe, compile-only API stubs, service registrations |
+| `agent/` | Java agent sources, bootstrap probe, compile-only API stubs, service registrations; the Maven extension in `agent/maven` |
 | `build.rs` | Compiles and embeds the agent |
 | `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `replay`, `workflows` |
 | `projects/` | Fixtures: `maven`/`gradle` (3-module parity pair), `single-*`, `records`, `records-reuse`, `containers` |
