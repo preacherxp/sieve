@@ -531,7 +531,7 @@
                 <g><path class="e" d="M300 735 V768" marker-end="url(#ah)"/><text class="lab" x="308" y="756">yes</text></g>
                 <g><rect class="dec" x="180" y="770" width="240" height="40" rx="20"/><text class="t" x="300" y="795" text-anchor="middle">Test classes reach change?</text></g>
                 <g><path class="e ok" d="M300 810 V848" marker-end="url(#ah-ok)"/><text class="lab ok" x="308" y="832">yes</text></g>
-                <g class="term T-sub"><rect x="180" y="850" width="240" height="52" rx="12"/><text class="tt" x="300" y="872" text-anchor="middle">SUBSET</text><text class="ts" x="300" y="890" text-anchor="middle">+ excludesFile / impact.testsFile</text></g>
+                <g class="term T-sub"><rect x="180" y="850" width="240" height="52" rx="12"/><text class="tt" x="300" y="872" text-anchor="middle">SUBSET</text><text class="ts" x="300" y="890" text-anchor="middle">+ excludesFile / impactSelect</text></g>
 
                 <g><path class="e all" d="M420 115 H660"/><text class="lab all" x="436" y="109">no</text></g>
                 <g><path class="e all" d="M420 190 H660"/><text class="lab all" x="436" y="184">no</text></g>
@@ -636,7 +636,7 @@
                 <g><rect class="fb" x="20" y="372" width="885" height="38" rx="12"/><text class="t fb-t" x="36" y="396">Fallback · keep MODULES</text><text class="s" x="228" y="396">deleted source · package-info / module-info · non-JVM file under src/ · unreadable class · resource-named class</text></g>
               </svg>
             </div>
-            <figcaption>The graph spans unselected modules, because a path from a test to a change may pass through a dependency. The second build skips <code>clean</code> and reuses the compiled main classes.</figcaption>
+            <figcaption>The graph spans unselected modules, because a path from a test to a change may pass through a dependency. Maven's second build skips <code>clean</code> and reuses the compiled main classes; Gradle selects inside one build, in <code>impactSelect</code> between compiling and testing.</figcaption>
           </figure>
 
           <ol class="rules">
@@ -652,8 +652,8 @@
           <h3>Why a test was selected <small>reasons</small></h3>
           <div class="chain"><b>a.ServiceTest</b> → a.Service → a.Api, implemented by <i>a.Impl (changed)</i></div>
           <p><code>--output</code> lists one chain per selected test. Maven gets a Surefire/Failsafe excludes file with the unselected classes
-            (plus the default <code>**/*$*</code>), so POM includes and the unit/integration split survive; Gradle gets
-            <code>-Pimpact.testsFile</code>. Static analysis still cannot see reflection built from non-constant strings,
+            (plus the default <code>**/*$*</code>), so POM includes and the unit/integration split survive; Gradle's
+            <code>Test</code> tasks filter to what <code>impactSelect</code> wrote. Static analysis still cannot see reflection built from non-constant strings,
             resources outside <code>src/</code>, context annotations composed in library jars, or unlisted frameworks.</p>
         </section>
 
@@ -673,7 +673,7 @@
                 configuration-cache safe, Gradle 7.6.3+.</p>
               <dl><dt>impactInit</dt><dd>reports the project graph for <code>init</code></dd>
                 <dt>modules</dt><dd><code>-Pimpact.modules</code> disables other <code>Test</code> tasks</dd>
-                <dt>tests</dt><dd><code>-Pimpact.testsFile</code> filters to listed classes</dd>
+                <dt>tests</dt><dd><code>impactSelect</code> runs <code>sieve classes</code> after compiling; <code>Test</code> tasks filter to its selection</dd>
                 <dt>classes</dt><dd><code>impactCompile</code>, <code>impactClasses</code></dd></dl></article>
           </div>
           <p><code>sieve refresh</code> reruns discovery after build changes and keeps extra edges between surviving modules
@@ -892,7 +892,7 @@ target/debug/sieve fixtures verify --tool both --scenario all --selected --class
               <tr><td><a href="../src/records.rs">src/records.rs</a></td><td>Local run, <code>decide</code>, <code>record</code>, <code>env</code>, speed-ups</td><td><code>run</code> · <code>decide</code> · <code>record</code> · <code>agent_jar</code></td></tr>
               <tr><td><a href="../src/bytecode.rs">src/bytecode.rs</a></td><td>Method-body and class-shape digests</td><td><code>digest</code> · <code>hash</code></td></tr>
               <tr><td><a href="../src/reports.rs">src/reports.rs</a></td><td>Native JUnit XML parsing for execution and validation</td><td><code>read_reports</code></td></tr>
-              <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code></td></tr>
+              <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code> · <code>impactSelect</code></td></tr>
               <tr><td><a href="../agent/">agent/</a> · <a href="../build.rs">build.rs</a></td><td>Test-JVM agent and its build</td><td><code>Boot</code> · <code>Filter</code> · <code>State</code></td></tr>
               <tr><td>fixtures · replay · catalog · timing</td><td>Validation and measurement</td><td><code>fixtures::main</code> · <code>replay::main</code> · <code>catalog::main</code></td></tr>
               <tr><td><a href="../projects/">projects/</a> · <a href="../samples/">samples/</a></td><td>Fixtures (<code>maven</code>/<code>gradle</code> parity pair, <code>single-*</code>, <code>records</code>, <code>version-bump</code>, <code>containers</code>) and demos (<code>bookstore</code>, <code>webshop</code>, <code>runtime-plugins</code>, <code>gradle-test-suites</code>, <code>selective-performance</code>, Kotlin <code>kotlin-invoices</code> and <code>kotlin-shipping</code>)</td><td><a href="../scenarios.json">scenarios.json</a></td></tr>

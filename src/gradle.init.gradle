@@ -16,25 +16,36 @@ def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1) }
 gradle.beforeProject { p ->
     def modules = p.providers.gradleProperty('impact.modules').orNull
     def enabled = modules == null || moduleId(p) in modules.split(',')
-    def testsFile = p.providers.gradleProperty('impact.testsFile').orNull
-    def tests = testsFile == null ? null : p.providers.fileContents(p.layout.projectDirectory.file(testsFile))
-        .asText.get().readLines().findAll { !it.isEmpty() }
+    // Class-level selection in the same build: `impactSelect` writes `all`, or `filter` and the
+    // test classes to run, after the selected modules compiled.
+    def selected = p.providers.gradleProperty('impact.selected').orNull
     // Local mode: the test-record agent joins the test JVMs only, never Gradle's own daemons.
     def agent = p.providers.gradleProperty('impact.agent').orNull
     p.tasks.withType(Test).configureEach { task ->
         if (agent != null) {
             task.jvmArgs(agent)
         }
-        // An empty include filter would run every test, so an empty selection disables the task.
-        if (!enabled || tests?.isEmpty()) {
+        if (!enabled) {
             task.enabled = false
-        } else if (tests != null) {
-            task.filter { filter ->
-                tests.each { cls ->
-                    filter.includeTestsMatching(cls)
-                    filter.includeTestsMatching(cls + '$*')
+        } else if (selected != null) {
+            def selection = new File(selected)
+            task.dependsOn(':impactSelect')
+            // An input, so that a cached test result never stands for another selection.
+            task.inputs.file(selection).withPropertyName('impactSelection')
+            // An empty include filter would run every test, so an empty selection skips the task.
+            task.onlyIf {
+                def lines = selection.readLines()
+                lines[0] == 'all' || lines.size() > 1
+            }
+            task.doFirst { Test test ->
+                def lines = selection.readLines()
+                if (lines[0] != 'all') {
+                    lines.drop(1).each { cls ->
+                        test.filter.includeTestsMatching(cls)
+                        test.filter.includeTestsMatching(cls + '$*')
+                    }
+                    test.filter.failOnNoMatchingTests = false
                 }
-                filter.failOnNoMatchingTests = false
             }
         }
     }
@@ -86,6 +97,24 @@ gradle.projectsEvaluated {
                 new File(listing).text = JsonOutput.toJson([
                     classes: paths(classes.files + tests.files),
                     tests: paths(tests.files)])
+            }
+        }
+        def selected = root.findProperty('impact.selected')?.toString()
+        if (selected != null) {
+            def sieve = root.property('impact.sieve').toString()
+            def request = root.property('impact.request').toString()
+            def chosen = (root.findProperty('impact.modules')?.toString() ?: '').split(',') as Set
+            root.tasks.register('impactSelect') {
+                dependsOn('impactClasses')
+                dependsOn(root.allprojects.findAll { moduleId(it) in chosen }.collect { it.tasks.named('impactCompile') })
+                doLast {
+                    def process = new ProcessBuilder(sieve, 'classes', '--request', request)
+                        .redirectErrorStream(true).start()
+                    process.inputStream.eachLine { println it }
+                    if (process.waitFor() != 0) {
+                        throw new GradleException('Sieve could not select test classes.')
+                    }
+                }
             }
         }
     }

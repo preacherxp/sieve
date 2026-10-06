@@ -192,11 +192,13 @@ needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
 Module-level selection runs every test of a selected module, and a single-module
 project has only one. Add `"class_level": true` to narrow a module selection to test
-classes. It is opt-in because the extra compilation invocation can outweigh the time
-saved in cheap suites; `refresh` preserves that choice.
-`run` first compiles the selected modules
-(`clean test-compile -pl <selected> -am` on Maven, `clean :<module>:impactCompile` on
-Gradle), then reads the class files of every module:
+classes. It is opt-in because static analysis has blind spots (below) and, on Maven, the
+extra compilation invocation can outweigh the time saved in cheap suites; `refresh`
+preserves that choice. Maven `run` first compiles the selected modules
+(`clean test-compile -pl <selected> -am`). Gradle selects inside its one build: the init
+script's `impactSelect` task runs after the selected modules compile and before their
+`Test` tasks, and calls `sieve classes`. Either way the selector reads the class files of
+every module:
 
 - Edges follow constant-pool references (class entries, descriptors, generic signatures,
   annotations), superclasses and interfaces, class names spelled in string constants
@@ -269,15 +271,17 @@ Only declare inputs that are not also read at runtime or by tests: a declared in
 reaches tests solely through its generated classes. A removed generated source, or failed
 generation at the base, keeps the module selection.
 
-The second build skips `clean`, and Maven also skips recompiling the main classes it just
-compiled (`-Dmaven.main.skip=true`); plugins that post-process classes in place run again
-on the already processed output. Maven receives `-Dsurefire.excludesFile` and
+Maven's second build skips `clean` and recompiling the main classes it just compiled
+(`-Dmaven.main.skip=true`); plugins that post-process classes in place run again on the
+already processed output. Maven receives `-Dsurefire.excludesFile` and
 `-Dfailsafe.excludesFile` listing the unselected test classes, so POM includes and the
 unit/integration split stay in effect; the file also repeats Surefire's default
-`**/*$*` exclude, which an excludes file otherwise drops. Gradle reads the selected
-classes from a file (`-Pimpact.testsFile`) and filters every `Test` task to them and
-their nested classes. `select` stays module-level because it does not compile;
-`--output` receives the refined decision. `refresh` preserves the flag.
+`**/*$*` exclude, which an excludes file otherwise drops. Gradle's `Test` tasks read the
+selection when they start and filter to the selected classes and their nested classes; a
+selection without classes skips them, and the selection file is a task input, so a cached
+result never stands for another selection. `select` stays module-level because it does
+not compile; `--output` receives the refined decision before any test runs. `refresh`
+preserves the flag.
 
 Static analysis still cannot see classes named in resources outside `src/`, reflection
 built from non-constant strings, context tests whose composed annotation lives in a

@@ -484,8 +484,8 @@ fn scope(config: &Config, modules: &BTreeSet<String>, goal: &str) -> Vec<String>
     }
 }
 
-/// `filter` is set after the class-level compile step: the build skips `clean` and reads
-/// the unselected (Maven) or selected (Gradle) test classes from that file.
+/// `filter` is set after Maven's class-level compile step: the build skips `clean` and reads
+/// the unselected test classes from that file. Gradle selects classes inside its one build.
 fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> Vec<String> {
     let maven = config.tool == "maven";
     let mut args: Vec<String> = if maven {
@@ -532,16 +532,8 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
             }
         }
     } else {
-        let modules: Vec<_> = if compile_only {
-            Vec::new()
-        } else {
-            selection.modules.iter().map(String::as_str).collect()
-        };
+        let modules: Vec<_> = selection.modules.iter().map(String::as_str).collect();
         args.push(format!("-Pimpact.modules={}", modules.join(",")));
-        // The Gradle filter intersects with each Test task's own patterns.
-        if let Some(tests) = filter.filter(|_| subset) {
-            args.push(format!("-Pimpact.testsFile={}", tests.display()));
-        }
     }
     args
 }
@@ -563,22 +555,11 @@ fn remove_stale_reports(config: &Config, selection: &Selection, workspace: &Path
     Ok(())
 }
 
-fn compile_args(config: &Config, selection: &Selection, listing: &Path) -> Vec<String> {
-    if config.tool == "maven" {
-        let mut args: Vec<String> = vec!["-B".into(), "-ntp".into(), "clean".into()];
-        args.extend(scope(config, &selection.modules, "test-compile"));
-        args
-    } else {
-        let mut args: Vec<String> = vec![
-            "--no-daemon".into(),
-            "--console=plain".into(),
-            "clean".into(),
-        ];
-        args.extend(scope(config, &selection.modules, "impactCompile"));
-        args.push(":impactClasses".into());
-        args.push(format!("-Pimpact.classes={}", listing.display()));
-        args
-    }
+/// Maven's class-level compile step, before the build that runs the selected tests.
+fn compile_args(config: &Config, selection: &Selection) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-B".into(), "-ntp".into(), "clean".into()];
+    args.extend(scope(config, &selection.modules, "test-compile"));
+    args
 }
 
 /// Compiled class directories, each marked `true` when it holds test classes. Includes
@@ -613,6 +594,85 @@ fn class_dirs(config: &Config, workspace: &Path, listing: &Path) -> Result<Vec<(
         .collect())
 }
 
+/// What a Gradle build needs to select test classes once the selected modules compiled: `run`
+/// writes it, and the init script's `impactSelect` task hands it to `sieve classes`.
+#[derive(Deserialize, Serialize)]
+struct ClassRequest {
+    workspace: PathBuf,
+    modules: BTreeSet<String>,
+    sources: BTreeSet<String>,
+    changed: BTreeSet<String>,
+    reason: String,
+    /// The class directories, as `impactClasses` lists them.
+    listing: PathBuf,
+    /// For the `Test` tasks: `all`, or `filter` and the test classes to run, one per line.
+    selected: PathBuf,
+    /// For `run`: the refined selection and the unselected test classes.
+    result: PathBuf,
+    output: Option<PathBuf>,
+}
+
+/// The refined selection that `sieve classes` reports back to `run`.
+#[derive(Deserialize, Serialize)]
+struct Refined {
+    mode: String,
+    #[serde(default)]
+    tests: BTreeSet<String>,
+    #[serde(default)]
+    reasons: BTreeMap<String, String>,
+    reason: String,
+    unselected: BTreeSet<String>,
+}
+
+/// `sieve classes --request FILE`: class-level selection inside a Gradle build, after the
+/// selected modules compiled and before their tests run. Analysis problems keep every test.
+fn classes_command(args: Vec<String>) -> Result<u8> {
+    let [flag, file] = args.as_slice() else {
+        return Err("Usage: sieve classes --request FILE".into());
+    };
+    if flag != "--request" {
+        return Err("Usage: sieve classes --request FILE".into());
+    }
+    let request: ClassRequest = serde_json::from_slice(&fs::read(file)?)?;
+    let config = Config::read(&request.workspace)?;
+    let mut selection = config.all(request.reason.clone());
+    selection.mode = "MODULES";
+    selection.modules = request.modules.clone();
+    selection.sources = request.sources.clone();
+    selection.changed = request.changed.clone();
+    let unselected = class_dirs(&config, &request.workspace, &request.listing)
+        .and_then(|dirs| classes::load(&dirs))
+        .and_then(|classes| selection.refine(&classes, &request.workspace, false))
+        .unwrap_or_else(|error| {
+            selection.reason = format!("Class-level selection unavailable: {error}");
+            BTreeSet::new()
+        });
+    let filter = if selection.mode == "MODULES" {
+        "all\n".to_owned()
+    } else {
+        selection
+            .tests
+            .iter()
+            .fold("filter\n".to_owned(), |text, test| text + test + "\n")
+    };
+    fs::write(&request.selected, filter)?;
+    // The decision is written before any test runs, so CI can publish it.
+    let json = serde_json::to_string_pretty(&selection)? + "\n";
+    if let Some(output) = &request.output {
+        fs::write(output, &json)?;
+    }
+    eprintln!("{json}");
+    let refined = Refined {
+        mode: selection.mode.into(),
+        tests: selection.tests,
+        reasons: selection.reasons,
+        reason: selection.reason,
+        unselected,
+    };
+    fs::write(&request.result, serde_json::to_vec(&refined)?)?;
+    Ok(0)
+}
+
 fn main_result() -> Result<u8> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_default();
@@ -628,6 +688,7 @@ fn main_result() -> Result<u8> {
     match command.as_str() {
         "record" => return records::record(args.collect()),
         "decide" => return records::decide(args.collect()),
+        "classes" => return classes_command(args.collect()),
         "env" => return records::env_command(args.collect()),
         "catalog" => return catalog::main(args.collect()),
         "classify" => return catalog::classify_main(args.collect()),
@@ -821,7 +882,35 @@ fn main_result() -> Result<u8> {
     let temp = tempfile::tempdir()?;
     let mut filter = None;
     let mut unselected = BTreeSet::new();
-    if config.class_level && selection.mode == "MODULES" {
+    let class_level = config.class_level && selection.mode == "MODULES";
+    // Gradle selects test classes inside its one build, between compiling and testing.
+    let mut request = None;
+    let mut selecting = Vec::new();
+    if class_level && config.tool == "gradle" {
+        let path = temp.path().join("request.json");
+        let asked = ClassRequest {
+            workspace: workspace.clone(),
+            modules: selection.modules.clone(),
+            sources: selection.sources.clone(),
+            changed: selection.changed.clone(),
+            reason: selection.reason.clone(),
+            listing: temp.path().join("classes.json"),
+            selected: temp.path().join("selected.txt"),
+            result: temp.path().join("refined.json"),
+            output: output.clone(),
+        };
+        fs::write(&path, serde_json::to_vec(&asked)?)?;
+        selecting = vec![
+            format!("-Pimpact.classes={}", asked.listing.display()),
+            format!("-Pimpact.selected={}", asked.selected.display()),
+            format!("-Pimpact.request={}", path.display()),
+            format!(
+                "-Pimpact.sieve={}",
+                env::current_exe()?.canonicalize()?.display()
+            ),
+        ];
+        request = Some(asked);
+    } else if class_level {
         eprintln!("{json}Compiling for class-level selection");
         // The comparison base generates its sources while the workspace compiles.
         let inputs: BTreeSet<String> = selection
@@ -844,11 +933,9 @@ fn main_result() -> Result<u8> {
             }
             _ => None,
         };
-        let listing = temp.path().join("classes.json");
         let status = Command::new(&executable)
             .current_dir(&workspace)
-            .args(compile_args(&config, &selection, &listing))
-            .args(&script_args)
+            .args(compile_args(&config, &selection))
             .args(&extra)
             .status()?;
         if !status.success() {
@@ -865,30 +952,22 @@ fn main_result() -> Result<u8> {
                     selection.sources.extend(generated.iter().cloned());
                     selection.generated = generated;
                 }
-                class_dirs(&config, &workspace, &listing)
+                // Maven's class directories follow from the module layout; no listing.
+                class_dirs(&config, &workspace, Path::new(""))
             })
             .and_then(|dirs| classes::load(&dirs))
-            .and_then(|classes| selection.refine(&classes, &workspace, config.tool == "maven"))
+            .and_then(|classes| selection.refine(&classes, &workspace, true))
             .unwrap_or_else(|error| {
                 selection.reason = format!("Class-level selection unavailable: {error}");
                 BTreeSet::new()
             });
-        let text = if config.tool == "maven" {
-            // Surefire drops its default nested-class exclude once an excludes file is given.
-            let mut excludes = String::from("**/*$*\n");
-            for name in &unselected {
-                excludes += &format!("{}.*\n", name.replace('.', "/"));
-            }
-            excludes
-        } else {
-            selection
-                .tests
-                .iter()
-                .map(|test| format!("{test}\n"))
-                .collect()
-        };
+        // Surefire drops its default nested-class exclude once an excludes file is given.
+        let mut excludes = String::from("**/*$*\n");
+        for name in &unselected {
+            excludes += &format!("{}.*\n", name.replace('.', "/"));
+        }
         let path = temp.path().join("tests.txt");
-        fs::write(&path, text)?;
+        fs::write(&path, excludes)?;
         filter = Some(path);
         json = write(&selection)?;
     }
@@ -896,9 +975,25 @@ fn main_result() -> Result<u8> {
     let status = Command::new(executable)
         .current_dir(&workspace)
         .args(build_args(&config, &selection, filter.as_deref()))
+        .args(selecting)
         .args(script_args)
         .args(extra)
         .status()?;
+    // A Gradle build that got as far as selecting reports the refined selection.
+    let refined = request
+        .and_then(|request| fs::read(request.result).ok())
+        .and_then(|bytes| serde_json::from_slice::<Refined>(&bytes).ok());
+    if let Some(refined) = refined {
+        selection.mode = match refined.mode.as_str() {
+            "SUBSET" => "SUBSET",
+            "NONE" => "NONE",
+            _ => "MODULES",
+        };
+        selection.tests = refined.tests;
+        selection.reasons = refined.reasons;
+        selection.reason = refined.reason;
+        unselected = refined.unselected;
+    }
     let modules: BTreeSet<String> = config.modules.keys().cloned().collect();
     // The summary is informational: a problem with it never fails the run. Durations persist
     // only where local mode keeps `.sieve/`: static selection leaves the workspace alone.
@@ -1288,7 +1383,7 @@ mod tests {
         assert_eq!(selection.mode, "MODULES");
         let listing = Path::new("/tmp/classes.json");
         assert_eq!(
-            compile_args(&config, &selection, listing),
+            compile_args(&config, &selection),
             [
                 "-B",
                 "-ntp",
@@ -1324,30 +1419,20 @@ mod tests {
                 "-Dfailsafe.excludesFile=/tmp/tests.txt"
             ]
         );
+        // Gradle selects inside its one build, which cleans like a module selection.
         config.tool = "gradle".into();
         assert_eq!(
-            compile_args(&config, &selection, listing),
+            build_args(&config, &config.select(changed(), ""), None),
             [
                 "--no-daemon",
                 "--console=plain",
                 "clean",
-                ":app:impactCompile",
-                ":core:impactCompile",
-                ":impactClasses",
-                "-Pimpact.classes=/tmp/classes.json"
-            ]
-        );
-        assert_eq!(
-            build_args(&config, &selection, Some(filter)),
-            [
-                "--no-daemon",
-                "--console=plain",
                 ":app:check",
                 ":core:check",
-                "-Pimpact.modules=app,core",
-                "-Pimpact.testsFile=/tmp/tests.txt"
+                "-Pimpact.modules=app,core"
             ]
         );
+        config.tool = "maven".into();
         // No test in a selected module reaches the class: compile only, still without clean.
         graph[1].refs.clear();
         let mut selection = config.select(changed(), "");
@@ -1357,17 +1442,6 @@ mod tests {
             selection.modules,
             BTreeSet::from(["app".into(), "core".into()])
         );
-        assert_eq!(
-            build_args(&config, &selection, Some(filter)),
-            [
-                "--no-daemon",
-                "--console=plain",
-                ":app:check",
-                ":core:check",
-                "-Pimpact.modules="
-            ]
-        );
-        config.tool = "maven".into();
         assert!(build_args(&config, &selection, Some(filter)).ends_with(&[
             "-Dimpact.skip.app=true".into(),
             "-Dimpact.skip.core=true".into(),

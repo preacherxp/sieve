@@ -123,9 +123,10 @@ xychart-beta
     bar [13, 73]
 ```
 
-Class-level selection costs a second build-tool start, so cheap suites get slower: a
-single-module sample with a 6 s setup went from 7.4 s to 2.3 s, while the same sample with
-no setup went from 1.4 s to 2.2 s. Leave `class_level` off for cheap suites.
+On Maven, class-level selection costs a second build-tool start, so cheap suites get
+slower: a single-module sample with a 6 s setup went from 7.4 s to 2.3 s, while the same
+sample with no setup went from 1.4 s to 2.2 s. Leave `class_level` off for cheap Maven
+suites. Gradle selects inside one build, between compiling and testing.
 
 Full data, machines, and caveats: [docs/performance.md](docs/performance.md).
 

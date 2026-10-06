@@ -49,14 +49,15 @@ sieve run --base REV
   │                          (reason asks for refresh), else ALL ("run sieve refresh")
   ├─ [class_level && MODULES]
   │    ├─ compile_args       Maven: clean test-compile -pl … -am
-  │    │                     Gradle: clean :m:impactCompile :impactClasses
+  │    │                     Gradle: no step; impactSelect runs `sieve classes` inside the
+  │    │                     build, after compiling and before the Test tasks
   │    ├─ generated::Base    (optional) merge-base worktree runs generate-test-sources,
   │    │                     diffed generated sources replace the declared inputs
   │    ├─ classes::load      parse every module's class files (incl. unselected modules)
   │    └─ Selection::refine  classes::affected → SUBSET / NONE, or keep MODULES on fallback
   └─ build_args              Maven: clean verify -pl … -am -Dimpact.skip.<m>=…
                                     [+ surefire/failsafe excludesFile]
-                             Gradle: clean :m:check -Pimpact.modules=… [-Pimpact.testsFile=…]
+                             Gradle: clean :m:check -Pimpact.modules=… [-Pimpact.selected=…]
 ```
 
 `select` stops after `Config::select` and the graph check and prints the JSON; it never
@@ -89,9 +90,9 @@ unreadable classes) return `Impact::Fallback`, which keeps the module selection.
   modules.
 - **Gradle** (`src/gradle.init.gradle`): an init script passed with `--init-script`.
   Its `impactInit` task reports the project graph for `init`; it disables `Test` tasks outside
-  `impact.modules`, filters tests to `impact.testsFile`, and adds `impactCompile` and
-  `impactClasses` for class-level runs. It is configuration-cache safe and requires
-  Gradle 7.6.3+.
+  `impact.modules`. For class-level runs it adds `impactCompile`, `impactClasses`, and
+  `impactSelect`, which writes the `impact.selected` file that the `Test` tasks filter to.
+  It is configuration-cache safe and requires Gradle 7.6.3+.
 
 ## Local mode (developer machines)
 
