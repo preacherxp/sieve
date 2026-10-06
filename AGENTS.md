@@ -28,9 +28,12 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
   Replace only the test execution step and add the setup needed by Sieve.
 - Avoid introducing a custom action, reusable workflow, or new dependency when
   ordinary workflow steps suffice. Do not upgrade unrelated action versions.
-- For a consumer repository, install Sieve from its Git repository using `--locked`
-  and `--rev` pinned to a verified commit. Never invent a release or commit SHA.
-  Install a Rust toolchain compatible with `Cargo.toml`.
+- For a consumer repository, install the release binary with `install.sh` fetched from
+  a verified release tag and `SIEVE_VERSION` pinned to the same tag; it checks the
+  release checksum. Where no prebuilt binary exists, install from the Git repository
+  using `--locked` and `--rev` pinned to a verified commit, with a Rust toolchain
+  compatible with `Cargo.toml` and a JDK 17+ `javac`. Never invent a release tag or
+  commit SHA.
 - In Sieve's own CI, build the checked-out source instead of installing a remote
   version, so the workflow exercises the changes under review.
 - Run `sieve init` once during project setup using the CI build

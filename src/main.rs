@@ -633,6 +633,10 @@ fn main_result() -> Result<u8> {
         "classify" => return catalog::classify_main(args.collect()),
         _ => {}
     }
+    if matches!(command.as_str(), "--version" | "-V") {
+        println!("sieve {}", env!("CARGO_PKG_VERSION"));
+        return Ok(0);
+    }
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "sieve <select|run> [--workspace PATH] [--base REV | --full]\n\
@@ -642,9 +646,10 @@ fn main_result() -> Result<u8> {
                   sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
                   sieve classify --workspace PATH [--commits N]\n\
                   sieve replay --workspace PATH [--commits N] [--run] [-- BUILD_ARGS...]\n\
-                  sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\n\
+                  sieve fixtures <list|prepare|apply|check-selection|reports|verify|benchmark>\n\
+                  sieve --version\n\n\
                   Local mode requires `run --records` or impact.json with records: true\n\
-                  (single-module Maven, Java 24+; the first run records every test).\n\
+                  (single-module Maven or Gradle, test JVM on Java 17+; the first run records every test).\n\
                   --ci keeps records that hold on other machines, for sharing through a CI cache.\n\
                   Static selection requires impact.json and the build adapters in README.md; no base or\n\
                   unavailable Git history selects ALL. run propagates build failures."

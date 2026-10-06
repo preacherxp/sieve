@@ -136,7 +136,11 @@ Pull requests select against the base; everything else runs the full suite.
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0, persist-credentials: false }
-- run: cargo install --git https://github.com/preacherxp/sieve --locked --rev <sha>
+- run: |
+    curl -fsSL "https://raw.githubusercontent.com/preacherxp/sieve/$SIEVE_VERSION/install.sh" | sh
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+  env:
+    SIEVE_VERSION: <tag>  # a release, such as v0.2.1
 - run: |
     args=()
     if [ "$EVENT" = pull_request ]; then args=(--base "$BASE"); else args=(--full); fi
@@ -145,6 +149,10 @@ Pull requests select against the base; everything else runs the full suite.
     EVENT: ${{ github.event_name }}
     BASE: ${{ github.event.pull_request.base.sha }}
 ```
+
+The installer checks the release checksum and needs neither Rust nor a JDK. Runners without
+a prebuilt binary can use `cargo install --git https://github.com/preacherxp/sieve --locked
+--rev <sha>` instead.
 
 Local-mode records can be shared across CI runs with `sieve run --ci` and a cache of
 `.sieve/records`; see [the reference](docs/reference.md#records-in-ci). Keep a full-suite

@@ -29,9 +29,15 @@ jobs:
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
         run: |
           rustup toolchain install 1.92.0 --profile minimal --target "$TARGET"
           cargo +1.92.0 build --locked --release --target "$TARGET"
+          version=$("target/$TARGET/release/sieve" --version)
+          if [ "$version" != "sieve ${TAG#v}" ]; then
+            echo "::error::The binary reports '$version' for tag $TAG; set the version in Cargo.toml"
+            exit 1
+          fi
           mkdir dist
           tar -czf "dist/sieve-$TARGET.tar.gz" -C "target/$TARGET/release" sieve
           cd dist && shasum -a 256 "sieve-$TARGET.tar.gz" > "sieve-$TARGET.tar.gz.sha256"

@@ -1,6 +1,6 @@
 [package]
 name = "sieve"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.92"
 publish = false
@@ -9,7 +9,7 @@ repository = "https://github.com/preacherxp/sieve"
 
 [features]
 default = ["agent"]
-# Embeds the test-JVM agent that records and selects tests; needs JDK 24+ to build.
+# Embeds the test-JVM agent that records and selects tests; needs a JDK 17+ javac to build.
 agent = []
 
 [dependencies]

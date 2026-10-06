@@ -10,7 +10,7 @@ local mode is Java.
 Selection is conservative and builds only the selected modules and what they depend on.
 Setup uses module selection by default; projects can opt into class-level selection
 from compiled bytecode after measuring their test costs.
-Single-module Maven projects can also opt into local mode, which keeps
+Single-module Maven or Gradle projects can also opt into local mode, which keeps
 per-test runtime records and skips tests whose records show no change (see
 [Local mode](#local-mode-test-records)). Build configuration changes or uncertain Git
 history trigger the full suite.
@@ -29,8 +29,9 @@ curl -fsSL https://raw.githubusercontent.com/preacherxp/sieve/master/install.sh 
 ```
 
 It installs to `~/.local/bin` (override with `SIEVE_INSTALL_DIR`) and verifies the
-release checksum. Set `SIEVE_VERSION=v0.1.0` to pin a release. Releases are built by
-`.github/workflows/release.yml` when a `v*` tag is pushed.
+release checksum. Set `SIEVE_VERSION=v0.2.1` to pin a release; `sieve --version` prints
+the installed one. Releases are built by `.github/workflows/release.yml` when a `v*` tag
+matching the version in `Cargo.toml` is pushed.
 
 Or install from this checkout:
 

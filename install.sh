@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs a prebuilt sieve binary from GitHub releases.
 #   curl -fsSL https://raw.githubusercontent.com/preacherxp/sieve/master/install.sh | sh
-# SIEVE_VERSION=v0.1.0 pins a release; SIEVE_INSTALL_DIR overrides ~/.local/bin.
+# SIEVE_VERSION=v0.2.1 pins a release; SIEVE_INSTALL_DIR overrides ~/.local/bin.
 set -eu
 
 repo=preacherxp/sieve
