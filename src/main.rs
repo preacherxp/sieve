@@ -75,6 +75,19 @@ const DEFAULT_IGNORE: &[&str] = &[
 
 const REPOSITORY: &str = "@repository/";
 
+/// A module key: `.` for the workspace itself, or the module's directory below it, such as
+/// `services/orders`, in plain path segments.
+pub(crate) fn valid_module(module: &str) -> bool {
+    module == "."
+        || (!module.is_empty()
+            && module.split('/').all(|part| {
+                !matches!(part, "" | "." | "..")
+                    && part
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
+            }))
+}
+
 /// `*` and `?` stay within one path segment; `**` crosses segments, and `**/` also
 /// matches zero segments.
 fn glob(pattern: &[u8], path: &[u8]) -> bool {
@@ -135,11 +148,7 @@ impl Config {
             return Err("impact.json requires tool maven/gradle and a nonempty module map".into());
         }
         for (module, dependencies) in &self.modules {
-            if module.is_empty()
-                || module == ".."
-                || !module
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
+            if !valid_module(module)
                 || !workspace.join(module).is_dir()
                 || !workspace
                     .join(module)
@@ -227,14 +236,22 @@ impl Config {
             .any(|pattern| glob(pattern.as_bytes(), path.as_bytes()))
     }
 
-    /// The module whose sources (`<module>/src/**`) hold a workspace path.
+    /// The module whose sources (`<module>/src/**`) hold a workspace path: the innermost one,
+    /// when a module's directory holds another module.
     fn module_of<'p>(&self, path: &'p str) -> Option<&'p str> {
-        if self.modules.contains_key(".") && path.starts_with("src/") {
-            return Some(".");
+        let named = self
+            .modules
+            .keys()
+            .filter(|module| {
+                path.strip_prefix(module.as_str())
+                    .is_some_and(|rest| rest.starts_with("/src/"))
+            })
+            .map(String::len)
+            .max();
+        match named {
+            Some(length) => Some(&path[..length]),
+            None => (self.modules.contains_key(".") && path.starts_with("src/")).then_some("."),
         }
-        path.split_once('/')
-            .filter(|(module, rest)| self.modules.contains_key(*module) && rest.starts_with("src/"))
-            .map(|(module, _)| module)
     }
 
     /// `prefix` is the workspace path below the repository root, used by `/` patterns.
@@ -472,11 +489,12 @@ fn scope(config: &Config, modules: &BTreeSet<String>, goal: &str) -> Vec<String>
         }
         args
     } else if partial {
+        // A module's directory is its Gradle project path: `services/orders` is `:services:orders`.
         modules
             .iter()
             .map(|module| match module.as_str() {
                 "." => format!(":{goal}"),
-                module => format!(":{module}:{goal}"),
+                module => format!(":{}:{goal}", module.replace('/', ":")),
             })
             .collect()
     } else {
@@ -515,8 +533,8 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
         // `-am` also builds unselected dependencies; their tests stay skipped.
         for module in config.modules.keys() {
             args.push(format!(
-                "-Dimpact.skip.{}={}",
-                if module == "." { "root" } else { module },
+                "-D{}={}",
+                setup::skip_property(module),
                 compile_only || !selection.modules.contains(module)
             ));
         }
@@ -1131,6 +1149,56 @@ mod tests {
         }))
         .unwrap();
         assert!(unknown.validate(temp.path()).is_err());
+    }
+
+    #[test]
+    fn nested_modules_select_and_build_by_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        for dir in ["libs/core", "services/orders/plugin"] {
+            fs::create_dir_all(temp.path().join(dir)).unwrap();
+        }
+        let mut config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "shared_tests": [], "modules": {
+                "libs/core": [], "services/orders": ["libs/core"], "services/orders/plugin": []
+            }
+        }))
+        .unwrap();
+        assert!(config.validate(temp.path()).is_ok());
+        let select = |config: &Config, path: &str| config.select(BTreeSet::from([path.into()]), "");
+        // The innermost module owns its sources; an aggregator's POM is a build input.
+        let plugin = select(&config, "services/orders/plugin/src/main/java/P.java");
+        assert_eq!(
+            plugin.modules,
+            BTreeSet::from(["services/orders/plugin".into()])
+        );
+        assert_eq!(select(&config, "services/pom.xml").mode, "ALL");
+        let core = select(&config, "libs/core/src/main/java/C.java");
+        assert_eq!(
+            build_args(&config, &core, None)[2..],
+            [
+                "clean",
+                "verify",
+                "-pl",
+                "libs/core,services/orders",
+                "-am",
+                "-Dimpact.skip.libs.core=false",
+                "-Dimpact.skip.services.orders=false",
+                "-Dimpact.skip.services.orders.plugin=true"
+            ]
+        );
+        config.tool = "gradle".into();
+        assert_eq!(
+            build_args(&config, &core, None)[2..],
+            [
+                "clean",
+                ":libs:core:check",
+                ":services:orders:check",
+                "-Pimpact.modules=libs/core,services/orders"
+            ]
+        );
+        for bad in ["a//b", "../x", "a/./b", "/abs", "a/", "a/../b"] {
+            assert!(!valid_module(bad), "{bad}");
+        }
     }
 
     #[test]

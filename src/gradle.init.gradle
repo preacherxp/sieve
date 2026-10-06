@@ -11,7 +11,9 @@ if (GradleVersion.current() < GradleVersion.version('7.6.3')) {
     throw new GradleException('Sieve requires Gradle 7.6.3 or newer. Update the wrapper before running setup or tests.')
 }
 
-def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1) }
+// A module is named by its directory, which setup requires to match its project path:
+// `:services:orders` lives in `services/orders`.
+def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1).replace(':', '/') }
 
 gradle.beforeProject { p ->
     def modules = p.providers.gradleProperty('impact.modules').orNull
@@ -138,8 +140,8 @@ gradle.projectsEvaluated {
                 }
                 root.allprojects.each { p ->
                     def key = moduleId(p)
-                    if (key != '.' && (key.contains(':') || p.projectDir != new File(root.projectDir, key))) {
-                        throw new GradleException('Automatic setup supports a single JVM project or direct child modules in matching directories.')
+                    if (key != '.' && p.projectDir.canonicalFile != new File(root.projectDir, key).canonicalFile) {
+                        throw new GradleException("Automatic setup supports modules in directories that match their project paths; ${p.path} is in ${p.projectDir}.")
                     }
                     if (p.plugins.hasPlugin('com.android.application') || p.plugins.hasPlugin('com.android.library') ||
                         p.plugins.hasPlugin('org.jetbrains.kotlin.multiplatform')) {

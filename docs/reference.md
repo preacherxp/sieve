@@ -71,10 +71,16 @@ sieve init --workspace /path/to/project --tool gradle --executable /path/to/grad
 sieve run --workspace /path/to/project --base origin/main --executable /path/to/gradle
 ```
 
-Automatic setup currently supports a single JVM package or direct child modules
-whose directory names match their module names. Nested/custom module layouts,
-Gradle composite builds, Android, and Kotlin Multiplatform are not supported by
-automatic setup. The tool reports unsupported layouts instead of guessing.
+Automatic setup supports a single JVM package or modules at any depth whose directories
+match their place in the build: Maven modules listed by path (`<module>libs/core</module>`)
+or below nested aggregators, and Gradle projects whose directories match their paths
+(`:services:orders` in `services/orders`). A module is named by its directory,
+such as `services/orders`; Maven's skip property joins the segments with dots
+(`impact.skip.services.orders`), and Gradle tasks follow the project path
+(`:services:orders:check`). Aggregators build nothing themselves and are not modules; a
+change to their POM is a build input. Gradle projects in other directories, composite
+builds, Android, and Kotlin Multiplatform are not supported by automatic setup. The tool
+reports unsupported layouts instead of guessing.
 Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
 Run `sieve refresh --workspace PATH` after build changes,

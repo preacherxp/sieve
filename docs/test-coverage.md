@@ -46,7 +46,7 @@ support the case.
 
 Keep the oracle independent in [scenarios.json](../scenarios.json). Never derive
 the required test set or expected failures from Sieve's selection. New fixtures
-use the generic root/direct-child native report collector; do not weaken
+use the generic native report collector, which finds module reports at any depth; do not weaken
 its assertions to accommodate them.
 
 ## 1. Preserve the existing application mutations
@@ -168,7 +168,7 @@ Evidence: [setup](../src/setup.rs), [Gradle adapter](../src/gradle.init.gradle),
 | BUILD-02 | P0 | Repeat `init`, encounter an existing Maven profile, or fail build-model discovery. Refuse conflicts, preserve existing configuration, and make no edits after failed discovery. Ordinary native commands still run all tests after installation. | Implemented; see evidence below |
 | BUILD-03 | P0 | Prefer an executable project wrapper over PATH; honor `--executable` for both setup and execution. Missing or non-executable commands fail clearly. | Implemented; see evidence below |
 | BUILD-04 | P0 | Reject malformed/unknown configuration fields, missing module directories, unknown dependency names, invalid module paths, ambiguous build-tool detection, and duplicate Maven coordinates. Never silently report `NONE`. | Implemented; see evidence below |
-| BUILD-05 | P0 | Reject unsupported nested/custom layouts, composite builds, Android, Kotlin Multiplatform, and Gradle below the supported minimum during automatic setup, with actionable errors and no generated setup. | Implemented layouts/plugin-ID rejection; below-minimum Gradle runtime not locally exercised |
+| BUILD-05 | P0 | Accept nested modules whose directories match their place in the build (`native_nested_modules_build_by_directory`); reject other custom layouts, composite builds, Android, Kotlin Multiplatform, and Gradle below the supported minimum during automatic setup, with actionable errors and no generated setup. | Implemented layouts/plugin-ID rejection; below-minimum Gradle runtime not locally exercised |
 | BUILD-06 | P0 | Maven parent inheritance, properties, and active profiles produce the correct module graph in the CI environment. Execution receives the applicable profile/property flags; selected tests and unrelated POM configuration are preserved. | Implemented; see evidence below |
 | BUILD-07 | P0 | Maven Surefire and Failsafe honor per-module skipping, including inherited/plugin-specific configuration. Skipping provider tests must not remove artifacts needed by selected consumers. | Implemented; see evidence below |
 | BUILD-08 | P0 | Gradle Groovy and Kotlin DSL: single package, direct child modules, and custom `Test` tasks connected to `check`. Every selected test task runs and every excluded test task skips. | Implemented; see evidence below |

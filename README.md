@@ -216,8 +216,8 @@ cargo test --locked --test records -- --include-ignored --test-threads=1   # Mav
 Static analysis cannot see classes named in resources outside `src/`, reflection on
 non-constant strings, or scanners it does not know. Records assume tests are independent
 and that passing runs covered their paths; undeclared environment, external services, and
-floating container tags are not tracked. Single-package or direct-child module layouts
-only; no composite builds, Android, or Multiplatform.
+floating container tags are not tracked. Modules, nested or not, must sit in directories
+that match their place in the build; no composite builds, Android, or Multiplatform.
 
 ## More
 

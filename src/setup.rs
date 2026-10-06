@@ -211,10 +211,18 @@ fn check_execution_skips(xml: &str) -> Result<()> {
     Ok(())
 }
 
+/// The property that skips a Maven module's tests. XML element names cannot hold `/`, so a
+/// nested module's segments are joined with `.`.
+pub(crate) fn skip_property(module: &str) -> String {
+    match module {
+        "." => "impact.skip.root".into(),
+        module => format!("impact.skip.{}", module.replace('/', ".")),
+    }
+}
+
 pub(crate) fn install_maven_adapter(xml: &str, module: &str, refresh: bool) -> Result<String> {
     check_execution_skips(xml)?;
-    let module = if module == "." { "root" } else { module };
-    let property = format!("impact.skip.{module}");
+    let property = skip_property(module);
     let mut result = xml.to_owned();
     // Migrate only the old, generated profile. Refuse custom additions instead of deleting them.
     for (start, end) in element_ranges(xml, &["project", "profiles", "profile"])?
@@ -346,19 +354,48 @@ fn build_uses(
             let Some(relative) = roots.iter().find_map(|root| path.strip_prefix(root).ok()) else {
                 continue;
             };
-            let mut parts = relative.iter().filter_map(|part| part.to_str());
-            match parts.next() {
-                Some(owner) if modules.contains(owner) => {
-                    uses.insert(owner.to_owned());
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            // The innermost module whose directory holds the path.
+            let owner = modules
+                .iter()
+                .filter(|m| {
+                    **m != "."
+                        && relative
+                            .strip_prefix(**m)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+                })
+                .max_by_key(|m| m.len());
+            match owner {
+                Some(owner) => {
+                    uses.insert((*owner).to_owned());
                 }
-                Some("src") if modules.contains(".") => {
+                None if modules.contains(".")
+                    && (relative == "src" || relative.starts_with("src/")) =>
+                {
                     uses.insert(".".to_owned());
                 }
-                _ => {}
+                None => {}
             }
         }
     }
     uses
+}
+
+/// The workspace path of a `<module>` entry of the aggregator at `parent`.
+fn child_path(parent: &str, child: &str) -> Result<String> {
+    let child = child.trim().trim_end_matches('/');
+    let child = child.strip_prefix("./").unwrap_or(child);
+    let path = match parent {
+        "." => child.to_owned(),
+        parent => format!("{parent}/{child}"),
+    };
+    if path == "." || path.ends_with(".xml") || !crate::valid_module(&path) {
+        return Err(format!(
+            "Automatic setup supports module directories below the workspace, not {child:?}"
+        )
+        .into());
+    }
+    Ok(path)
 }
 
 /// The module graph from the effective models: one Maven start reports the whole reactor,
@@ -407,30 +444,34 @@ fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<C
                 .into(),
         );
     }
-    let modules = root
-        .get("project/modules/module")
-        .cloned()
-        .unwrap_or_else(|| vec![".".into()]);
+    let mut pending = match root.get("project/modules/module") {
+        Some(children) => children
+            .iter()
+            .map(|child| child_path(".", child))
+            .collect::<Result<Vec<_>>>()?,
+        None => vec![".".into()],
+    };
     let mut models = BTreeMap::new();
-    for module in modules {
-        if module == ".."
-            || module.is_empty()
-            || !module
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
-        {
-            return Err("Automatic setup supports a single JVM project or direct child modules in matching directories".into());
-        }
+    while let Some(module) = pending.pop() {
         let xml = if module == "." {
             root_xml.clone()
         } else {
             model(&module)?
         };
         let values = xml_values(&xml)?;
-        if values.contains_key("project/modules/module") {
-            return Err("Nested Maven aggregators need an explicit impact configuration".into());
+        // A nested aggregator builds nothing itself: its modules take its place.
+        if let Some(children) = values
+            .get("project/modules/module")
+            .filter(|_| module != ".")
+        {
+            for child in children {
+                pending.push(child_path(&module, child)?);
+            }
+            continue;
         }
-        models.insert(module, (xml, values));
+        if models.insert(module.clone(), (xml, values)).is_some() {
+            return Err(format!("Maven module {module} is listed twice").into());
+        }
     }
     let mut coordinates = BTreeMap::new();
     for (module, (_, values)) in &models {
@@ -439,6 +480,16 @@ fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<C
             .is_some()
         {
             return Err("Duplicate Maven coordinates".into());
+        }
+    }
+    let mut properties = BTreeMap::new();
+    for module in models.keys() {
+        if let Some(other) = properties.insert(skip_property(module), module) {
+            return Err(format!(
+                "Modules {other} and {module} would share the property {}",
+                skip_property(module)
+            )
+            .into());
         }
     }
     let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -810,5 +861,21 @@ mod tests {
                 "--init-script=more.gradle"
             ])
         );
+    }
+
+    #[test]
+    fn nested_modules_get_distinct_skip_properties() {
+        assert_eq!(skip_property("."), "impact.skip.root");
+        assert_eq!(
+            skip_property("services/orders"),
+            "impact.skip.services.orders"
+        );
+        assert_eq!(
+            child_path("services", "./orders/").unwrap(),
+            "services/orders"
+        );
+        for bad in ["../escape", "orders/pom-alt.xml", "", "/abs"] {
+            assert!(child_path(".", bad).is_err(), "{bad}");
+        }
     }
 }

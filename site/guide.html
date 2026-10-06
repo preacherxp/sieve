@@ -677,7 +677,8 @@
                 <dt>classes</dt><dd><code>impactCompile</code>, <code>impactClasses</code></dd></dl></article>
           </div>
           <p><code>sieve refresh</code> reruns discovery after build changes and keeps extra edges between surviving modules
-            and the <code>class_level</code> choice. Setup refuses nested or custom layouts, composite builds, Android and
+            and the <code>class_level</code> choice. Modules may be nested when their directories match their place in the build
+            (<code>services/orders</code>); setup refuses other custom layouts, composite builds, Android and
             Kotlin Multiplatform rather than guessing.</p>
         </section>
 
