@@ -691,6 +691,8 @@ fn main_result() -> Result<u8> {
         };
         return records::run(&config, &workspace, run);
     }
+    let executable =
+        executable.unwrap_or_else(|| setup::default_executable(&workspace, &config.tool));
     let mut comparison = None;
     let mut selection = match base {
         Some(base) => match changed_paths(&workspace, &base) {
@@ -700,8 +702,33 @@ fn main_result() -> Result<u8> {
                     comparison = Some((prefix, merge_base));
                     selection
                 }
+                // Build files changed since the last refresh. Only a module selection follows
+                // the graph, so it is checked against the graph the build declares now.
+                Ok(_) if config.build_fingerprint.is_some() => {
+                    let mut selection = config.select(changed, &prefix);
+                    if selection.mode == "MODULES" {
+                        let fallback = match setup::stale(&config, &workspace, &executable, &extra) {
+                            Ok(None) => {
+                                eprintln!("sieve: impact.json is out of date, but the build's module graph still matches it; run sieve refresh and commit impact.json");
+                                selection.reason += "; impact.json is out of date but matches the build's module graph (run sieve refresh)";
+                                None
+                            }
+                            Ok(Some(change)) => Some(format!("The module graph changed since impact.json was written: {change}; run sieve refresh and review impact.json")),
+                            Err(error) => Some(format!("Build inputs changed and the module graph cannot be checked ({error}); run sieve refresh and review impact.json")),
+                        };
+                        if let Some(reason) = fallback {
+                            let changed = std::mem::take(&mut selection.changed);
+                            selection = config.all(reason);
+                            selection.changed = changed;
+                        }
+                    }
+                    comparison = Some((prefix, merge_base));
+                    selection
+                }
                 Ok(_) => {
-                    let mut selection = config.all("Build inputs changed or no fingerprint exists; run sieve refresh and review impact.json");
+                    let mut selection = config.all(
+                        "No build fingerprint exists; run sieve refresh and review impact.json",
+                    );
                     selection.changed = changed;
                     selection
                 }
@@ -736,8 +763,6 @@ fn main_result() -> Result<u8> {
         print!("{json}");
         return Ok(0);
     }
-    let executable =
-        executable.unwrap_or_else(|| setup::default_executable(&workspace, &config.tool));
     let init_script = if config.tool == "gradle" {
         Some(setup::gradle_script()?)
     } else {

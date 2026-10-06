@@ -69,25 +69,34 @@ fn xml_values(xml: &str) -> Result<BTreeMap<String, Vec<String>>> {
     Ok(values)
 }
 
+/// The effective model of `module`, and with `reactor` those of every module below it, which
+/// Maven then wraps in `<projects>`.
 fn effective_pom(
     workspace: &Path,
     module: &str,
+    reactor: bool,
     executable: &str,
     extra: &[String],
-) -> Result<BTreeMap<String, Vec<String>>> {
+) -> Result<String> {
     let file = tempfile::NamedTempFile::new()?;
-    let status = Command::new(executable)
-        .current_dir(workspace)
-        .args(["-B", "-ntp", "-N", "-f"])
+    let mut command = Command::new(executable);
+    command.current_dir(workspace).args(["-B", "-ntp"]);
+    if !reactor {
+        command.arg("-N");
+    }
+    let status = command
+        .arg("-f")
         .arg(workspace.join(module).join("pom.xml"))
         .arg("org.apache.maven.plugins:maven-help-plugin:3.5.1:effective-pom")
         .arg(format!("-Doutput={}", file.path().display()))
         .args(extra)
+        // Build output is a log; `select` keeps standard output for the selection.
+        .stdout(std::io::stderr())
         .status()?;
     if !status.success() {
         return Err(format!("Cannot read effective Maven model for {module}").into());
     }
-    xml_values(&fs::read_to_string(file.path())?)
+    Ok(fs::read_to_string(file.path())?)
 }
 
 fn coordinate(model: &BTreeMap<String, Vec<String>>) -> Result<String> {
@@ -352,14 +361,40 @@ fn build_uses(
     uses
 }
 
-fn maven_config(
-    workspace: &Path,
-    executable: &str,
-    refresh: bool,
-    extra: &[String],
-) -> Result<(Config, Vec<(PathBuf, String)>)> {
-    check_execution_skips(&fs::read_to_string(workspace.join("pom.xml"))?)?;
-    let root = effective_pom(workspace, ".", executable, extra)?;
+/// The module graph from the effective models: one Maven start reports the whole reactor,
+/// matched to module directories by the artifact ID each module's POM declares. A module
+/// whose model cannot be matched that way is read on its own.
+fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
+    let output = effective_pom(workspace, ".", true, executable, extra)?;
+    let reactor: Vec<&str> = element_ranges(&output, &["projects", "project"])?
+        .into_iter()
+        .map(|(start, end)| &output[start..end])
+        .collect();
+    let artifact = |xml: &str| -> Option<String> {
+        xml_values(xml)
+            .ok()?
+            .get("project/artifactId")?
+            .first()
+            .cloned()
+    };
+    let ids: Vec<Option<String>> = reactor.iter().map(|xml| artifact(xml)).collect();
+    let model = |module: &str| -> Result<String> {
+        let declared = fs::read_to_string(workspace.join(module).join("pom.xml"))
+            .ok()
+            .and_then(|xml| artifact(&xml))
+            .filter(|id| !id.contains('$'));
+        let mut found = (0..reactor.len()).filter(|&i| declared.is_some() && ids[i] == declared);
+        match (found.next(), found.next()) {
+            (Some(i), None) => Ok(reactor[i].to_owned()),
+            _ => effective_pom(workspace, module, false, executable, extra),
+        }
+    };
+    let root_xml = if reactor.is_empty() {
+        output.clone()
+    } else {
+        model(".")?
+    };
+    let root = xml_values(&root_xml)?;
     if root.contains_key("project/modules/module")
         && root
             .get("project/packaging")
@@ -386,65 +421,163 @@ fn maven_config(
         {
             return Err("Automatic setup supports a single JVM project or direct child modules in matching directories".into());
         }
-        let model = if module == "." {
-            root.clone()
+        let xml = if module == "." {
+            root_xml.clone()
         } else {
-            effective_pom(workspace, &module, executable, extra)?
+            model(&module)?
         };
-        if model.contains_key("project/modules/module") {
+        let values = xml_values(&xml)?;
+        if values.contains_key("project/modules/module") {
             return Err("Nested Maven aggregators need an explicit impact configuration".into());
         }
-        models.insert(module, model);
+        models.insert(module, (xml, values));
     }
     let mut coordinates = BTreeMap::new();
-    for (module, model) in &models {
+    for (module, (_, values)) in &models {
         if coordinates
-            .insert(coordinate(model)?, module.clone())
+            .insert(coordinate(values)?, module.clone())
             .is_some()
         {
             return Err("Duplicate Maven coordinates".into());
         }
     }
-    let mut config = Config {
-        tool: "maven".into(),
-        modules: BTreeMap::new(),
-        build_fingerprint: None,
-        ignore: None,
-        class_level: false,
-        generated: Vec::new(),
-        records: None,
-        record_env: Vec::new(),
-        record_ignore_properties: Vec::new(),
-        with: Vec::new(),
-    };
-    let mut edits = Vec::new();
-    for (module, model) in models {
-        let groups = model
-            .get("project/dependencies/dependency/groupId")
-            .cloned()
-            .unwrap_or_default();
-        let artifacts = model
-            .get("project/dependencies/dependency/artifactId")
-            .cloned()
-            .unwrap_or_default();
-        if groups.len() != artifacts.len() {
-            return Err("Incomplete Maven dependency coordinates".into());
+    let mut graph: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (module, (xml, values)) in &models {
+        let mut dependencies = BTreeSet::new();
+        for (start, end) in element_ranges(xml, &["project", "dependencies", "dependency"])? {
+            let dependency = xml_values(&xml[start..end])?;
+            let value = |key: &str| {
+                dependency
+                    .get(&format!("dependency/{key}"))
+                    .and_then(|v| v.first())
+                    .map(String::as_str)
+            };
+            let (Some(group), Some(artifact)) = (value("groupId"), value("artifactId")) else {
+                return Err("Incomplete Maven dependency coordinates".into());
+            };
+            if let Some(sibling) = coordinates.get(&format!("{group}:{artifact}")) {
+                dependencies.insert(sibling.clone());
+            }
         }
-        let mut dependencies: BTreeSet<String> = groups
-            .iter()
-            .zip(artifacts)
-            .filter_map(|(g, a)| coordinates.get(&format!("{g}:{a}")).cloned())
-            .collect();
-        dependencies.extend(build_uses(&model, &coordinates, workspace, &module));
-        dependencies.remove(&module);
-        config
-            .modules
-            .insert(module.clone(), dependencies.into_iter().collect());
-        let pom = workspace.join(&module).join("pom.xml");
-        let xml = fs::read_to_string(&pom)?;
-        edits.push((pom, install_maven_adapter(&xml, &module, refresh)?));
+        dependencies.extend(build_uses(values, &coordinates, workspace, module));
+        dependencies.remove(module);
+        graph.insert(module.clone(), dependencies.into_iter().collect());
     }
-    Ok((config, edits))
+    Ok(serde_json::from_value(serde_json::json!({
+        "tool": "maven", "modules": graph,
+    }))?)
+}
+
+fn gradle_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
+    let script = gradle_script()?;
+    let output = tempfile::NamedTempFile::new()?;
+    let status = Command::new(executable)
+        .current_dir(workspace)
+        // Discovery reads the project model at execution time.
+        .args([
+            "--no-daemon",
+            "--console=plain",
+            "--no-configuration-cache",
+            "--init-script",
+        ])
+        .arg(script.path())
+        .arg(format!("-Pimpact.output={}", output.path().display()))
+        .arg("impactInit")
+        .args(extra)
+        .stdout(std::io::stderr())
+        .status()?;
+    if !status.success() {
+        return Err("Gradle module discovery failed".into());
+    }
+    Ok(serde_json::from_slice(&fs::read(output.path())?)?)
+}
+
+/// The module graph the build declares now.
+fn graph(workspace: &Path, tool: &str, executable: &str, extra: &[String]) -> Result<Config> {
+    if tool == "maven" {
+        maven_graph(workspace, executable, extra)
+    } else {
+        gradle_graph(workspace, executable, extra)
+    }
+}
+
+/// The build arguments that shape the project model: profiles, properties, settings, init
+/// scripts, and offline mode. Goals, tasks, and their options would run work.
+fn model_args(tool: &str, extra: &[String]) -> Vec<String> {
+    let (valued, flags): (&[&str], &[&str]) = if tool == "gradle" {
+        (
+            &[
+                "-P",
+                "-D",
+                "--project-prop",
+                "--system-prop",
+                "-I",
+                "--init-script",
+                "-g",
+                "--gradle-user-home",
+            ],
+            &["--offline"],
+        )
+    } else {
+        (
+            &[
+                "-P",
+                "-D",
+                "--activate-profiles",
+                "--define",
+                "-s",
+                "--settings",
+                "-gs",
+                "--global-settings",
+            ],
+            &["-o", "--offline"],
+        )
+    };
+    let mut kept = Vec::new();
+    let mut args = extra.iter();
+    while let Some(arg) = args.next() {
+        if valued.contains(&arg.as_str()) {
+            kept.push(arg.clone());
+            kept.extend(args.next().cloned());
+        } else if flags.contains(&arg.as_str())
+            || (arg.len() > 2 && (arg.starts_with("-P") || arg.starts_with("-D")))
+            || valued
+                .iter()
+                .any(|v| v.starts_with("--") && arg.starts_with(&format!("{v}=")))
+        {
+            kept.push(arg.clone());
+        }
+    }
+    kept
+}
+
+/// Why `config` no longer describes the build's module graph, or `None` when it still declares
+/// every module and dependency edge the build reports. Additional declared edges are kept on
+/// purpose, as `refresh` keeps them.
+pub fn stale(
+    config: &Config,
+    workspace: &Path,
+    executable: &str,
+    extra: &[String],
+) -> Result<Option<String>> {
+    let found = graph(
+        workspace,
+        &config.tool,
+        executable,
+        &model_args(&config.tool, extra),
+    )?;
+    if found.modules.keys().ne(config.modules.keys()) {
+        return Ok(Some("modules were added or removed".into()));
+    }
+    for (module, dependencies) in &found.modules {
+        if let Some(dependency) = dependencies
+            .iter()
+            .find(|d| !config.modules[module].contains(d))
+        {
+            return Ok(Some(format!("{module} now depends on {dependency}")));
+        }
+    }
+    Ok(None)
 }
 
 pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
@@ -513,33 +646,18 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
             },
         };
     let executable = executable.unwrap_or_else(|| default_executable(&workspace, &tool));
-    let (mut config, edits) = if tool == "maven" {
-        maven_config(&workspace, &executable, refresh, &extra)?
-    } else {
-        let script = gradle_script()?;
-        let output = tempfile::NamedTempFile::new()?;
-        let status = Command::new(executable)
-            .current_dir(&workspace)
-            // Discovery reads the project model at execution time.
-            .args([
-                "--no-daemon",
-                "--console=plain",
-                "--no-configuration-cache",
-                "--init-script",
-            ])
-            .arg(script.path())
-            .arg(format!("-Pimpact.output={}", output.path().display()))
-            .arg("impactInit")
-            .args(&extra)
-            .status()?;
-        if !status.success() {
-            return Err("Gradle module discovery failed".into());
+    if tool == "maven" {
+        check_execution_skips(&fs::read_to_string(workspace.join("pom.xml"))?)?;
+    }
+    let mut config = graph(&workspace, &tool, &executable, &extra)?;
+    let mut edits = Vec::new();
+    if tool == "maven" {
+        for module in config.modules.keys() {
+            let pom = workspace.join(module).join("pom.xml");
+            let xml = fs::read_to_string(&pom)?;
+            edits.push((pom, install_maven_adapter(&xml, module, refresh)?));
         }
-        (
-            serde_json::from_slice(&fs::read(output.path())?)?,
-            Vec::new(),
-        )
-    };
+    }
     if let Some(previous) = previous {
         if previous.tool != config.tool {
             return Err("refresh cannot change the build tool".into());
@@ -615,5 +733,61 @@ mod tests {
         assert!(install_maven_adapter("<project><build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId><executions><execution><configuration><skipTests>false</skipTests></configuration></execution></executions></plugin></plugins></build></project>", ".", false).is_err());
         assert!(install_maven_adapter("<project>", ".", false).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn discovery_keeps_only_the_arguments_that_shape_the_model() {
+        let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let maven = args(&[
+            "-Pci",
+            "-T",
+            "4",
+            "jacoco:report",
+            "-s",
+            "settings.xml",
+            "-D",
+            "a=b",
+            "-Dx=y",
+            "--offline",
+            "-pl",
+            "core",
+            "--settings=other.xml",
+        ]);
+        assert_eq!(
+            model_args("maven", &maven),
+            args(&[
+                "-Pci",
+                "-s",
+                "settings.xml",
+                "-D",
+                "a=b",
+                "-Dx=y",
+                "--offline",
+                "--settings=other.xml"
+            ])
+        );
+        let gradle = args(&[
+            "test",
+            "--tests",
+            "Foo",
+            "-Pci",
+            "-x",
+            "lint",
+            "--offline",
+            "-I",
+            "init.gradle",
+            "--init-script=more.gradle",
+            "--continue",
+        ]);
+        assert_eq!(
+            model_args("gradle", &gradle),
+            args(&[
+                "-Pci",
+                "--offline",
+                "-I",
+                "init.gradle",
+                "--init-script=more.gradle"
+            ])
+        );
     }
 }

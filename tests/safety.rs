@@ -330,9 +330,23 @@ fn wrappers_arguments_failure_and_output_order() {
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn committed_build_change_keeps_falling_back_until_refresh() {
+fn committed_build_change_selects_only_after_the_graph_is_checked() {
     // DEP-07: the unsafe case is the *next* source-only commit, not the build-file diff itself.
+    // The stand-in build tool reports `graph` as the effective models or the Gradle model.
+    let maven = |runtime: &str| {
+        format!("<projects><project><groupId>example</groupId><artifactId>impact-fixtures</artifactId><packaging>pom</packaging><modules><module>pricing</module><module>checkout</module><module>runtime</module></modules></project>\
+            <project><groupId>example</groupId><artifactId>pricing</artifactId></project>\
+            <project><groupId>example</groupId><artifactId>checkout</artifactId><dependencies><dependency><groupId>example</groupId><artifactId>pricing</artifactId></dependency></dependencies></project>\
+            <project><groupId>example</groupId><artifactId>runtime</artifactId>{runtime}</project></projects>")
+    };
+    let gradle = |runtime: &str| {
+        format!(
+            r#"{{"tool":"gradle","modules":{{"checkout":["pricing"],"pricing":[],"runtime":[{runtime}]}}}}"#
+        )
+    };
+    let runtime_edge = "<dependencies><dependency><groupId>example</groupId><artifactId>pricing</artifactId></dependency></dependencies>";
     for tool in ["maven", "gradle"] {
         let temp = fixture(tool);
         let root = temp.path().join("project");
@@ -343,15 +357,63 @@ fn committed_build_change_keeps_falling_back_until_refresh() {
         };
         let contents = fs::read_to_string(root.join(build)).unwrap();
         write(&root, build, format!("{contents}\n"));
-        commit(&root, "build graph changed without refreshing");
+        commit(&root, "build changed without refreshing");
         write(
             &root,
             "pricing/src/main/resources/next-change",
             "next commit",
         );
-        let actual = decision(&root);
-        assert_eq!(actual["mode"], "ALL");
-        assert!(actual["reason"].as_str().unwrap().contains("refresh"));
+        let graph = temp.path().join("graph");
+        let reporter = temp.path().join("build-tool");
+        executable(
+            &reporter,
+            &format!(
+                "#!/bin/sh\n[ -f '{0}' ] || exit 1\nfor arg do\n  case \"$arg\" in -Doutput=*|-Pimpact.output=*) cp '{0}' \"${{arg#*=}}\" ;; esac\ndone\n",
+                graph.display()
+            ),
+        );
+        let decide = |reported: Option<String>| -> Value {
+            match reported {
+                Some(text) => fs::write(&graph, text).unwrap(),
+                None => {
+                    let _ = fs::remove_file(&graph);
+                }
+            }
+            success(&[
+                "select",
+                "--workspace",
+                root.to_str().unwrap(),
+                "--base",
+                "HEAD",
+                "--executable",
+                reporter.to_str().unwrap(),
+            ])
+        };
+        let reason = |actual: &Value| actual["reason"].as_str().unwrap().to_owned();
+        // A graph that cannot be read keeps the full fallback.
+        let actual = decide(None);
+        assert_eq!(actual["mode"], "ALL", "{tool}: {actual}");
+        assert!(reason(&actual).contains("refresh"), "{actual}");
+        // The build still declares the committed graph: select, and ask for a refresh.
+        let same = if tool == "maven" {
+            maven("")
+        } else {
+            gradle("")
+        };
+        let actual = decide(Some(same));
+        assert_eq!(actual["mode"], "MODULES", "{tool}: {actual}");
+        assert_eq!(actual["modules"], json!(["checkout", "pricing"]));
+        assert!(reason(&actual).contains("refresh"), "{actual}");
+        // A new edge can reach more modules.
+        let edge = if tool == "maven" {
+            maven(runtime_edge)
+        } else {
+            gradle("\"pricing\"")
+        };
+        let actual = decide(Some(edge));
+        assert_eq!(actual["mode"], "ALL", "{tool}: {actual}");
+        assert!(reason(&actual).contains("module graph changed"), "{actual}");
+        // A configuration from before fingerprints selects everything until refreshed.
         let mut config: Value =
             serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
         config.as_object_mut().unwrap().remove("build_fingerprint");

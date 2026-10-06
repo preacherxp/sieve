@@ -151,7 +151,9 @@ bytecode references. Evidence: [class analysis](../src/classes.rs) unit tests, i
 | CLS-06 | P1 | Each selected test's `reasons` entry traces the path to the change. | Implemented |
 
 DEP-07 now uses a committed fingerprint of conventional workspace build inputs.
-Missing/stale fingerprints select `ALL`; `refresh` rediscovers and stamps the graph.
+A missing fingerprint selects `ALL`. A stale one makes a module selection rediscover the
+graph: it stands only when `impact.json` still declares every module and edge the build
+reports, and selects `ALL` otherwise; `refresh` rediscovers and stamps the graph.
 Keep graph review explicit for external inputs and changed CI profiles/environment. Arbitrary undeclared runtime dependencies
 cannot be assumed detectable; supported fixtures must declare those edges.
 

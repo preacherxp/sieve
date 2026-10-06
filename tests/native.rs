@@ -329,6 +329,35 @@ fn native_graph_runtime_resources_test_artifacts_and_failures() {
         write(root, consumer, "not valid Java");
         assert!(!run(root, &executable, false, &[]).status.success());
         write(root, consumer, original);
+        // A committed build edit that keeps the graph still selects, once the build confirms it.
+        let build = if tool == "maven" {
+            "unrelated/pom.xml"
+        } else {
+            "build.gradle"
+        };
+        let original = fs::read_to_string(root.join(build)).unwrap();
+        let comment = if tool == "maven" {
+            "<!-- reviewed -->"
+        } else {
+            "// reviewed"
+        };
+        write(root, build, format!("{original}\n{comment}\n"));
+        commit(root, "build edit that keeps the graph");
+        write(root, "provider/src/main/resources/next", "graph kept");
+        let kept = success(&[
+            "select",
+            "--workspace",
+            root.to_str().unwrap(),
+            "--base",
+            "HEAD",
+            "--executable",
+            &executable,
+        ]);
+        assert_eq!(kept["mode"], "MODULES", "{tool}: {kept}");
+        assert!(
+            kept["reason"].as_str().unwrap().contains("refresh"),
+            "{kept}"
+        );
         // A committed change to the native graph cannot silently reuse the old graph.
         let build = if tool == "maven" {
             "unrelated/pom.xml"

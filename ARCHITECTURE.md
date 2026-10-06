@@ -22,7 +22,8 @@ single-module Maven project.
 Every path produces a `Selection` (`src/main.rs`) with one of four modes:
 
 - `ALL`: every module and test. Chosen for a full request, a build-input change, an
-  unclassified path, a stale build fingerprint, or unavailable Git history.
+  unclassified path, a stale graph (a fingerprint mismatch whose graph the build no longer
+  confirms, or no fingerprint), or unavailable Git history.
 - `MODULES`: changed modules plus their transitive dependents.
 - `SUBSET`: named test classes inside the selected modules (class-level and local mode).
 - `NONE`: nothing to test. Module-level `NONE` runs only `clean`; class-level `NONE` still
@@ -39,9 +40,11 @@ sieve run --base REV
   ├─ Config::read            impact.json: tool, module graph, ignore, class_level, generated
   ├─ changed_paths           merge-base with REV; committed, staged, unstaged, untracked paths
   ├─ fingerprint::build_inputs   hash of POMs, Gradle scripts, .mvn/, gradle/, buildSrc …
-  │                          mismatch with impact.json → ALL ("run sieve refresh")
   ├─ Config::select          ignore globs → skip; <module>/src/** → module; anything else → ALL;
   │                          then close over reverse dependency edges → MODULES or NONE
+  ├─ [fingerprint mismatch && MODULES]
+  │    └─ setup::stale       rediscover the graph; impact.json still covers it → keep MODULES
+  │                          (reason asks for refresh), else ALL ("run sieve refresh")
   ├─ [class_level && MODULES]
   │    ├─ compile_args       Maven: clean test-compile -pl … -am
   │    │                     Gradle: clean :m:impactCompile :impactClasses
@@ -54,10 +57,10 @@ sieve run --base REV
                              Gradle: clean :m:check -Pimpact.modules=… [-Pimpact.testsFile=…]
 ```
 
-`select` stops after `Config::select` and prints the JSON; it never compiles, so it stays
-module-level. `run` writes `--output` before the build starts and again after refinement,
-removes stale Surefire/Failsafe reports outside the reactor, and returns the build's exit
-status.
+`select` stops after `Config::select` and the graph check and prints the JSON; it never
+compiles, so it stays module-level. Build-tool output of the graph check goes to stderr.
+`run` writes `--output` before the build starts and again after refinement, removes stale
+Surefire/Failsafe reports outside the reactor, and returns the build's exit status.
 
 ### Class-level analysis (`src/classes.rs`)
 
@@ -77,10 +80,10 @@ unreadable classes) return `Impact::Fallback`, which keeps the module selection.
 
 ### Build adapters
 
-- **Maven** (`src/setup.rs`): `init` reads effective models and adds per-module
-  `impact.skip.<module>` properties wired to Surefire/Failsafe `skipTests`, so `-am`
-  dependencies compile without running their tests. `refresh` rewrites the graph and
-  fingerprint and preserves extra declared edges.
+- **Maven** (`src/setup.rs`): `init` reads the reactor's effective models in one Maven
+  start and adds per-module `impact.skip.<module>` properties wired to Surefire/Failsafe
+  `skipTests`, so `-am` dependencies compile without running their tests. `refresh`
+  rewrites the graph and fingerprint and preserves extra declared edges.
 - **Gradle** (`src/gradle.init.gradle`): an init script passed with `--init-script`.
   Its `impactInit` task reports the project graph for `init`; it disables `Test` tasks outside
   `impact.modules`, filters tests to `impact.testsFile`, and adds `impactCompile` and

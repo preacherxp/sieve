@@ -30,7 +30,9 @@ sieve run --workspace . --base origin/main
 
 `init` writes `impact.json` (module graph, ignore globs, options) and, for Maven, adds
 per-module `skipTests` properties to the POMs. Commit both. Run `sieve refresh` after
-build changes. Gradle needs no build-file edits; a bundled init script does the work.
+build changes; until then, each module selection first checks the graph with the build,
+and selects everything if the graph changed. Gradle needs no build-file edits; a bundled
+init script does the work.
 
 ```bash
 sieve select --base origin/main         # preview the decision, no build

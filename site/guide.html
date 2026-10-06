@@ -504,7 +504,7 @@
             <div class="fig-body">
               <svg class="fx" viewBox="0 0 920 920" role="img" aria-labelledby="f2t f2d">
                 <title id="f2t">Static selection decision flow</title>
-                <desc id="f2d">Local mode branches off first. Without a base, without history, or with a changed build fingerprint the result is ALL. Each changed path is classified: ignored paths are skipped, module sources mark their module, anything else selects ALL. No marked module gives NONE. Otherwise dependents are added. Without class_level the result is MODULES. With it, run compiles and analyzes; failed analysis keeps MODULES; test classes reaching the change give SUBSET, none gives NONE.</desc>
+                <desc id="f2d">Local mode branches off first. Without a base, without history, or with a module graph that changed since impact.json was written the result is ALL; a stale fingerprint is checked against the graph the build reports. Each changed path is classified: ignored paths are skipped, module sources mark their module, anything else selects ALL. No marked module gives NONE. Otherwise dependents are added. Without class_level the result is MODULES. With it, run compiles and analyzes; failed analysis keeps MODULES; test classes reaching the change give SUBSET, none gives NONE.</desc>
 
                 <g><rect class="start" x="180" y="20" width="240" height="40" rx="20"/><text class="inv t" x="300" y="45" text-anchor="middle">sieve select / run</text></g>
                 <g><path class="e d" d="M180 40 H150" marker-end="url(#ah)"/><text class="lab" x="144" y="36" text-anchor="end">--records or</text><text class="lab" x="144" y="50" text-anchor="end">"records": true → §06</text></g>
@@ -513,7 +513,7 @@
                 <g><path class="e" d="M300 135 V168" marker-end="url(#ah)"/><text class="lab" x="308" y="156">yes</text></g>
                 <g><rect class="dec" x="180" y="170" width="240" height="40" rx="20"/><text class="t" x="300" y="195" text-anchor="middle">History + merge base found?</text></g>
                 <g><path class="e" d="M300 210 V243" marker-end="url(#ah)"/><text class="lab" x="308" y="231">yes</text></g>
-                <g><rect class="dec" x="180" y="245" width="240" height="40" rx="20"/><text class="t" x="300" y="270" text-anchor="middle">Build fingerprint matches?</text></g>
+                <g><rect class="dec" x="180" y="245" width="240" height="40" rx="20"/><text class="t" x="300" y="270" text-anchor="middle">Module graph still current?</text></g>
                 <g><path class="e" d="M300 285 V318" marker-end="url(#ah)"/><text class="lab" x="308" y="306">yes</text></g>
                 <g><rect class="box" x="180" y="320" width="240" height="40" rx="10"/><text class="t" x="300" y="345" text-anchor="middle">Classify each changed path</text></g>
                 <g><path class="e d" d="M180 340 H150" marker-end="url(#ah)"/><text class="lab" x="144" y="336" text-anchor="end">ignored glob</text><text class="lab" x="144" y="350" text-anchor="end">→ skip</text></g>
@@ -535,7 +535,7 @@
 
                 <g><path class="e all" d="M420 115 H660"/><text class="lab all" x="436" y="109">no</text></g>
                 <g><path class="e all" d="M420 190 H660"/><text class="lab all" x="436" y="184">no</text></g>
-                <g><path class="e all" d="M420 265 H660"/><text class="lab all" x="436" y="259">changed</text></g>
+                <g><path class="e all" d="M420 265 H660"/><text class="lab all" x="436" y="259">changed or unreadable</text></g>
                 <g><path class="e all" d="M420 340 H660"/><text class="lab all" x="436" y="334">build input / other path</text></g>
                 <g><path class="e all" d="M660 115 V340"/><path class="e all" d="M660 227 H696" marker-end="url(#ah-all)"/></g>
                 <g class="term T-all"><rect x="698" y="200" width="200" height="54" rx="12"/><text class="tt" x="798" y="223" text-anchor="middle">ALL</text><text class="ts" x="798" y="241" text-anchor="middle">clean verify · clean check</text></g>
@@ -583,7 +583,7 @@
           <ol class="steps">
             <li><b>Read configuration</b><span class="where">Config::read</span><p>Tool, module graph, <code>ignore</code> globs, opt-ins. Unknown fields, missing modules or paths outside the workspace are errors, not fallbacks.</p></li>
             <li><b>Collect changes</b><span class="where">changed_paths</span><p>Merge base of <code>REV</code> and HEAD; committed, staged, unstaged, deleted, renamed and untracked paths. Submodule updates count even when Git configuration ignores them.</p><span class="tags"><span class="tag m-all">no history → ALL</span></span></li>
-            <li><b>Check the fingerprint</b><span class="where">fingerprint.rs</span><p>Hash of POMs, Gradle scripts, <code>.mvn/</code>, <code>gradle/</code>, <code>buildSrc</code>. A mismatch means the declared graph may be stale.</p><span class="tags"><span class="tag m-all">mismatch → ALL · run sieve refresh</span></span></li>
+            <li><b>Check the fingerprint</b><span class="where">fingerprint.rs · setup::stale</span><p>Hash of POMs, Gradle scripts, <code>.mvn/</code>, <code>gradle/</code>, <code>buildSrc</code>. A mismatch means the declared graph may be stale: a module selection asks the build for its graph and stands only if <code>impact.json</code> still declares every module, edge, and shared test module.</p><span class="tags"><span class="tag m-all">graph changed → ALL · run sieve refresh</span></span></li>
             <li><b>Classify paths</b><span class="where">Config::select</span><p>Ignored → skip. <code>&lt;module&gt;/src/**</code> → that module. Default ignore patterns never hide module sources (a module named <code>docs</code> still counts); explicit ones do.</p><span class="tags"><span class="tag m-all">other → ALL</span><span class="tag m-none">only ignored → NONE</span></span></li>
             <li><b>Close over dependents</b><span class="where">Config::select</span><p>Repeat until stable: a module with a selected dependency becomes selected.</p><span class="tags"><span class="tag m-mod">→ MODULES</span></span></li>
             <li><b>Refine to classes</b><span class="where">Selection::refine</span><p>Only with <code>class_level</code>, only in <code>run</code>. See section 04.</p><span class="tags"><span class="tag m-sub">→ SUBSET</span><span class="tag m-none">→ NONE</span><span class="tag m-mod">fallback keeps MODULES</span></span></li>

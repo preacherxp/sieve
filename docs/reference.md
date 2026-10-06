@@ -78,17 +78,22 @@ Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
 Run `sieve refresh --workspace PATH` after build changes,
 using the same profiles/properties as CI (for Maven, for example, `-- -Pci`).
-Refresh preserves additional declared edges between surviving modules; review
-obsolete edges manually. A fingerprint of conventional workspace build inputs
-forces `ALL` when the graph may be stale, including after the build edit was
-committed. It cannot detect changes to external models, environment variables,
-or undeclared runtime dependencies.
+Refresh preserves additional declared edges between surviving modules; review obsolete
+edges manually. A fingerprint of conventional workspace build inputs tells when the graph
+may be stale, including after the build edit was committed, such as a dependency bump
+merged without a refresh. A module selection then asks the build for its current graph,
+with the profiles, properties, settings, and init scripts passed after `--`. When every
+module and edge it reports is in `impact.json`, the selection stands and its reason asks
+for a refresh; anything new, or a graph that cannot be read, selects `ALL`. A configuration
+without a fingerprint selects `ALL` until refreshed. The fingerprint cannot detect changes
+to external models, environment variables, or undeclared runtime dependencies.
 Custom dependency substitution and dependencies introduced through external artifacts
 need manual graph review. Automatic setup collects declared inter-project edges, and also
 edges the build itself creates: for Maven, a sibling module used as a build plugin, a plugin
 dependency, an annotation processor path, or an unpacked artifact, and a sibling directory
 named in the effective build configuration (such as a shared OpenAPI specification); for
-Gradle, a source set directory inside another project.
+Gradle, a source set directory inside another project. Maven reads the effective models of
+the whole reactor in one start.
 
 Prerequisites: Rust 1.92+ and a JDK 17+ `javac` to install/build the CLI, Git for change
 detection, and the JDK/build tool required by your project. `build.rs` compiles the

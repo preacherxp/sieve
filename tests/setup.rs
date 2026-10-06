@@ -285,3 +285,89 @@ cp "$MODELS/$module.xml" "$output"
         json!({"api": [], "app": ["api", "processor"], "processor": []})
     );
 }
+
+#[test]
+fn maven_setup_reads_the_reactor_once() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("project")).unwrap();
+    let root = temp.path().join("project").canonicalize().unwrap();
+    write(
+        &root,
+        "pom.xml",
+        "<project><artifactId>root</artifactId></project>",
+    );
+    write(
+        &root,
+        "core/pom.xml",
+        "<project><artifactId>core</artifactId></project>",
+    );
+    write(
+        &root,
+        "app/pom.xml",
+        "<project><artifactId>app</artifactId></project>",
+    );
+    // An artifact ID that names a property cannot be matched to the reactor's models.
+    write(
+        &root,
+        "testkit/pom.xml",
+        "<project><artifactId>${kit}</artifactId></project>",
+    );
+    let models = temp.path().join("models");
+    let model = |artifact: &str, body: &str| {
+        format!("<project><groupId>x</groupId><artifactId>{artifact}</artifactId>{body}</project>")
+    };
+    let testkit = model("testkit", "");
+    let reactor = [
+        model("root", "<packaging>pom</packaging><modules><module>core</module><module>app</module><module>testkit</module></modules>"),
+        model("core", ""),
+        model("app", "<dependencies><dependency><groupId>x</groupId><artifactId>core</artifactId></dependency>\
+            <dependency><groupId>x</groupId><artifactId>testkit</artifactId><classifier>tests</classifier><scope>test</scope></dependency></dependencies>"),
+        testkit.clone(),
+    ];
+    write(
+        &models,
+        "reactor.xml",
+        format!(
+            "<?xml version=\"1.0\"?><!-- models --><projects>{}</projects>",
+            reactor.join("<!-- next -->")
+        ),
+    );
+    write(&models, "testkit.xml", testkit);
+    let build = temp.path().join("mvn");
+    executable(
+        &build,
+        r#"#!/bin/sh
+echo "$*" >> "$MODELS/calls"
+model=reactor next=0
+for arg do
+  if [ "$next" = 1 ]; then pom=$arg; next=0; fi
+  case "$arg" in -f) next=1 ;; -N) model=single ;; -Doutput=*) output=${arg#-Doutput=} ;; esac
+done
+[ "$model" = single ] && model=$(basename "$(dirname "$pom")")
+cp "$MODELS/$model.xml" "$output"
+"#,
+    );
+    let init = |command: &str| {
+        let output = Command::new(BIN)
+            .args([command, "--workspace", root.to_str().unwrap()])
+            .args(["--executable", build.to_str().unwrap()])
+            .env("MODELS", &models)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&fs::read(root.join("impact.json")).unwrap()).unwrap()
+    };
+    let config = init("init");
+    assert_eq!(
+        config["modules"],
+        json!({"app": ["core", "testkit"], "core": [], "testkit": []})
+    );
+    // One Maven start for the reactor, one for the module it could not match.
+    let calls = fs::read_to_string(models.join("calls")).unwrap();
+    assert_eq!(calls.lines().count(), 2, "{calls}");
+    assert!(calls.lines().last().unwrap().contains("-N"), "{calls}");
+}
