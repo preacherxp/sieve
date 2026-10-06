@@ -459,13 +459,18 @@ cargo test --locked --test records -- --include-ignored --test-threads=1
 ### Local speed-ups
 
 Local speed-ups are opt-in with `--with NAME[,NAME]`, or by default for the team with
-`"with": ["jgitver"]` in `impact.json`; `--without` overrides both.
+`"with": [...]` in `impact.json`; `--without` overrides both. `jgitver` is the exception:
+local and `--ci` runs of a Maven build that loads jgitver skip it by default.
 `--output` lists each one's state under `speedups`:
 
 - `reuse`: `TESTCONTAINERS_REUSE_ENABLE=true`, so containers declared `withReuse(true)`
   survive between runs.
-- `jgitver`: `-Djgitver.skip=true` when `.mvn/extensions.xml` loads jgitver. Filtered
-  resources that embed the version change, and so rerun their readers.
+- `jgitver`: `-Djgitver.skip=true` when `.mvn/extensions.xml` loads jgitver, on by default.
+  jgitver stamps the commit into the project version and the test JVM's `jgitver.*`
+  properties, so every commit would change filtered resources that embed the version, such
+  as a Spring `application.yml`, and rerun every test that reads them. Tests do not depend
+  on the version; `--without jgitver` keeps it. The default and an explicit `--with jgitver`
+  key the same records.
 - `repackage`: skip Spring Boot packaging with `-Dspring-boot.repackage.skip=true`.
   `build-info` still runs because applications read it; its timestamp is not hashed.
 - `mvnd`: the daemon forks test JVMs with its own environment,

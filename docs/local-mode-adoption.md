@@ -35,8 +35,8 @@ invalidates the records. Invocation arguments and stable JVM system properties a
 records; `record_ignore_properties` excludes system properties that change with every
 commit, and jgitver's `jgitver.*` properties are always excluded. jgitver also changes the
 project version on every commit, which reruns every test reading a filtered resource that
-embeds it, such as a Spring `application.yml`: add `"with": ["jgitver"]` so that local runs
-skip jgitver. A configured plain `sieve run` without `"records": true` uses static selection
+embeds it, such as a Spring `application.yml`, so local and `--ci` runs skip jgitver by
+default (`--without jgitver` keeps it). A configured plain `sieve run` without `"records": true` uses static selection
 and runs the full suite when no base is supplied. Class selection remains a separate
 opt-in through `"class_level": true`.
 `.sieve/` ignores itself in Git; nothing else needs committing besides `impact.json`.
@@ -65,8 +65,8 @@ checks those outputs before skipping a build and rejects records for classes rew
 while tests ran.
 
 The build keeps native `verify` packaging by default. Startup shortcuts are explicit:
-`--with reuse,jgitver,mvnd,repackage` enables container reuse, skipping jgitver, using the
-Maven daemon, and skipping Spring Boot repackaging respectively. Enable only the ones
+`--with reuse,mvnd,repackage` enables container reuse, using the Maven daemon, and skipping
+Spring Boot repackaging respectively; skipping jgitver is already the default. Enable only the ones
 that fit the service and measure them separately.
 
 ## Measure before relying on it

@@ -2519,8 +2519,15 @@ pub struct Levers {
     pub off: BTreeSet<String>,
 }
 
-/// Every speed-up changes native build behavior and must be requested explicitly.
+/// Every speed-up changes native build behavior and must be requested explicitly, except
+/// `jgitver` on Maven builds that load it (see `Levers::with_defaults`).
 pub const LEVERS: &[&str] = &["reuse", "jgitver", "mvnd", "repackage"];
+
+/// Whether the Maven build loads the jgitver extension.
+fn uses_jgitver(workspace: &Path) -> bool {
+    fs::read_to_string(workspace.join(".mvn/extensions.xml"))
+        .is_ok_and(|extensions| extensions.contains("jgitver"))
+}
 
 impl Levers {
     pub fn validate(&self) -> Result<()> {
@@ -2539,6 +2546,18 @@ impl Levers {
 
     fn enabled(&self, name: &str) -> bool {
         !self.off.contains(name) && self.on.contains(name)
+    }
+
+    /// Records need the `jgitver` speed-up: jgitver stamps the commit into the project version
+    /// and the test JVM's properties, which would invalidate every record that reads them on
+    /// each commit. Tests do not depend on the version, so a Maven build that loads jgitver
+    /// skips it unless `--without jgitver` keeps it. Defaulted levers equal explicit ones, so
+    /// records stay valid when `--with jgitver` is added or dropped.
+    pub fn with_defaults(mut self, workspace: &Path, gradle: bool) -> Self {
+        if !gradle && !self.off.contains("jgitver") && uses_jgitver(workspace) {
+            self.on.insert("jgitver".into());
+        }
+        self
     }
 
     /// Switches the levers on for `command`, returning each lever's state for `--output`.
@@ -2561,9 +2580,7 @@ impl Levers {
             "on".to_owned()
         };
         states.insert("reuse".into(), reuse);
-        let extensions =
-            fs::read_to_string(workspace.join(".mvn/extensions.xml")).unwrap_or_default();
-        let jgitver = if !extensions.contains("jgitver") {
+        let jgitver = if !uses_jgitver(workspace) {
             "not used".to_owned()
         } else if self.enabled("jgitver") {
             // Filtered resources that embed the version change and rerun their readers.
@@ -2715,6 +2732,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
             return Err(format!("The {lever} speed-up is for Maven only").into());
         }
     }
+    let levers = levers.with_defaults(workspace, gradle);
     let dir = prepare(workspace)?;
     let _execution = Lock::acquire(&dir, "execution.lock")?;
     let session = format!(
@@ -3327,6 +3345,37 @@ mod tests {
         assert!(temp.path().join("execution.lock").is_file());
         assert!(execution_guard(temp.path(), "session").is_err());
         assert!(execution_guard(temp.path(), "").unwrap().is_some());
+    }
+
+    #[test]
+    fn jgitver_is_skipped_by_default_where_maven_loads_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let on = |levers: Levers, gradle: bool| {
+            levers
+                .with_defaults(temp.path(), gradle)
+                .on
+                .contains("jgitver")
+        };
+        // Without the extension there is nothing to skip.
+        assert!(!on(Levers::default(), false));
+        fs::create_dir(temp.path().join(".mvn")).unwrap();
+        fs::write(temp.path().join(".mvn/extensions.xml"), "jgitver").unwrap();
+        assert!(on(Levers::default(), false));
+        let kept = Levers {
+            on: BTreeSet::new(),
+            off: BTreeSet::from(["jgitver".into()]),
+        };
+        assert!(!on(kept, false));
+        assert!(!on(Levers::default(), true));
+        // The default equals an explicit `--with jgitver`, which keys the same records.
+        let explicit = Levers {
+            on: BTreeSet::from(["jgitver".into()]),
+            off: BTreeSet::new(),
+        };
+        assert_eq!(
+            format!("{:?}", Levers::default().with_defaults(temp.path(), false)),
+            format!("{explicit:?}")
+        );
     }
 
     #[test]

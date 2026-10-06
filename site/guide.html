@@ -818,8 +818,9 @@
             the workspace lock. Ordinary Maven or IDE builds can still alter native outputs;
             output fingerprints invalidate the shortcut and classes rewritten during tests
             prevent recording.</p>
-          <p>Native <code>verify</code> packaging stays enabled. The <code>reuse</code>, <code>jgitver</code>, <code>mvnd</code> and
-            <code>repackage</code> speed-ups are opt-in through <code>--with</code>. Records still assume observed paths cover test
+          <p>Native <code>verify</code> packaging stays enabled. The <code>reuse</code>, <code>mvnd</code> and
+            <code>repackage</code> speed-ups are opt-in through <code>--with</code>; jgitver is skipped by default where Maven loads it,
+            since the version it stamps on every commit would invalidate records (<code>--without jgitver</code> keeps it). Records still assume observed paths cover test
             behavior and tests are independent; undeclared environment inputs, external services, floating image tags and jars changed
             without a build-input change need full-suite validation.</p>
           <p><a href="../build.rs">build.rs</a> compiles the agent with any JDK 17+ <code>javac</code>: the probe, API stubs and vendored ASM for 17,

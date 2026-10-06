@@ -132,8 +132,9 @@ attributes ignored.
 The unchanged-run shortcut hashes source contents as well as metadata. Content edits
 that preserve modification times and failed/interrupted previous runs force a clean
 build, so Maven cannot test stale classes.
-Packaging follows native `verify`; `reuse`, `jgitver`, `mvnd`, and `repackage` are opt-in
-speed-ups through `--with`.
+Packaging follows native `verify`; `reuse`, `mvnd`, and `repackage` are opt-in
+speed-ups through `--with`. `jgitver` is on by default where Maven loads it, because the
+version it stamps on every commit would invalidate records; `--without jgitver` keeps it.
 
 State in `.sieve/` (self-ignoring, survives `mvn clean`): `records/`, `snapshots/` of
 class shapes, `settings/` with the keys of recorded configuration files and the names of
