@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/preacherxp/sieve/master/install.sh 
 ```
 
 It installs to `~/.local/bin` (override with `SIEVE_INSTALL_DIR`) and verifies the
-release checksum. Set `SIEVE_VERSION=v0.2.1` to pin a release; `sieve --version` prints
+release checksum. Set `SIEVE_VERSION=v0.3.0` to pin a release; `sieve --version` prints
 the installed one. Releases are built by `.github/workflows/release.yml` when a `v*` tag
 matching the version in `Cargo.toml` is pushed.
 

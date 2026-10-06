@@ -142,7 +142,7 @@ Pull requests select against the base; everything else runs the full suite.
     curl -fsSL "https://raw.githubusercontent.com/preacherxp/sieve/$SIEVE_VERSION/install.sh" | sh
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
   env:
-    SIEVE_VERSION: <tag>  # a release, such as v0.2.1
+    SIEVE_VERSION: <tag>  # a release, such as v0.3.0
 - run: |
     args=()
     if [ "$EVENT" = pull_request ]; then args=(--base "$BASE"); else args=(--full); fi
