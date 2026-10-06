@@ -10,7 +10,7 @@ local mode is Java.
 Selection is conservative and builds only the selected modules and what they depend on.
 Setup uses module selection by default; projects can opt into class-level selection
 from compiled bytecode after measuring their test costs.
-Single-module Maven projects can also opt into local mode, which keeps
+Single-module Maven or Gradle projects can also opt into local mode, which keeps
 per-test runtime records and skips tests whose records show no change (see
 [Local mode](#local-mode-test-records)). Build configuration changes or uncertain Git
 history trigger the full suite.
@@ -29,8 +29,9 @@ curl -fsSL https://raw.githubusercontent.com/preacherxp/sieve/master/install.sh 
 ```
 
 It installs to `~/.local/bin` (override with `SIEVE_INSTALL_DIR`) and verifies the
-release checksum. Set `SIEVE_VERSION=v0.1.0` to pin a release. Releases are built by
-`.github/workflows/release.yml` when a `v*` tag is pushed.
+release checksum. Set `SIEVE_VERSION=v0.3.0` to pin a release; `sieve --version` prints
+the installed one. Releases are built by `.github/workflows/release.yml` when a `v*` tag
+matching the version in `Cargo.toml` is pushed.
 
 Or install from this checkout:
 
@@ -70,25 +71,38 @@ sieve init --workspace /path/to/project --tool gradle --executable /path/to/grad
 sieve run --workspace /path/to/project --base origin/main --executable /path/to/gradle
 ```
 
-Automatic setup currently supports a single JVM package or direct child modules
-whose directory names match their module names. Nested/custom module layouts,
-Gradle composite builds, Android, and Kotlin Multiplatform are not supported by
-automatic setup. The tool reports unsupported layouts instead of guessing.
+Automatic setup supports a single JVM package or modules at any depth whose directories
+match their place in the build: Maven modules listed by path (`<module>libs/core</module>`)
+or below nested aggregators, and Gradle projects whose directories match their paths
+(`:services:orders` in `services/orders`). A module is named by its directory,
+such as `services/orders`; Maven's skip property joins the segments with dots
+(`impact.skip.services.orders`), and Gradle tasks follow the project path
+(`:services:orders:check`). Aggregators build nothing themselves and are not modules; a
+change to their POM is a build input. Gradle projects in other directories, composite
+builds, Android, and Kotlin Multiplatform are not supported by automatic setup. The tool
+reports unsupported layouts instead of guessing.
 Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
 Run `sieve refresh --workspace PATH` after build changes,
 using the same profiles/properties as CI (for Maven, for example, `-- -Pci`).
-Refresh preserves additional declared edges between surviving modules; review
-obsolete edges manually. A fingerprint of conventional workspace build inputs
-forces `ALL` when the graph may be stale, including after the build edit was
-committed. It cannot detect changes to external models, environment variables,
-or undeclared runtime dependencies.
+Refresh preserves additional declared edges and shared test modules between surviving
+modules; review obsolete edges manually. A fingerprint of conventional workspace build
+inputs tells when the graph may be stale, including after the build edit was committed,
+such as a dependency bump merged without a refresh. A module selection then asks the build
+for its current graph, with the profiles, properties, settings, and init scripts passed after
+`--`. When every module, edge, and shared test module it reports is in `impact.json`, the
+selection stands and its reason asks for a refresh; anything new, or a graph that cannot be
+read, selects `ALL`. A configuration without a fingerprint selects `ALL` until refreshed.
+The fingerprint cannot detect changes to external models, environment variables, or
+undeclared runtime dependencies.
 Custom dependency substitution and dependencies introduced through external artifacts
 need manual graph review. Automatic setup collects declared inter-project edges, and also
 edges the build itself creates: for Maven, a sibling module used as a build plugin, a plugin
 dependency, an annotation processor path, or an unpacked artifact, and a sibling directory
 named in the effective build configuration (such as a shared OpenAPI specification); for
-Gradle, a source set directory inside another project.
+Gradle, a source set directory inside another project, and files of another project, such
+as `project(':a').sourceSets.test.output`. Maven reads the effective models of the whole
+reactor in one start.
 
 Prerequisites: Rust 1.92+ and a JDK 17+ `javac` to install/build the CLI, Git for change
 detection, and the JDK/build tool required by your project. `build.rs` compiles the
@@ -115,7 +129,8 @@ main sample's Spring 6 dependency requires Java 17.
     "pricing": [],
     "checkout": ["pricing"],
     "runtime": []
-  }
+  },
+  "shared_tests": []
 }
 ```
 
@@ -125,10 +140,20 @@ A single-module package uses `".": []`. The conventional source layout is
 1. Find the merge base between `--base` and HEAD.
 2. Collect committed, staged, unstaged, deleted, renamed, and untracked changed paths.
 3. Drop paths matching `ignore`, select changed source/resource modules, and follow
-   reverse dependency edges.
+   reverse dependency edges. A change under `<module>/src/test/` stays in its module
+   unless the module is listed in `shared_tests`: other modules see test code only through
+   a test artifact.
 4. Build only the selected modules and run their unit/integration tests through the
    native build tool: Maven `verify -pl <selected> -am` (dependencies build with their
    tests skipped), Gradle `:<module>:check` per selected module.
+
+`shared_tests` lists the modules whose `src/test` code other modules use: through a Maven
+`test-jar` (`<type>test-jar</type>` or `<classifier>tests</classifier>`), a Maven build use
+(plugin, processor, unpacked artifact, or directory), a Gradle dependency on a named
+configuration of another project, another project's files, or a source directory inside
+another project. Setup writes it; Gradle `testFixtures` live in `src/testFixtures` and reach
+their consumers like main code. Add a module by hand when its tests reach others in a way
+setup cannot see. A configuration without the key treats every module as shared.
 
 For the samples, pricing changes select pricing and checkout: **10 classes / 12 test
 invocations**. Checkout changes select **4 classes / 5 invocations**. Runtime changes
@@ -138,9 +163,10 @@ Changes matching the optional `ignore` globs in `impact.json` select NONE, inclu
 paths inside module source directories such as `src/site/**`. Patterns are relative to
 the workspace; a leading `/` anchors them at the repository root.
 `*` and `?` stay within one path segment and `**` crosses segments. Without `ignore`,
-the default is `["README.md", "docs/**", "/README.md", "/docs/**"]`; an explicit list
-replaces it. The default never hides module sources, such as those of a module named
-`docs`. The samples also ignore the repository's `VALIDATION.md`. Other changes
+the default is `["**/*.md", "**/*.adoc", "docs/**", "/*.md", "/*.adoc", "/docs/**"]`:
+Markdown and AsciiDoc files anywhere in the workspace, `docs/`, and the repository's
+top-level documentation. An explicit list replaces it. The default never hides module
+sources, such as a Markdown resource or the sources of a module named `docs`. Other changes
 outside recognized source directories, including build scripts, dependency versions,
 configuration, and shared repository inputs, select ALL. Do not ignore build scripts,
 `impact.json`, or other test inputs: ignored changes never trigger tests. An unavailable base or Git
@@ -172,11 +198,14 @@ needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
 Module-level selection runs every test of a selected module, and a single-module
 project has only one. Add `"class_level": true` to narrow a module selection to test
-classes. It is opt-in because the extra compilation invocation can outweigh the time
-saved in cheap suites; `refresh` preserves that choice.
-`run` first compiles the selected modules
-(`clean test-compile -pl <selected> -am` on Maven, `clean :<module>:impactCompile` on
-Gradle), then reads the class files of every module:
+classes. It is opt-in because static analysis has blind spots (below); `refresh` preserves
+that choice. `run` selects inside the one build that runs the tests, once the selected
+modules compiled. On Gradle, the init script's `impactSelect` task runs after they compile
+and before their `Test` tasks, and calls `sieve classes`. On Maven, a Sieve core extension,
+loaded with `-Dmaven.ext.class.path`, decides each module right before Surefire or Failsafe
+runs its tests, when the module and every module it depends on have compiled: their classes
+are the only ones its tests can reach. Changes in other modules do not count for it. The
+selector reads the class files of every module it considers:
 
 - Edges follow constant-pool references (class entries, descriptors, generic signatures,
   annotations), superclasses and interfaces, class names spelled in string constants
@@ -249,15 +278,21 @@ Only declare inputs that are not also read at runtime or by tests: a declared in
 reaches tests solely through its generated classes. A removed generated source, or failed
 generation at the base, keeps the module selection.
 
-The second build skips `clean`, and Maven also skips recompiling the main classes it just
-compiled (`-Dmaven.main.skip=true`); plugins that post-process classes in place run again
-on the already processed output. Maven receives `-Dsurefire.excludesFile` and
-`-Dfailsafe.excludesFile` listing the unselected test classes, so POM includes and the
-unit/integration split stay in effect; the file also repeats Surefire's default
-`**/*$*` exclude, which an excludes file otherwise drops. Gradle reads the selected
-classes from a file (`-Pimpact.testsFile`) and filters every `Test` task to them and
-their nested classes. `select` stays module-level because it does not compile;
-`--output` receives the refined decision. `refresh` preserves the flag.
+On Maven, Surefire and Failsafe read an excludes file listing the module's unselected test
+classes, after the excludes file the POM configures, so POM includes and the
+unit/integration split stay in effect; the file also repeats Surefire's default `**/*$*`
+exclude, which an excludes file otherwise drops. When the extension cannot apply it, the
+module runs every test and the build log says so. A changed `generated` input, or a build
+that loads its own extensions through `maven.ext.class.path`, compiles first
+(`clean test-compile -pl <selected> -am`) and starts Maven again with
+`-Dsurefire.excludesFile` and `-Dfailsafe.excludesFile`; that second build skips `clean` and
+recompiling the main classes (`-Dmaven.main.skip=true`), and plugins that post-process
+classes in place run again on the already processed output. Gradle's `Test` tasks read the
+selection when they start and filter to the selected classes and their nested classes; a
+selection without classes skips them, and the selection file is a task input, so a cached
+result never stands for another selection. `select` stays module-level because it does
+not compile; `--output` receives the refined decision before any test runs on Gradle, and
+when the build ends on Maven. `refresh` preserves the flag.
 
 Static analysis still cannot see classes named in resources outside `src/`, reflection
 built from non-constant strings, context tests whose composed annotation lives in a

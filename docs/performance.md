@@ -173,6 +173,26 @@ python3 scripts/benchmark-selective-performance.py --maven /path/to/mvn \
   --delay-ms 0 --output validation-results/selective-performance-zero
 ```
 
+### Class selection in one build (2026-10-06)
+
+Measured 2026-10-06 on macOS ARM64, JDK 21.0.7 and Maven 3.9.11, after class selection
+moved inside the build that runs the tests ([ADR 0006](adr/0006-select-maven-test-classes-in-the-build.md)),
+with the same script: one warmup and five samples per condition, alternating. Seconds,
+**median (minimum–maximum)**:
+
+| Unrelated setup delay | Native full | Module selection | Class selection |
+| --- | ---: | ---: | ---: |
+| 6 seconds | 7.481 (7.466–7.496) | 7.530 (7.520–7.534) | 1.515 (1.511–1.524) |
+| 0 seconds | 1.449 (1.439–1.456) | 1.517 (1.499–1.551) | 1.512 (1.508–1.577) |
+
+Class selection now costs what module selection costs on the trivial suite, instead of a
+second Maven start, and saves 80% with the six-second setup. The deliberately incorrect
+price calculation failed `PriceTest` in both the native and the class-selected run, and an
+unavailable base still ran both tests. The JDK and Maven differ from the table above, so
+compare within each table. On the Gradle fixture (`unrelated` mutation, Gradle 9.6.1 without
+a daemon, four alternating runs), the same change took a class-level run from 7.31–7.53 s
+to 4.54–4.59 s.
+
 ## Local mode on a slow single-module service: commit walks
 
 Measured 2026-10-01 on macOS ARM64 (12 cores), JDK 24.0.1, Maven 3.9.11 and Gradle 8.14

@@ -46,7 +46,7 @@ support the case.
 
 Keep the oracle independent in [scenarios.json](../scenarios.json). Never derive
 the required test set or expected failures from Sieve's selection. New fixtures
-use the generic root/direct-child native report collector; do not weaken
+use the generic native report collector, which finds module reports at any depth; do not weaken
 its assertions to accommodate them.
 
 ## 1. Preserve the existing application mutations
@@ -63,8 +63,8 @@ in both modules; it does not mean only classes directly calling the changed code
 | `unused` | P0 | Pricing + checkout even though no test fails; record conservative extra execution. |
 | `gateway-implementation` | P0 | Checkout; interface implementation changes reach the declared consumer tests. |
 | `inherited-fixture` | P0 | Checkout; changes to a shared test superclass rerun its module. |
-| `changed-test` | P0 | Pricing + checkout; a changed test is included and its deliberate failure is observed. |
-| `new-test` | P0 | Pricing + checkout; the added class executes even though it was absent from the baseline inventory. |
+| `changed-test` | P0 | Pricing; a changed test is included and its deliberate failure is observed. No module uses pricing's tests, so checkout is not selected. |
+| `new-test` | P0 | Pricing; the added class executes even though it was absent from the baseline inventory. |
 | `reflection` | P0 | Runtime; a reflectively reached implementation failure is observed. |
 | `async` | P0 | Runtime; a failure from code running on a worker thread is observed. |
 | `spring-bean` | P0 | Runtime; both injection and ServiceLoader failures are observed. |
@@ -88,7 +88,7 @@ Current counts, for detecting inventory drift:
 | Checkout only | 4 | 5 |
 | Runtime only | 5 | 5 |
 | `new-test`, full suite | 16 | 18 |
-| `new-test`, selected | 11 | 13 |
+| `new-test`, selected | 7 | 8 |
 | `delete-test`, full suite | 14 | 16 |
 | `delete-test`, selected | 3 | 4 |
 
@@ -111,7 +111,7 @@ Use temporary Git repositories; most of these cases need no JVM build.
 | GIT-05 | P0 | A diverged target branch uses the merge base; a synthetic PR merge checkout compared with the PR base selects the correct changes. | Implemented; see evidence below |
 | GIT-06 | P0 | Unknown base, unrelated histories, genuinely shallow history, and unavailable Git each select `ALL` with a useful reason. Invalid project configuration still fails. | Implemented; see evidence below |
 | GIT-07 | P0 | Root build files, module build files, wrappers, lockfiles, `impact.json`, CI scripts, and unknown tracked/untracked inputs select `ALL`. | Implemented; see evidence below |
-| GIT-08 | P0 | Paths matching `ignore` globs (default `README.md` and `docs/**`; the samples add `/VALIDATION.md`) select `NONE`; similarly named files under module `src/` select that module. Mixed docs and source edits retain source selection. | Implemented; see evidence below |
+| GIT-08 | P0 | Paths matching `ignore` globs (default: Markdown and AsciiDoc outside module sources, and `docs/**`) select `NONE`; similarly named files under module `src/` select that module. Mixed docs and source edits retain source selection. | Implemented; see evidence below |
 | GIT-09 | P0 | A workspace below the Git root still notices shared and sibling repository changes and selects `ALL`; recognized repository docs retain their exemption. | Implemented; see evidence below |
 | GIT-10 | P1 | Spaces, Unicode, and newlines in source filenames survive Git's NUL-delimited output; an undecodable filename causes a full fallback. Workspace paths with spaces work. | Implemented; see evidence below |
 | GIT-11 | P0 | Ignored build outputs and reports outside the repository do not change selection on a repeat run; an unignored output file selects `ALL` with a diagnostic. | Implemented; see evidence below |
@@ -151,7 +151,9 @@ bytecode references. Evidence: [class analysis](../src/classes.rs) unit tests, i
 | CLS-06 | P1 | Each selected test's `reasons` entry traces the path to the change. | Implemented |
 
 DEP-07 now uses a committed fingerprint of conventional workspace build inputs.
-Missing/stale fingerprints select `ALL`; `refresh` rediscovers and stamps the graph.
+A missing fingerprint selects `ALL`. A stale one makes a module selection rediscover the
+graph: it stands only when `impact.json` still declares every module, edge, and shared test
+module the build reports, and selects `ALL` otherwise; `refresh` rediscovers and stamps the graph.
 Keep graph review explicit for external inputs and changed CI profiles/environment. Arbitrary undeclared runtime dependencies
 cannot be assumed detectable; supported fixtures must declare those edges.
 
@@ -166,7 +168,7 @@ Evidence: [setup](../src/setup.rs), [Gradle adapter](../src/gradle.init.gradle),
 | BUILD-02 | P0 | Repeat `init`, encounter an existing Maven profile, or fail build-model discovery. Refuse conflicts, preserve existing configuration, and make no edits after failed discovery. Ordinary native commands still run all tests after installation. | Implemented; see evidence below |
 | BUILD-03 | P0 | Prefer an executable project wrapper over PATH; honor `--executable` for both setup and execution. Missing or non-executable commands fail clearly. | Implemented; see evidence below |
 | BUILD-04 | P0 | Reject malformed/unknown configuration fields, missing module directories, unknown dependency names, invalid module paths, ambiguous build-tool detection, and duplicate Maven coordinates. Never silently report `NONE`. | Implemented; see evidence below |
-| BUILD-05 | P0 | Reject unsupported nested/custom layouts, composite builds, Android, Kotlin Multiplatform, and Gradle below the supported minimum during automatic setup, with actionable errors and no generated setup. | Implemented layouts/plugin-ID rejection; below-minimum Gradle runtime not locally exercised |
+| BUILD-05 | P0 | Accept nested modules whose directories match their place in the build (`native_nested_modules_build_by_directory`); reject other custom layouts, composite builds, Android, Kotlin Multiplatform, and Gradle below the supported minimum during automatic setup, with actionable errors and no generated setup. | Implemented layouts/plugin-ID rejection; below-minimum Gradle runtime not locally exercised |
 | BUILD-06 | P0 | Maven parent inheritance, properties, and active profiles produce the correct module graph in the CI environment. Execution receives the applicable profile/property flags; selected tests and unrelated POM configuration are preserved. | Implemented; see evidence below |
 | BUILD-07 | P0 | Maven Surefire and Failsafe honor per-module skipping, including inherited/plugin-specific configuration. Skipping provider tests must not remove artifacts needed by selected consumers. | Implemented; see evidence below |
 | BUILD-08 | P0 | Gradle Groovy and Kotlin DSL: single package, direct child modules, and custom `Test` tasks connected to `check`. Every selected test task runs and every excluded test task skips. | Implemented; see evidence below |

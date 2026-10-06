@@ -1,7 +1,7 @@
-//! Compiles the test-JVM agent (`agent/`) into two jars that the binary embeds: the agent
-//! itself, with the vendored ASM (`agent/asm`), and the probe it adds to the bootstrap class
-//! path. Needs a JDK 17+ `javac`, found
-//! through `SIEVE_JAVA_HOME`, `JAVA_HOME`, `JAVA_HOME_<version>_*` (as set by CI setup
+//! Compiles the jars that the binary embeds: the test-JVM agent (`agent/`), with the vendored
+//! ASM (`agent/asm`), the probe it adds to the bootstrap class path, and the Maven extension
+//! (`agent/maven`) that selects test classes inside a Maven build. Needs a JDK 17+ `javac`,
+//! found through `SIEVE_JAVA_HOME`, `JAVA_HOME`, `JAVA_HOME_<version>_*` (as set by CI setup
 //! actions), or `PATH`. Build with `--no-default-features` to leave the agent out.
 use std::{
     env, fs,
@@ -53,6 +53,29 @@ fn main() {
     .unwrap();
     jar(&bin, &out.join("sieve-agent.jar"), &agent, Some(&manifest));
     jar(&bin, &out.join("sieve-probe.jar"), &probe, None);
+    // The Maven extension runs in Maven's own JVM, back to Java 8.
+    let maven_stubs = classes.join("maven-stubs");
+    let maven = classes.join("maven");
+    compile(
+        &bin,
+        "8",
+        "agent/maven/stubs",
+        &maven_stubs,
+        &[],
+        None,
+        None,
+    );
+    compile(
+        &bin,
+        "8",
+        "agent/maven/src",
+        &maven,
+        &[&maven_stubs],
+        None,
+        None,
+    );
+    copy(Path::new("agent/maven/resources"), &maven);
+    jar(&bin, &out.join("sieve-maven.jar"), &maven, None);
 }
 
 fn version(javac: &Path) -> Option<u32> {

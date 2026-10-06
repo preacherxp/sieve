@@ -33,7 +33,7 @@ command -v python3 >/dev/null || fail "python3 is needed to edit impact.json"
 java_bin="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 version="$("$java_bin" -XshowSettings:properties -version 2>&1 | awk -F'= ' '/java.specification.version/ {print $2}')"
 [ -n "$version" ] || fail "cannot run $java_bin"
-[ "${version%%.*}" -ge 24 ] 2>/dev/null || fail "test records need a Java 24+ JDK (JAVA_HOME has $version)"
+[ "${version%%.*}" -ge 17 ] 2>/dev/null || fail "test records need a Java 17+ test JVM (JAVA_HOME has $version)"
 echo "Java $version"
 
 if [ -x "$service/mvnw" ]; then maven="$service/mvnw"; else maven="mvn"; fi

@@ -2,6 +2,7 @@
 // Execution-time closures capture only strings, booleans and file collections, never
 // Project objects, so builds using the configuration cache keep working.
 import groovy.json.JsonOutput
+import org.gradle.api.artifacts.FileCollectionDependency
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.tasks.testing.Test
 import org.gradle.util.GradleVersion
@@ -10,30 +11,43 @@ if (GradleVersion.current() < GradleVersion.version('7.6.3')) {
     throw new GradleException('Sieve requires Gradle 7.6.3 or newer. Update the wrapper before running setup or tests.')
 }
 
-def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1) }
+// A module is named by its directory, which setup requires to match its project path:
+// `:services:orders` lives in `services/orders`.
+def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1).replace(':', '/') }
 
 gradle.beforeProject { p ->
     def modules = p.providers.gradleProperty('impact.modules').orNull
     def enabled = modules == null || moduleId(p) in modules.split(',')
-    def testsFile = p.providers.gradleProperty('impact.testsFile').orNull
-    def tests = testsFile == null ? null : p.providers.fileContents(p.layout.projectDirectory.file(testsFile))
-        .asText.get().readLines().findAll { !it.isEmpty() }
+    // Class-level selection in the same build: `impactSelect` writes `all`, or `filter` and the
+    // test classes to run, after the selected modules compiled.
+    def selected = p.providers.gradleProperty('impact.selected').orNull
     // Local mode: the test-record agent joins the test JVMs only, never Gradle's own daemons.
     def agent = p.providers.gradleProperty('impact.agent').orNull
     p.tasks.withType(Test).configureEach { task ->
         if (agent != null) {
             task.jvmArgs(agent)
         }
-        // An empty include filter would run every test, so an empty selection disables the task.
-        if (!enabled || tests?.isEmpty()) {
+        if (!enabled) {
             task.enabled = false
-        } else if (tests != null) {
-            task.filter { filter ->
-                tests.each { cls ->
-                    filter.includeTestsMatching(cls)
-                    filter.includeTestsMatching(cls + '$*')
+        } else if (selected != null) {
+            def selection = new File(selected)
+            task.dependsOn(':impactSelect')
+            // An input, so that a cached test result never stands for another selection.
+            task.inputs.file(selection).withPropertyName('impactSelection')
+            // An empty include filter would run every test, so an empty selection skips the task.
+            task.onlyIf {
+                def lines = selection.readLines()
+                lines[0] == 'all' || lines.size() > 1
+            }
+            task.doFirst { Test test ->
+                def lines = selection.readLines()
+                if (lines[0] != 'all') {
+                    lines.drop(1).each { cls ->
+                        test.filter.includeTestsMatching(cls)
+                        test.filter.includeTestsMatching(cls + '$*')
+                    }
+                    test.filter.failOnNoMatchingTests = false
                 }
-                filter.failOnNoMatchingTests = false
             }
         }
     }
@@ -87,6 +101,24 @@ gradle.projectsEvaluated {
                     tests: paths(tests.files)])
             }
         }
+        def selected = root.findProperty('impact.selected')?.toString()
+        if (selected != null) {
+            def sieve = root.property('impact.sieve').toString()
+            def request = root.property('impact.request').toString()
+            def chosen = (root.findProperty('impact.modules')?.toString() ?: '').split(',') as Set
+            root.tasks.register('impactSelect') {
+                dependsOn('impactClasses')
+                dependsOn(root.allprojects.findAll { moduleId(it) in chosen }.collect { it.tasks.named('impactCompile') })
+                doLast {
+                    def process = new ProcessBuilder(sieve, 'classes', '--request', request)
+                        .redirectErrorStream(true).start()
+                    process.inputStream.eachLine { println it }
+                    if (process.waitFor() != 0) {
+                        throw new GradleException('Sieve could not select test classes.')
+                    }
+                }
+            }
+        }
     }
     if (root.findProperty('impact.output') != null) {
         root.tasks.register('impactInit') {
@@ -95,10 +127,21 @@ gradle.projectsEvaluated {
                     throw new GradleException('Composite builds require an explicit impact configuration.')
                 }
                 def modules = [:]
+                // Projects whose test code other projects may use: through a named configuration,
+                // such as a test output, through their files, or through a source directory.
+                def shared = [] as Set
+                // The project whose directory holds a file; the root only for its sources and output.
+                def projectOf = { File file ->
+                    def path = file.toPath().normalize()
+                    def found = root.allprojects.findAll { path.startsWith(it.projectDir.toPath()) }
+                        .max { it.projectDir.toPath().nameCount }
+                    def own = [root.projectDir.toPath().resolve('src'), root.layout.buildDirectory.get().asFile.toPath()]
+                    found != root || own.any { path.startsWith(it) } ? found : null
+                }
                 root.allprojects.each { p ->
                     def key = moduleId(p)
-                    if (key != '.' && (key.contains(':') || p.projectDir != new File(root.projectDir, key))) {
-                        throw new GradleException('Automatic setup supports a single JVM project or direct child modules in matching directories.')
+                    if (key != '.' && p.projectDir.canonicalFile != new File(root.projectDir, key).canonicalFile) {
+                        throw new GradleException("Automatic setup supports modules in directories that match their project paths; ${p.path} is in ${p.projectDir}.")
                     }
                     if (p.plugins.hasPlugin('com.android.application') || p.plugins.hasPlugin('com.android.library') ||
                         p.plugins.hasPlugin('org.jetbrains.kotlin.multiplatform')) {
@@ -107,20 +150,39 @@ gradle.projectsEvaluated {
                     // Include empty aggregator modules too, so all project dependency edges have an owner.
                     def dependencies = p.configurations.collectMany { c ->
                         c.allDependencies.withType(ProjectDependency).collect { d ->
-                            moduleId(GradleVersion.current() >= GradleVersion.version('8.11')
+                            def id = moduleId(GradleVersion.current() >= GradleVersion.version('8.11')
                                 ? root.project(d.path) : d.dependencyProject)
+                            if (d.targetConfiguration != null && id != key) {
+                                shared << id
+                            }
+                            id
+                        }
+                    }
+                    // Files of another project, such as `project(':a').sourceSets.test.output`.
+                    p.configurations.each { c ->
+                        c.allDependencies.withType(FileCollectionDependency).each { d ->
+                            try {
+                                d.files.files.each { file ->
+                                    def found = projectOf(file)
+                                    if (found != null && found != p) {
+                                        dependencies << moduleId(found)
+                                        shared << moduleId(found)
+                                    }
+                                }
+                            } catch (Exception ignored) {
+                                // Files that cannot be listed here may be any project's tests.
+                                shared.addAll(root.allprojects.collect { moduleId(it) })
+                            }
                         }
                     }
                     // A source directory inside another project, such as a shared srcDir,
                     // compiles that project's files here too.
                     p.extensions.findByName('sourceSets')?.each { s ->
                         s.allSource.srcDirs.each { dir ->
-                            def path = dir.toPath().normalize()
-                            def owner = root.allprojects.findAll { path.startsWith(it.projectDir.toPath()) }
-                                .max { it.projectDir.toPath().nameCount }
-                            if (owner != null && owner != p &&
-                                (owner != root || path.startsWith(root.projectDir.toPath().resolve('src')))) {
-                                dependencies << moduleId(owner)
+                            def found = projectOf(dir)
+                            if (found != null && found != p) {
+                                dependencies << moduleId(found)
+                                shared << moduleId(found)
                             }
                         }
                     }
@@ -130,7 +192,7 @@ gradle.projectsEvaluated {
                     throw new GradleException('No Java or Kotlin/JVM projects found.')
                 }
                 new File(root.property('impact.output').toString()).text = JsonOutput.prettyPrint(
-                    JsonOutput.toJson([tool: 'gradle', modules: modules])) + '\n'
+                    JsonOutput.toJson([tool: 'gradle', modules: modules, shared_tests: shared.sort()])) + '\n'
             }
         }
     }

@@ -494,3 +494,56 @@ tasks.test { useJUnitPlatform() }
     .unwrap();
     assert!(report.contains("<failure"), "{report}");
 }
+
+#[cfg(all(unix, feature = "agent"))]
+#[test]
+fn maven_class_selection_starts_maven_once_with_the_extension() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("project");
+    let workspace = workspace.to_str().unwrap();
+    success(&[
+        "fixtures",
+        "prepare",
+        "--tool",
+        "maven",
+        "--dest",
+        workspace,
+        "--git",
+        "--class-level",
+    ]);
+    success(&["fixtures", "apply", "unrelated", "--workspace", workspace]);
+    let build = temp.path().join("mvn");
+    executable(
+        &build,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$0.calls\"\necho --- >> \"$0.calls\"\n",
+    );
+    let output = std::process::Command::new(BIN)
+        .args(["run", "--workspace", workspace, "--base", "HEAD"])
+        .args(["--executable", build.to_str().unwrap()])
+        .env("SIEVE_CACHE_DIR", temp.path().join("cache"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // One Maven start: the extension selects test classes inside it, with no compile step.
+    let calls = fs::read_to_string(temp.path().join("mvn.calls")).unwrap();
+    assert_eq!(calls.matches("---").count(), 1, "{calls}");
+    assert!(!calls.lines().any(|arg| arg == "test-compile"), "{calls}");
+    let jar = calls
+        .lines()
+        .find_map(|arg| arg.strip_prefix("-Dmaven.ext.class.path="))
+        .unwrap();
+    assert!(
+        jar.ends_with("sieve-maven.jar") && Path::new(jar).is_file(),
+        "{calls}"
+    );
+    for property in ["-Dsieve.request=", "-Dsieve.exe="] {
+        assert!(
+            calls.lines().any(|arg| arg.starts_with(property)),
+            "{calls}"
+        );
+    }
+}

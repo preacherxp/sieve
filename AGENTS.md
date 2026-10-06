@@ -8,7 +8,8 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 - Sieve is a Rust CLI named `sieve`. It currently supports Java and
   Kotlin/JVM projects using Maven or Gradle, with conservative module selection.
   Projects can opt into bytecode-based class-level selection
-  (`"class_level": true`); it compiles the selected modules before running tests.
+  (`"class_level": true`); it selects test classes inside the build once the selected
+  modules compile, on Maven through an embedded core extension (`-Dmaven.ext.class.path`).
 - Local mode (`"records": true`, single-module Maven or Gradle, Java 17+ test JVM) is for developer
   machines, not CI: it keeps per-test records in `.sieve/` and loads an embedded agent
   through `JDK_JAVA_OPTIONS` (Maven) or Sieve's init script (Gradle). Do not enable it in
@@ -28,9 +29,12 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
   Replace only the test execution step and add the setup needed by Sieve.
 - Avoid introducing a custom action, reusable workflow, or new dependency when
   ordinary workflow steps suffice. Do not upgrade unrelated action versions.
-- For a consumer repository, install Sieve from its Git repository using `--locked`
-  and `--rev` pinned to a verified commit. Never invent a release or commit SHA.
-  Install a Rust toolchain compatible with `Cargo.toml`.
+- For a consumer repository, install the release binary with `install.sh` fetched from
+  a verified release tag and `SIEVE_VERSION` pinned to the same tag; it checks the
+  release checksum. Where no prebuilt binary exists, install from the Git repository
+  using `--locked` and `--rev` pinned to a verified commit, with a Rust toolchain
+  compatible with `Cargo.toml` and a JDK 17+ `javac`. Never invent a release tag or
+  commit SHA.
 - In Sieve's own CI, build the checked-out source instead of installing a remote
   version, so the workflow exercises the changes under review.
 - Run `sieve init` once during project setup using the CI build

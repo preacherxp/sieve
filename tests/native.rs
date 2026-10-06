@@ -225,8 +225,25 @@ fn native_graph_runtime_resources_test_artifacts_and_failures() {
         if tool == "gradle" {
             assert_eq!(config["modules"]["."], json!(["app"]));
         }
+        // Maven's consumer uses testkit's test-jar; Gradle's uses test fixtures, not `src/test`.
+        let shared = if tool == "maven" {
+            json!(["testkit"])
+        } else {
+            json!([])
+        };
+        assert_eq!(config["shared_tests"], shared, "{tool}: {config}");
         git(root.to_str().unwrap(), &["init", "-q"]);
         commit(root, "installed graph");
+        // Nothing uses the provider's tests: a test-only edit stays in its module.
+        let provider_test = "provider/src/test/java/example/ProviderTest.java";
+        let original = fs::read_to_string(root.join(provider_test)).unwrap();
+        write(root, provider_test, format!("{original}\n// test only\n"));
+        assert_eq!(
+            select(root.to_str().unwrap(), "HEAD")["modules"],
+            json!(["provider"]),
+            "{tool}"
+        );
+        write(root, provider_test, original);
         let native_args = if tool == "maven" {
             vec!["-B", "-ntp", "clean", "verify"]
         } else {
@@ -329,6 +346,35 @@ fn native_graph_runtime_resources_test_artifacts_and_failures() {
         write(root, consumer, "not valid Java");
         assert!(!run(root, &executable, false, &[]).status.success());
         write(root, consumer, original);
+        // A committed build edit that keeps the graph still selects, once the build confirms it.
+        let build = if tool == "maven" {
+            "unrelated/pom.xml"
+        } else {
+            "build.gradle"
+        };
+        let original = fs::read_to_string(root.join(build)).unwrap();
+        let comment = if tool == "maven" {
+            "<!-- reviewed -->"
+        } else {
+            "// reviewed"
+        };
+        write(root, build, format!("{original}\n{comment}\n"));
+        commit(root, "build edit that keeps the graph");
+        write(root, "provider/src/main/resources/next", "graph kept");
+        let kept = success(&[
+            "select",
+            "--workspace",
+            root.to_str().unwrap(),
+            "--base",
+            "HEAD",
+            "--executable",
+            &executable,
+        ]);
+        assert_eq!(kept["mode"], "MODULES", "{tool}: {kept}");
+        assert!(
+            kept["reason"].as_str().unwrap().contains("refresh"),
+            "{kept}"
+        );
         // A committed change to the native graph cannot silently reuse the old graph.
         let build = if tool == "maven" {
             "unrelated/pom.xml"
@@ -640,11 +686,16 @@ fn native_gradle_setup_follows_shared_source_directories() {
 #[ignore = "requires Java 17 and Gradle; run by fixture CI"]
 fn unsupported_gradle_layouts_fail_without_configuration() {
     let executable = std::env::var("IMPACT_GRADLE").unwrap_or_else(|_| "gradle".into());
+    // Nested projects are supported when their directories match their paths (see
+    // `native_nested_modules_build_by_directory`); other directories are not.
     for (settings, expected) in [
-        ("include 'outer:inner'", "direct child modules"),
         (
             "include 'child'\nproject(':child').projectDir = file('elsewhere')",
-            "direct child modules",
+            "match their project paths",
+        ),
+        (
+            "include 'outer:inner'\nproject(':outer:inner').projectDir = file('elsewhere')",
+            "match their project paths",
         ),
         ("includeBuild 'included'", "Composite builds"),
     ] {
@@ -723,6 +774,125 @@ fn unsupported_gradle_layouts_fail_without_configuration() {
             String::from_utf8_lossy(&result.stderr)
         );
         assert!(!root.join("impact.json").exists());
+    }
+}
+
+#[test]
+#[ignore = "requires Java 17 and Maven/Gradle; run by fixture CI"]
+fn native_nested_modules_build_by_directory() {
+    // A Maven module listed by path, one below a nested aggregator; Gradle `libs:core`.
+    let junit = "<dependencies><dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.4</version><scope>test</scope></dependency></dependencies>\
+        <build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version></plugin></plugins></build>";
+    for (tool, executable) in tools() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        write(root, ".gitignore", "**/target/\n**/build/\n**/.gradle/\n");
+        if tool == "maven" {
+            write(root, "pom.xml", format!("<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>nested</artifactId><version>1</version><packaging>pom</packaging>\
+                <properties><maven.compiler.release>17</maven.compiler.release></properties><modules><module>libs/core</module><module>services</module></modules>{junit}</project>"));
+            let parent = |path: &str| {
+                format!("<parent><groupId>example</groupId><artifactId>nested</artifactId><version>1</version><relativePath>{path}</relativePath></parent>")
+            };
+            write(root, "services/pom.xml", format!("<project><modelVersion>4.0.0</modelVersion>{}<artifactId>services</artifactId><packaging>pom</packaging><modules><module>orders</module></modules></project>", parent("../pom.xml")));
+            write(root, "libs/core/pom.xml", format!("<project><modelVersion>4.0.0</modelVersion>{}<artifactId>core</artifactId></project>", parent("../../pom.xml")));
+            write(root, "services/orders/pom.xml", format!("<project><modelVersion>4.0.0</modelVersion>{}<artifactId>orders</artifactId>\
+                <dependencies><dependency><groupId>example</groupId><artifactId>core</artifactId><version>1</version></dependency></dependencies></project>", parent("../../pom.xml")));
+        } else {
+            write(
+                root,
+                "settings.gradle",
+                "rootProject.name = 'nested'\ninclude 'libs:core', 'services:orders'\n",
+            );
+            write(
+                root,
+                "build.gradle",
+                r#"
+configure([project(':libs:core'), project(':services:orders')]) {
+    apply plugin: 'java'
+    repositories { mavenCentral() }
+    dependencies {
+        testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+        testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4'
+    }
+    tasks.withType(Test).configureEach { useJUnitPlatform() }
+}
+project(':services:orders') { dependencies { implementation project(':libs:core') } }
+"#,
+            );
+        }
+        for (module, class, body) in [
+            ("libs/core", "Core", "return 1;"),
+            ("services/orders", "Orders", "return Core.value() + 1;"),
+        ] {
+            write(root, &format!("{module}/src/main/java/example/{class}.java"), format!("package example; public class {class} {{ public static int value() {{ {body} }} }}"));
+            write(root, &format!("{module}/src/test/java/example/{class}Test.java"), format!("package example; import org.junit.jupiter.api.Test; import static org.junit.jupiter.api.Assertions.*; class {class}Test {{ @Test void works() {{ assertTrue({class}.value() > 0); }} }}"));
+        }
+        success(&[
+            "init",
+            "--workspace",
+            root.to_str().unwrap(),
+            "--executable",
+            &executable,
+        ]);
+        let config: Value =
+            serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+        assert_eq!(
+            config["modules"]["libs/core"],
+            json!([]),
+            "{tool}: {config}"
+        );
+        assert_eq!(
+            config["modules"]["services/orders"],
+            json!(["libs/core"]),
+            "{config}"
+        );
+        git(root.to_str().unwrap(), &["init", "-q"]);
+        commit(root, "nested modules");
+        let executed = |root: &Path| -> Vec<String> {
+            let actual = reports(root, tool);
+            let mut executed: Vec<String> = actual["executed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+                .collect();
+            executed.sort();
+            executed
+        };
+        // A change in the library selects it and the service that depends on it.
+        let core = "libs/core/src/main/java/example/Core.java";
+        let original = fs::read_to_string(root.join(core)).unwrap();
+        write(root, core, original.replace("return 1;", "return 2;"));
+        assert_eq!(
+            select(root.to_str().unwrap(), "HEAD")["modules"],
+            json!(["libs/core", "services/orders"]),
+            "{tool}"
+        );
+        checked(run(root, &executable, false, &[]));
+        assert_eq!(
+            executed(root),
+            [
+                "libs/core:unit:example.CoreTest",
+                "services/orders:unit:example.OrdersTest"
+            ],
+            "{tool}"
+        );
+        write(root, core, original);
+        // A test-only change in the service builds the library without running its tests.
+        let test = "services/orders/src/test/java/example/OrdersTest.java";
+        let original = fs::read_to_string(root.join(test)).unwrap();
+        write(root, test, format!("{original}\n// test only\n"));
+        assert_eq!(
+            select(root.to_str().unwrap(), "HEAD")["modules"],
+            json!(["services/orders"]),
+            "{tool}"
+        );
+        checked(run(root, &executable, false, &[]));
+        assert_eq!(
+            executed(root),
+            ["services/orders:unit:example.OrdersTest"],
+            "{tool}"
+        );
     }
 }
 

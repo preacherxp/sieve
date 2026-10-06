@@ -427,9 +427,11 @@
   with:
     fetch-depth: 0
     persist-credentials: false
-- run: >-
-    cargo install --locked --rev &lt;sha&gt;
-    --git https://github.com/preacherxp/sieve
+- run: |
+    curl -fsSL "https://raw.githubusercontent.com/preacherxp/sieve/$SIEVE_VERSION/install.sh" | sh
+    echo "$HOME/.local/bin" &gt;&gt; "$GITHUB_PATH"
+  env:
+    SIEVE_VERSION: &lt;tag&gt;
 - run: |
     args=(--full)
     if [ "$EVENT" = pull_request ]; then
@@ -441,7 +443,7 @@
     BASE: ${{ github.event.pull_request.base.sha }}</code></pre>
                 <button type="button" data-copy-target="ci-snippet">Copy</button>
               </div>
-              <p class="fine">Run <code>sieve init</code> once and commit <code>impact.json</code>. Rust 1.92+ and a JDK 17+ <code>javac</code> build the CLI. Pin <code>--rev</code> to a commit you have verified. Pull requests select against their base; every other event runs the full suite.</p>
+              <p class="fine">Run <code>sieve init</code> once and commit <code>impact.json</code>. Set <code>SIEVE_VERSION</code> to a release tag you have verified; the installer checks its checksum and needs neither Rust nor a JDK. Pull requests select against their base; every other event runs the full suite.</p>
             </div>
             <div data-install-panel="cli" hidden>
               <ol class="setup">
@@ -520,7 +522,7 @@
             <li class="card"><p><strong>Finer grain costs a build.</strong> By default you skip modules: TaxRules.java also runs CurrencyLabelTest, because they share pricing. <code>class_level</code> narrows to test classes, Kotlin inline functions and constants included, but starts the build tool twice, so cheap suites get slower.</p></li>
             <li class="card"><p><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</p></li>
             <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>docs/</code>, and any <code>ignore</code> globs in <code>impact.json</code> do not compile or test. The job cleans and stops.</p></li>
-            <li class="card"><p><strong>Setup is for a simple layout.</strong> One package, or direct child modules whose directory names match. Nested trees, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</p></li>
+            <li class="card"><p><strong>Setup expects a regular layout.</strong> One package, or modules at any depth whose directories match their place in the build. Other directories, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</p></li>
             <li class="card"><p><strong>Records need one module.</strong> Local mode (<code>--records</code>) records what each test class ran and read, on single-module Maven or Gradle with a Java 17+ test JVM. A dependency bump then reruns only the tests that ran the bumped jar. <code>--ci</code> shares records through the CI cache.</p></li>
             <li class="card"><p><strong>Keep the full suite somewhere.</strong> Selection assumes tests are independent and that the inputs it sees are all there is. Run everything on the default branch, so a missed failure fails at merge, never silently.</p></li>
           </ul>

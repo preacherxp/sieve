@@ -178,7 +178,8 @@ pub(crate) fn class_costs(workspace: &Path, tool: &str) -> Result<BTreeMap<Strin
     Ok(costs)
 }
 
-/// Every native XML report below the workspace, with its `module:suite` prefix.
+/// Every native XML report below the workspace, with its `module:suite` prefix. A module is
+/// any directory outside sources and build output, at any depth: `services/orders`.
 fn report_files(workspace: &Path, tool: &str) -> Result<Vec<(String, PathBuf)>> {
     let maven = match tool {
         "maven" => true,
@@ -186,32 +187,34 @@ fn report_files(workspace: &Path, tool: &str) -> Result<Vec<(String, PathBuf)>> 
         _ => return Err(format!("Unknown build tool: {tool}").into()),
     };
     let mut files = Vec::new();
-    let mut modules = vec![".".to_owned()];
-    for entry in fs::read_dir(workspace)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
-            modules.push(
-                entry
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| "Non-UTF-8 module name")?,
-            );
+    let mut pending = vec![(".".to_owned(), workspace.to_path_buf())];
+    while let Some((module, dir)) = pending.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if entry.file_type()?.is_dir()
+                && !name.starts_with('.')
+                && !matches!(name.as_str(), "src" | "target" | "build" | "node_modules")
+            {
+                let child = match module.as_str() {
+                    "." => name,
+                    module => format!("{module}/{name}"),
+                };
+                pending.push((child, entry.path()));
+            }
         }
-    }
-    for module in modules {
         let mut folders = Vec::new();
         if maven {
             for (suite, folder) in [
                 ("unit", "surefire-reports"),
                 ("integration", "failsafe-reports"),
             ] {
-                folders.push((
-                    suite.to_owned(),
-                    workspace.join(&module).join("target").join(folder),
-                ));
+                folders.push((suite.to_owned(), dir.join("target").join(folder)));
             }
         } else {
-            let base = workspace.join(&module).join("build/test-results");
+            let base = dir.join("build/test-results");
             if base.is_dir() {
                 for entry in fs::read_dir(base)? {
                     let entry = entry?;
@@ -241,5 +244,6 @@ fn report_files(workspace: &Path, tool: &str) -> Result<Vec<(String, PathBuf)>> 
             }
         }
     }
+    files.sort();
     Ok(files)
 }

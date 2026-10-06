@@ -30,7 +30,9 @@ sieve run --workspace . --base origin/main
 
 `init` writes `impact.json` (module graph, ignore globs, options) and, for Maven, adds
 per-module `skipTests` properties to the POMs. Commit both. Run `sieve refresh` after
-build changes. Gradle needs no build-file edits; a bundled init script does the work.
+build changes; until then, each module selection first checks the graph with the build,
+and selects everything if the graph changed. Gradle needs no build-file edits; a bundled
+init script does the work.
 
 ```bash
 sieve select --base origin/main         # preview the decision, no build
@@ -61,12 +63,14 @@ Three selection paths share one `Selection` type and one build runner:
 | Local mode | `run --records` | what each test executed and read last time | test classes | developer machines |
 
 **Module-level** follows the graph in `impact.json` and runs `verify -pl <selected> -am`
-(Maven) or `:<module>:check` (Gradle).
+(Maven) or `:<module>:check` (Gradle). A test-only change stays in its module unless
+another module uses its tests (`shared_tests`, found by `init`).
 
-**Class-level** compiles the selected modules, then walks reverse references through
-constant pools, supertypes, string-named classes, and Kotlin inline maps. Changed DI
-components select every context test; Spring Boot slices narrow that. Anything it cannot
-map (deleted sources, resources, unreadable classes) falls back to the module selection.
+**Class-level** reads the selected modules' class files inside the build, once they compile,
+and walks reverse references through constant pools, supertypes, string-named classes, and
+Kotlin inline maps. Changed DI components select every context test; Spring Boot slices
+narrow that. Anything it cannot map (deleted sources, resources, unreadable classes) falls
+back to the module selection.
 
 **Local mode** loads a Java agent into the test JVM. It records every project method and
 workspace file each test class touched, and on the next run drops classes whose records
@@ -120,9 +124,10 @@ xychart-beta
     bar [13, 73]
 ```
 
-Class-level selection costs a second build-tool start, so cheap suites get slower: a
-single-module sample with a 6 s setup went from 7.4 s to 2.3 s, while the same sample with
-no setup went from 1.4 s to 2.2 s. Leave `class_level` off for cheap suites.
+Class-level selection picks test classes inside the build that runs them, between
+compiling and testing: Gradle through the init script, Maven through a Sieve core extension.
+On a single-module Maven sample, a change that one of two tests reaches took 1.5 s, against
+7.5 s natively when the other test has a 6 s setup and 1.4 s when it has none.
 
 Full data, machines, and caveats: [docs/performance.md](docs/performance.md).
 
@@ -133,7 +138,11 @@ Pull requests select against the base; everything else runs the full suite.
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0, persist-credentials: false }
-- run: cargo install --git https://github.com/preacherxp/sieve --locked --rev <sha>
+- run: |
+    curl -fsSL "https://raw.githubusercontent.com/preacherxp/sieve/$SIEVE_VERSION/install.sh" | sh
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+  env:
+    SIEVE_VERSION: <tag>  # a release, such as v0.3.0
 - run: |
     args=()
     if [ "$EVENT" = pull_request ]; then args=(--base "$BASE"); else args=(--full); fi
@@ -142,6 +151,10 @@ Pull requests select against the base; everything else runs the full suite.
     EVENT: ${{ github.event_name }}
     BASE: ${{ github.event.pull_request.base.sha }}
 ```
+
+The installer checks the release checksum and needs neither Rust nor a JDK. Runners without
+a prebuilt binary can use `cargo install --git https://github.com/preacherxp/sieve --locked
+--rev <sha>` instead.
 
 Local-mode records can be shared across CI runs with `sieve run --ci` and a cache of
 `.sieve/records`; see [the reference](docs/reference.md#records-in-ci). Keep a full-suite
@@ -178,12 +191,12 @@ flowchart TB
 | Path | Contents |
 |---|---|
 | `src/` | CLI modules above and the Gradle init script |
-| `agent/` | Java agent, bootstrap probe, API stubs, vendored ASM |
+| `agent/` | Java agent, bootstrap probe, API stubs, vendored ASM, Maven extension (`agent/maven`) |
 | `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `replay`, `workflows` |
 | `projects/` | Fixtures: `maven`/`gradle` parity pair, `single-*`, `records`, `version-bump`, `containers` |
 | `samples/` | `bookstore`, `webshop` (5 Spring WebFlux services), `selective-performance`, Kotlin: `kotlin-invoices` (Gradle), `kotlin-shipping` (Maven) |
 | `scenarios.json` | Independent oracle for fixture mutations; the selector never reads it |
-| `docs/adr/` | Decisions: runtime evidence, in-JVM selection, Gradle local mode, construction is not use, CI records |
+| `docs/adr/` | Decisions: runtime evidence, in-JVM selection, Gradle local mode, construction is not use, CI records, Maven class selection in the build |
 
 Invariants: unknown change widens to `ALL`; build and test failures propagate; selection
 JSON is written before tests run; fixture expectations stay independent of selector code.
@@ -204,8 +217,8 @@ cargo test --locked --test records -- --include-ignored --test-threads=1   # Mav
 Static analysis cannot see classes named in resources outside `src/`, reflection on
 non-constant strings, or scanners it does not know. Records assume tests are independent
 and that passing runs covered their paths; undeclared environment, external services, and
-floating container tags are not tracked. Single-package or direct-child module layouts
-only; no composite builds, Android, or Multiplatform.
+floating container tags are not tracked. Modules, nested or not, must sit in directories
+that match their place in the build; no composite builds, Android, or Multiplatform.
 
 ## More
 

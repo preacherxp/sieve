@@ -13,8 +13,9 @@ guide takes a service from zero to measured. The mechanics are described in the
 - Surefire and Failsafe on their default class loader (`useSystemClassLoader` not set to
   `false`), and no `junit.jupiter.execution.parallel.enabled=true`. In-JVM parallel runs
   keep no records.
-- A `sieve` built with the agent: `cargo install --git https://github.com/preacherxp/sieve
-  --locked` on a machine whose `JAVA_HOME` (or `SIEVE_JAVA_HOME`) points to JDK 17+.
+- A `sieve` with the agent: the release binary from `install.sh` (see the README), or
+  `cargo install --git https://github.com/preacherxp/sieve --locked` on a machine whose
+  `JAVA_HOME` (or `SIEVE_JAVA_HOME`) points to JDK 17+.
 
 ## Switch it on
 

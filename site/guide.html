@@ -504,7 +504,7 @@
             <div class="fig-body">
               <svg class="fx" viewBox="0 0 920 920" role="img" aria-labelledby="f2t f2d">
                 <title id="f2t">Static selection decision flow</title>
-                <desc id="f2d">Local mode branches off first. Without a base, without history, or with a changed build fingerprint the result is ALL. Each changed path is classified: ignored paths are skipped, module sources mark their module, anything else selects ALL. No marked module gives NONE. Otherwise dependents are added. Without class_level the result is MODULES. With it, run compiles and analyzes; failed analysis keeps MODULES; test classes reaching the change give SUBSET, none gives NONE.</desc>
+                <desc id="f2d">Local mode branches off first. Without a base, without history, or with a module graph that changed since impact.json was written the result is ALL; a stale fingerprint is checked against the graph the build reports. Each changed path is classified: ignored paths are skipped, module sources mark their module, anything else selects ALL. No marked module gives NONE. Otherwise dependents are added. Without class_level the result is MODULES. With it, run compiles and analyzes; failed analysis keeps MODULES; test classes reaching the change give SUBSET, none gives NONE.</desc>
 
                 <g><rect class="start" x="180" y="20" width="240" height="40" rx="20"/><text class="inv t" x="300" y="45" text-anchor="middle">sieve select / run</text></g>
                 <g><path class="e d" d="M180 40 H150" marker-end="url(#ah)"/><text class="lab" x="144" y="36" text-anchor="end">--records or</text><text class="lab" x="144" y="50" text-anchor="end">"records": true → §06</text></g>
@@ -513,7 +513,7 @@
                 <g><path class="e" d="M300 135 V168" marker-end="url(#ah)"/><text class="lab" x="308" y="156">yes</text></g>
                 <g><rect class="dec" x="180" y="170" width="240" height="40" rx="20"/><text class="t" x="300" y="195" text-anchor="middle">History + merge base found?</text></g>
                 <g><path class="e" d="M300 210 V243" marker-end="url(#ah)"/><text class="lab" x="308" y="231">yes</text></g>
-                <g><rect class="dec" x="180" y="245" width="240" height="40" rx="20"/><text class="t" x="300" y="270" text-anchor="middle">Build fingerprint matches?</text></g>
+                <g><rect class="dec" x="180" y="245" width="240" height="40" rx="20"/><text class="t" x="300" y="270" text-anchor="middle">Module graph still current?</text></g>
                 <g><path class="e" d="M300 285 V318" marker-end="url(#ah)"/><text class="lab" x="308" y="306">yes</text></g>
                 <g><rect class="box" x="180" y="320" width="240" height="40" rx="10"/><text class="t" x="300" y="345" text-anchor="middle">Classify each changed path</text></g>
                 <g><path class="e d" d="M180 340 H150" marker-end="url(#ah)"/><text class="lab" x="144" y="336" text-anchor="end">ignored glob</text><text class="lab" x="144" y="350" text-anchor="end">→ skip</text></g>
@@ -531,11 +531,11 @@
                 <g><path class="e" d="M300 735 V768" marker-end="url(#ah)"/><text class="lab" x="308" y="756">yes</text></g>
                 <g><rect class="dec" x="180" y="770" width="240" height="40" rx="20"/><text class="t" x="300" y="795" text-anchor="middle">Test classes reach change?</text></g>
                 <g><path class="e ok" d="M300 810 V848" marker-end="url(#ah-ok)"/><text class="lab ok" x="308" y="832">yes</text></g>
-                <g class="term T-sub"><rect x="180" y="850" width="240" height="52" rx="12"/><text class="tt" x="300" y="872" text-anchor="middle">SUBSET</text><text class="ts" x="300" y="890" text-anchor="middle">+ excludesFile / impact.testsFile</text></g>
+                <g class="term T-sub"><rect x="180" y="850" width="240" height="52" rx="12"/><text class="tt" x="300" y="872" text-anchor="middle">SUBSET</text><text class="ts" x="300" y="890" text-anchor="middle">+ excludesFile / impactSelect</text></g>
 
                 <g><path class="e all" d="M420 115 H660"/><text class="lab all" x="436" y="109">no</text></g>
                 <g><path class="e all" d="M420 190 H660"/><text class="lab all" x="436" y="184">no</text></g>
-                <g><path class="e all" d="M420 265 H660"/><text class="lab all" x="436" y="259">changed</text></g>
+                <g><path class="e all" d="M420 265 H660"/><text class="lab all" x="436" y="259">changed or unreadable</text></g>
                 <g><path class="e all" d="M420 340 H660"/><text class="lab all" x="436" y="334">build input / other path</text></g>
                 <g><path class="e all" d="M660 115 V340"/><path class="e all" d="M660 227 H696" marker-end="url(#ah-all)"/></g>
                 <g class="term T-all"><rect x="698" y="200" width="200" height="54" rx="12"/><text class="tt" x="798" y="223" text-anchor="middle">ALL</text><text class="ts" x="798" y="241" text-anchor="middle">clean verify · clean check</text></g>
@@ -583,9 +583,9 @@
           <ol class="steps">
             <li><b>Read configuration</b><span class="where">Config::read</span><p>Tool, module graph, <code>ignore</code> globs, opt-ins. Unknown fields, missing modules or paths outside the workspace are errors, not fallbacks.</p></li>
             <li><b>Collect changes</b><span class="where">changed_paths</span><p>Merge base of <code>REV</code> and HEAD; committed, staged, unstaged, deleted, renamed and untracked paths. Submodule updates count even when Git configuration ignores them.</p><span class="tags"><span class="tag m-all">no history → ALL</span></span></li>
-            <li><b>Check the fingerprint</b><span class="where">fingerprint.rs</span><p>Hash of POMs, Gradle scripts, <code>.mvn/</code>, <code>gradle/</code>, <code>buildSrc</code>. A mismatch means the declared graph may be stale.</p><span class="tags"><span class="tag m-all">mismatch → ALL · run sieve refresh</span></span></li>
+            <li><b>Check the fingerprint</b><span class="where">fingerprint.rs · setup::stale</span><p>Hash of POMs, Gradle scripts, <code>.mvn/</code>, <code>gradle/</code>, <code>buildSrc</code>. A mismatch means the declared graph may be stale: a module selection asks the build for its graph and stands only if <code>impact.json</code> still declares every module, edge, and shared test module.</p><span class="tags"><span class="tag m-all">graph changed → ALL · run sieve refresh</span></span></li>
             <li><b>Classify paths</b><span class="where">Config::select</span><p>Ignored → skip. <code>&lt;module&gt;/src/**</code> → that module. Default ignore patterns never hide module sources (a module named <code>docs</code> still counts); explicit ones do.</p><span class="tags"><span class="tag m-all">other → ALL</span><span class="tag m-none">only ignored → NONE</span></span></li>
-            <li><b>Close over dependents</b><span class="where">Config::select</span><p>Repeat until stable: a module with a selected dependency becomes selected.</p><span class="tags"><span class="tag m-mod">→ MODULES</span></span></li>
+            <li><b>Close over dependents</b><span class="where">Config::select</span><p>Repeat until stable: a module with a selected dependency becomes selected. A change under <code>src/test/</code> passes on only from modules listed in <code>shared_tests</code>.</p><span class="tags"><span class="tag m-mod">→ MODULES</span></span></li>
             <li><b>Refine to classes</b><span class="where">Selection::refine</span><p>Only with <code>class_level</code>, only in <code>run</code>. See section 04.</p><span class="tags"><span class="tag m-sub">→ SUBSET</span><span class="tag m-none">→ NONE</span><span class="tag m-mod">fallback keeps MODULES</span></span></li>
             <li><b>Run the native build</b><span class="where">build_args</span><p>Write <code>--output</code>, delete stale Surefire/Failsafe reports outside the reactor, start the build, return its exit status.</p></li>
           </ol>
@@ -636,7 +636,7 @@
                 <g><rect class="fb" x="20" y="372" width="885" height="38" rx="12"/><text class="t fb-t" x="36" y="396">Fallback · keep MODULES</text><text class="s" x="228" y="396">deleted source · package-info / module-info · non-JVM file under src/ · unreadable class · resource-named class</text></g>
               </svg>
             </div>
-            <figcaption>The graph spans unselected modules, because a path from a test to a change may pass through a dependency. The second build skips <code>clean</code> and reuses the compiled main classes.</figcaption>
+            <figcaption>Selection runs inside the build that runs the tests, between compiling and testing: Gradle's <code>impactSelect</code> once, Sieve's Maven extension before each module's tests, from that module's classes and its dependencies'. A path from a test to a change may pass through any module the test can reach.</figcaption>
           </figure>
 
           <ol class="rules">
@@ -652,8 +652,8 @@
           <h3>Why a test was selected <small>reasons</small></h3>
           <div class="chain"><b>a.ServiceTest</b> → a.Service → a.Api, implemented by <i>a.Impl (changed)</i></div>
           <p><code>--output</code> lists one chain per selected test. Maven gets a Surefire/Failsafe excludes file with the unselected classes
-            (plus the default <code>**/*$*</code>), so POM includes and the unit/integration split survive; Gradle gets
-            <code>-Pimpact.testsFile</code>. Static analysis still cannot see reflection built from non-constant strings,
+            (plus the default <code>**/*$*</code>), so POM includes and the unit/integration split survive; Gradle's
+            <code>Test</code> tasks filter to what <code>impactSelect</code> wrote. Static analysis still cannot see reflection built from non-constant strings,
             resources outside <code>src/</code>, context annotations composed in library jars, or unlisted frameworks.</p>
         </section>
 
@@ -667,17 +667,19 @@
               <p><code>sieve init</code> reads effective models, writes the graph and fingerprint, and adds per-module
                 <code>impact.skip.&lt;module&gt;</code> properties wired to Surefire/Failsafe <code>skipTests</code>.
                 <code>-am</code> dependencies compile, test JARs still work, their tests stay skipped.</p>
-              <dl><dt>Edges</dt><dd>declared deps, sibling build plugins, plugin deps, processor paths, unpacked artifacts, sibling dirs in config</dd></dl></article>
+              <dl><dt>Edges</dt><dd>declared deps, sibling build plugins, plugin deps, processor paths, unpacked artifacts, sibling dirs in config</dd>
+                <dt>classes</dt><dd>a core extension (<code>-Dmaven.ext.class.path</code>) points Surefire and Failsafe at each module's excludes</dd></dl></article>
             <article class="card"><h3>Gradle <small>gradle.init.gradle</small></h3>
               <p>A bundled init script passed with <code>--init-script</code>. No build-file edits, Groovy and Kotlin DSL,
                 configuration-cache safe, Gradle 7.6.3+.</p>
               <dl><dt>impactInit</dt><dd>reports the project graph for <code>init</code></dd>
                 <dt>modules</dt><dd><code>-Pimpact.modules</code> disables other <code>Test</code> tasks</dd>
-                <dt>tests</dt><dd><code>-Pimpact.testsFile</code> filters to listed classes</dd>
+                <dt>tests</dt><dd><code>impactSelect</code> runs <code>sieve classes</code> after compiling; <code>Test</code> tasks filter to its selection</dd>
                 <dt>classes</dt><dd><code>impactCompile</code>, <code>impactClasses</code></dd></dl></article>
           </div>
           <p><code>sieve refresh</code> reruns discovery after build changes and keeps extra edges between surviving modules
-            and the <code>class_level</code> choice. Setup refuses nested or custom layouts, composite builds, Android and
+            and the <code>class_level</code> choice. Modules may be nested when their directories match their place in the build
+            (<code>services/orders</code>); setup refuses other custom layouts, composite builds, Android and
             Kotlin Multiplatform rather than guessing.</p>
         </section>
 
@@ -892,7 +894,7 @@ target/debug/sieve fixtures verify --tool both --scenario all --selected --class
               <tr><td><a href="../src/records.rs">src/records.rs</a></td><td>Local run, <code>decide</code>, <code>record</code>, <code>env</code>, speed-ups</td><td><code>run</code> · <code>decide</code> · <code>record</code> · <code>agent_jar</code></td></tr>
               <tr><td><a href="../src/bytecode.rs">src/bytecode.rs</a></td><td>Method-body and class-shape digests</td><td><code>digest</code> · <code>hash</code></td></tr>
               <tr><td><a href="../src/reports.rs">src/reports.rs</a></td><td>Native JUnit XML parsing for execution and validation</td><td><code>read_reports</code></td></tr>
-              <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code></td></tr>
+              <tr><td><a href="../src/gradle.init.gradle">gradle.init.gradle</a></td><td>Gradle adapter</td><td><code>impactInit</code> · <code>impactCompile</code> · <code>impactClasses</code> · <code>impactSelect</code></td></tr>
               <tr><td><a href="../agent/">agent/</a> · <a href="../build.rs">build.rs</a></td><td>Test-JVM agent and its build</td><td><code>Boot</code> · <code>Filter</code> · <code>State</code></td></tr>
               <tr><td>fixtures · replay · catalog · timing</td><td>Validation and measurement</td><td><code>fixtures::main</code> · <code>replay::main</code> · <code>catalog::main</code></td></tr>
               <tr><td><a href="../projects/">projects/</a> · <a href="../samples/">samples/</a></td><td>Fixtures (<code>maven</code>/<code>gradle</code> parity pair, <code>single-*</code>, <code>records</code>, <code>version-bump</code>, <code>containers</code>) and demos (<code>bookstore</code>, <code>webshop</code>, <code>runtime-plugins</code>, <code>gradle-test-suites</code>, <code>selective-performance</code>, Kotlin <code>kotlin-invoices</code> and <code>kotlin-shipping</code>)</td><td><a href="../scenarios.json">scenarios.json</a></td></tr>

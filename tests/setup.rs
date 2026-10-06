@@ -285,3 +285,162 @@ cp "$MODELS/$module.xml" "$output"
         json!({"api": [], "app": ["api", "processor"], "processor": []})
     );
 }
+
+#[test]
+fn maven_setup_reads_the_reactor_once_and_finds_shared_tests() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("project")).unwrap();
+    let root = temp.path().join("project").canonicalize().unwrap();
+    write(
+        &root,
+        "pom.xml",
+        "<project><artifactId>root</artifactId></project>",
+    );
+    write(
+        &root,
+        "core/pom.xml",
+        "<project><artifactId>core</artifactId></project>",
+    );
+    write(
+        &root,
+        "app/pom.xml",
+        "<project><artifactId>app</artifactId></project>",
+    );
+    // An artifact ID that names a property cannot be matched to the reactor's models.
+    write(
+        &root,
+        "testkit/pom.xml",
+        "<project><artifactId>${kit}</artifactId></project>",
+    );
+    let models = temp.path().join("models");
+    let model = |artifact: &str, body: &str| {
+        format!("<project><groupId>x</groupId><artifactId>{artifact}</artifactId>{body}</project>")
+    };
+    let testkit = model("testkit", "");
+    let reactor = [
+        model("root", "<packaging>pom</packaging><modules><module>core</module><module>app</module><module>testkit</module></modules>"),
+        model("core", ""),
+        model("app", "<dependencies><dependency><groupId>x</groupId><artifactId>core</artifactId></dependency>\
+            <dependency><groupId>x</groupId><artifactId>testkit</artifactId><classifier>tests</classifier><scope>test</scope></dependency></dependencies>"),
+        testkit.clone(),
+    ];
+    write(
+        &models,
+        "reactor.xml",
+        format!(
+            "<?xml version=\"1.0\"?><!-- models --><projects>{}</projects>",
+            reactor.join("<!-- next -->")
+        ),
+    );
+    write(&models, "testkit.xml", testkit);
+    let build = temp.path().join("mvn");
+    executable(
+        &build,
+        r#"#!/bin/sh
+echo "$*" >> "$MODELS/calls"
+model=reactor next=0
+for arg do
+  if [ "$next" = 1 ]; then pom=$arg; next=0; fi
+  case "$arg" in -f) next=1 ;; -N) model=single ;; -Doutput=*) output=${arg#-Doutput=} ;; esac
+done
+[ "$model" = single ] && model=$(basename "$(dirname "$pom")")
+cp "$MODELS/$model.xml" "$output"
+"#,
+    );
+    let init = |command: &str| {
+        let output = Command::new(BIN)
+            .args([command, "--workspace", root.to_str().unwrap()])
+            .args(["--executable", build.to_str().unwrap()])
+            .env("MODELS", &models)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&fs::read(root.join("impact.json")).unwrap()).unwrap()
+    };
+    let config = init("init");
+    assert_eq!(
+        config["modules"],
+        json!({"app": ["core", "testkit"], "core": [], "testkit": []})
+    );
+    assert_eq!(config["shared_tests"], json!(["testkit"]));
+    // One Maven start for the reactor, one for the module it could not match.
+    let calls = fs::read_to_string(models.join("calls")).unwrap();
+    assert_eq!(calls.lines().count(), 2, "{calls}");
+    assert!(calls.lines().last().unwrap().contains("-N"), "{calls}");
+    // Refresh keeps shared test modules declared by hand, like additional edges.
+    let mut edited = config.clone();
+    edited["shared_tests"] = json!(["core", "testkit"]);
+    write(&root, "impact.json", serde_json::to_vec(&edited).unwrap());
+    assert_eq!(init("refresh")["shared_tests"], json!(["core", "testkit"]));
+}
+
+#[test]
+fn maven_setup_follows_nested_aggregators_and_module_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("project")).unwrap();
+    let root = temp.path().join("project").canonicalize().unwrap();
+    let models = temp.path().join("models");
+    let model = |artifact: &str, body: &str| {
+        format!("<project><groupId>x</groupId><artifactId>{artifact}</artifactId>{body}</project>")
+    };
+    let poms = [
+        ("pom.xml", "root", "<packaging>pom</packaging><modules><module>libs/core</module><module>services</module></modules>"),
+        ("services/pom.xml", "services", "<packaging>pom</packaging><modules><module>orders</module><module>./billing/</module></modules>"),
+        ("libs/core/pom.xml", "core", ""),
+        ("services/orders/pom.xml", "orders", "<dependencies><dependency><groupId>x</groupId><artifactId>core</artifactId></dependency></dependencies>"),
+        ("services/billing/pom.xml", "billing", ""),
+    ];
+    for (path, artifact, _) in poms {
+        write(
+            &root,
+            path,
+            format!("<project><artifactId>{artifact}</artifactId></project>"),
+        );
+    }
+    let reactor: String = poms
+        .iter()
+        .map(|(_, artifact, body)| model(artifact, body))
+        .collect();
+    write(
+        &models,
+        "reactor.xml",
+        format!("<projects>{reactor}</projects>"),
+    );
+    let build = temp.path().join("mvn");
+    executable(&build, "#!/bin/sh\nfor arg do case \"$arg\" in -Doutput=*) cp \"$MODELS/reactor.xml\" \"${arg#-Doutput=}\" ;; esac; done\n");
+    let output = Command::new(BIN)
+        .args(["init", "--workspace", root.to_str().unwrap()])
+        .args(["--executable", build.to_str().unwrap()])
+        .env("MODELS", &models)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config: Value =
+        serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+    // Aggregators build nothing themselves; their modules count by directory.
+    assert_eq!(
+        config["modules"],
+        json!({"libs/core": [], "services/billing": [], "services/orders": ["libs/core"]})
+    );
+    let orders = fs::read_to_string(root.join("services/orders/pom.xml")).unwrap();
+    assert!(
+        orders.contains("<impact.skip.services.orders>false</impact.skip.services.orders>"),
+        "{orders}"
+    );
+    assert!(
+        orders.contains("${impact.skip.services.orders}"),
+        "{orders}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("services/pom.xml")).unwrap(),
+        "<project><artifactId>services</artifactId></project>"
+    );
+}
