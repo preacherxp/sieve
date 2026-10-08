@@ -32,6 +32,14 @@ _Avoid_: recording, coverage, trace, snapshot
 
 **Base**:
 The commit a change is compared against. Skipping a test on static grounds assumes the base's tests pass.
+
+**Related test file**:
+A JavaScript or TypeScript test file that is a changed file or imports one, directly or transitively, as the test runner (Jest or Vitest) resolves its imports.
+_Avoid_: affected test, impacted test
+
+**Source root**:
+A directory of a JavaScript or TypeScript package, declared in `impact.json`, whose script files Sieve maps to related test files; a change anywhere else selects every test.
+_Avoid_: roots (Jest's `roots` option is where Jest looks for files)
 _Avoid_: baseline, reference
 
 **Body change**:
