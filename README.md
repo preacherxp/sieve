@@ -42,17 +42,7 @@ sieve run --full                        # always everything
 
 ## How it works
 
-```mermaid
-flowchart LR
-    diff["git diff\nmerge-base..HEAD"] --> classify{"each changed path"}
-    classify -->|"ignore glob"| none["NONE\nclean only"]
-    classify -->|"module/src/**"| mods["changed modules\n+ reverse deps"]
-    classify -->|"build input, other"| all["ALL"]
-    mods --> cl{"class_level?"}
-    cl -->|no| modules["MODULES\nverify -pl ... -am"]
-    cl -->|yes| bc["compile, read bytecode,\nwalk reverse references"]
-    bc --> subset["SUBSET\ntest classes"]
-```
+![How Sieve selects tests: each changed path selects NONE, MODULES, a SUBSET of test classes, or ALL](assets/how-it-works.svg)
 
 Three selection paths share one `Selection` type and one build runner:
 
@@ -78,19 +68,7 @@ are unchanged. Spring wiring and `application.yml` keys are compared per member 
 key, and a dependency bump reruns only the tests that ran code of the bumped jar, so most
 edits rerun only the tests that executed them.
 
-```mermaid
-sequenceDiagram
-    participant S as sieve run --records
-    participant B as Maven / Gradle
-    participant A as agent in test JVM
-    S->>S: unchanged since last green run? NONE
-    S->>B: verify (agent via JDK_JAVA_OPTIONS / init script)
-    B->>A: JUnit discovery
-    A->>S: sieve decide (classes to drop)
-    A->>A: probe methods, files, Spring contexts
-    A->>S: sieve record (.sieve/records/*.json)
-    B-->>S: exit status, XML reports, summary
-```
+![Local mode: sieve run --records starts the build, the agent asks sieve decide which test classes to drop and writes sieve record](assets/local-mode.svg)
 
 ## Measured
 
@@ -98,31 +76,14 @@ Twenty commits of a Spring Boot service with Testcontainers (62 test classes, 23
 replayed with `sieve replay --walk --plant`, seconds per commit kind, Maven. Every planted
 bug was caught; no real failure was missed.
 
-```mermaid
-%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#b0772c, #2c6cb0"}}}}%%
-xychart-beta
-    title "Local mode, 20 commits: native build vs Sieve (seconds)"
-    x-axis ["4 narrow commits", "14 wide commits", "2 build-input commits", "total"]
-    y-axis "seconds" 0 --> 3500
-    bar [660, 2288, 362, 3310]
-    bar [84, 1145, 362, 1591]
-```
+![Local mode, 20 commits: full build 3,310 s, Sieve 1,591 s](assets/measured-local.svg)
 
-Amber is the native full build, blue is Sieve. Total: 3,310 s to 1,591 s (-52%); Gradle
-shows -54%.
+Total: 3,310 s to 1,591 s (-52%); Gradle shows -54%.
 
 Thirty first-parent commits of `apache/commons-text` (103 test classes), class-level,
 `sieve replay --run`:
 
-```mermaid
-%%{init: {"themeVariables": {"xyChart": {"plotColorPalette": "#b0772c, #2c6cb0"}}}}%%
-xychart-beta
-    title "commons-text, 30 commits: full build vs Sieve (seconds)"
-    x-axis ["15 docs/CI commits (NONE)", "7 source commits (SUBSET)"]
-    y-axis "seconds" 0 --> 300
-    bar [256, 118]
-    bar [13, 73]
-```
+![commons-text: docs/CI commits 256 s to 13 s, source commits 118 s to 73 s](assets/measured-commons-text.svg)
 
 Class-level selection picks test classes inside the build that runs them, between
 compiling and testing: Gradle through the init script, Maven through a Sieve core extension.
@@ -162,35 +123,11 @@ job on the default branch.
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph cli["sieve (Rust)"]
-        main["main.rs\nargs, Config, Selection,\nGit diff, module selection"]
-        setup["setup.rs\ninit / refresh, Maven POM adapter"]
-        fp["fingerprint.rs\nbuild-input hash"]
-        classes["classes.rs\nclass-file parser,\nreverse reference graph"]
-        gen["generated.rs\nmerge-base worktree diff"]
-        records["records.rs\nlocal run, decide, record"]
-        bytecode["bytecode.rs\nmethod/shape digests,\nSpring wiring parts"]
-        settings["settings.rs\nconfig keys, migrations"]
-        reports["reports.rs\nJUnit XML"]
-        val["fixtures.rs replay.rs\ncatalog.rs timing.rs\nvalidation + measurement"]
-    end
-    subgraph agent["agent/ (Java, embedded by build.rs)"]
-        boot["Boot (Java 8)"] --> ag["Agent (Java 17+)\nTransformer, probes,\nJUnit filter, Spring hooks"]
-    end
-    main --> setup & fp & classes & records
-    classes --> gen
-    records --> bytecode & settings & reports
-    records <-->|"decide / record"| ag
-    main --> build["Maven / Gradle\n(+ gradle.init.gradle)"]
-    build -->|"test JVM"| boot
-    build --> reports
-```
+![Architecture: sieve CLI, Maven/Gradle build, Java agent in the test JVM](assets/architecture.svg)
 
 | Path | Contents |
 |---|---|
-| `src/` | CLI modules above and the Gradle init script |
+| `src/` | CLI: `main.rs` (args, Git diff, module selection), `setup.rs` (init/refresh), `classes.rs` (class-level graph), `records.rs` (local mode), and the Gradle init script |
 | `agent/` | Java agent, bootstrap probe, API stubs, vendored ASM, Maven extension (`agent/maven`) |
 | `tests/` | Integration tests: `cli`, `setup`, `native`, `oracle`, `safety`, `records`, `replay`, `workflows` |
 | `projects/` | Fixtures: `maven`/`gradle` parity pair, `single-*`, `records`, `version-bump`, `containers` |

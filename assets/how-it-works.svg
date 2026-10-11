@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" width="880" height="420" role="img" aria-labelledby="t d">
+  <title id="t">How Sieve selects tests</title>
+  <desc id="d">git diff from the merge base to HEAD, then each changed path is classified. An ignored path selects NONE, which runs clean only. A build input or other path selects ALL, the full suite. A path under a module's src selects the changed modules plus their reverse dependencies. Without class_level that is MODULES, verify -pl with -am. With class_level, Sieve compiles, reads bytecode, and walks reverse references to select a SUBSET of test classes.</desc>
+  <style>
+    text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .t{font-size:15px;font-weight:600}
+    .s{font-size:12.5px;fill:#4b5f78}
+    .l{font-size:12.5px;fill:#4b5f78}
+    .card{fill:#f6f8fa;stroke:#d0d7de}
+    .node{fill:#fff;stroke:#2c6cb0;stroke-width:1.5}
+    .ask{fill:#e8f1fb;stroke:#2c6cb0;stroke-width:1.5}
+    .pass{fill:#f6c445;stroke:#d4970a;stroke-width:1.5}
+    .held{fill:#e3e8ef;stroke:#7d8ca0;stroke-width:1.5}
+    .edge{fill:none;stroke:#2c6cb0;stroke-width:1.5}
+    .tip{fill:#2c6cb0}
+    .halo{paint-order:stroke;stroke:#f6f8fa;stroke-width:5px;stroke-linejoin:round}
+    text.onpass{fill:#163a66}
+    @media (prefers-color-scheme:dark){
+      text{fill:#e6edf3}
+      .s,.l{fill:#9aa9bb}
+      .card{fill:#161b22;stroke:#30363d}
+      .node{fill:#0d1117;stroke:#6ea8e8}
+      .ask{fill:#13243a;stroke:#6ea8e8}
+      .pass{stroke:#f6c445}
+      .held{fill:#2a3546;stroke:#5b6b80}
+      .edge{stroke:#6ea8e8}
+      .tip{fill:#6ea8e8}
+      .halo{stroke:#161b22}
+      text.onpass{fill:#163a66}
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="tip" d="M1 1 9 5 1 9z"/></marker>
+  </defs>
+  <rect class="card" x=".5" y=".5" width="879" height="419" rx="12"/>
+
+  <!-- edges -->
+  <g class="edge" marker-end="url(#a)">
+    <path d="M290 52H348"/>
+    <path d="M440 80V104a8 8 0 0 1 -8 8H148a8 8 0 0 0 -8 8V148"/>
+    <path d="M440 80V148"/>
+    <path d="M440 80V104a8 8 0 0 0 8 8H732a8 8 0 0 1 8 8V148"/>
+    <path d="M440 206V246"/>
+    <path d="M360 272H148a8 8 0 0 0 -8 8V338"/>
+    <path d="M440 296V338"/>
+    <path d="M550 368H653"/>
+  </g>
+  <g text-anchor="middle">
+    <text class="l mono halo" x="290" y="106">ignore glob</text>
+    <text class="l halo" x="590" y="106">build input, other</text>
+    <text class="l halo" x="250" y="266">no</text>
+  </g>
+  <text class="l mono halo" x="448" y="136">module/src/**</text>
+  <text class="l halo" x="448" y="324">yes</text>
+
+  <!-- row 1 -->
+  <rect class="node" x="110" y="24" width="180" height="56" rx="10"/>
+  <text class="t" x="200" y="48" text-anchor="middle">git diff</text>
+  <text class="s mono" x="200" y="67" text-anchor="middle">merge-base..HEAD</text>
+  <rect class="ask" x="350" y="24" width="180" height="56" rx="28"/>
+  <text class="t" x="440" y="57" text-anchor="middle">each changed path</text>
+
+  <!-- row 2 -->
+  <rect class="pass" x="55" y="150" width="170" height="56" rx="10"/>
+  <text class="t mono onpass" x="140" y="174" text-anchor="middle">NONE</text>
+  <text class="s onpass" x="140" y="193" text-anchor="middle">clean only</text>
+  <rect class="node" x="330" y="150" width="220" height="56" rx="10"/>
+  <text class="t" x="440" y="174" text-anchor="middle">changed modules</text>
+  <text class="s" x="440" y="193" text-anchor="middle">+ reverse dependencies</text>
+  <rect class="held" x="655" y="150" width="170" height="56" rx="10"/>
+  <text class="t mono" x="740" y="174" text-anchor="middle">ALL</text>
+  <text class="s" x="740" y="193" text-anchor="middle">full suite</text>
+
+  <!-- row 3 -->
+  <rect class="ask" x="360" y="248" width="160" height="48" rx="24"/>
+  <text class="t mono" x="440" y="277" text-anchor="middle">class_level?</text>
+
+  <!-- row 4 -->
+  <rect class="pass" x="55" y="340" width="170" height="56" rx="10"/>
+  <text class="t mono onpass" x="140" y="364" text-anchor="middle">MODULES</text>
+  <text class="s mono onpass" x="140" y="383" text-anchor="middle">verify -pl … -am</text>
+  <rect class="node" x="330" y="340" width="220" height="56" rx="10"/>
+  <text class="t" x="440" y="364" text-anchor="middle">compile, read bytecode,</text>
+  <text class="t" x="440" y="384" text-anchor="middle">walk reverse references</text>
+  <rect class="pass" x="655" y="340" width="170" height="56" rx="10"/>
+  <text class="t mono onpass" x="740" y="364" text-anchor="middle">SUBSET</text>
+  <text class="s onpass" x="740" y="383" text-anchor="middle">test classes</text>
+</svg>

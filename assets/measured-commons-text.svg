@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 266" width="880" height="266" role="img" aria-labelledby="t d">
+  <title id="t">commons-text, 30 commits: full build vs Sieve</title>
+  <desc id="d">Seconds per commit group, Maven, class-level selection. 15 docs and CI commits selected NONE: full build 256, Sieve 13 (-95%). 7 source commits selected a SUBSET: 118 vs 73 (-38%). The 8 build-input commits (ALL) are not shown.</desc>
+  <style>
+    text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66;font-variant-numeric:tabular-nums}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .h{font-size:17px;font-weight:600}
+    .c{font-size:14px}
+    .v{font-size:12px}
+    .p{font-size:15px;font-weight:600}
+    .s{font-size:12.5px;fill:#4b5f78}
+    .card{fill:#f6f8fa;stroke:#d0d7de}
+    .grid{stroke:#d8dee6}
+    .axis{stroke:#9fb0c4}
+    .full{fill:#7d8ca0}
+    .sieve{fill:#d4970a}
+    @media (prefers-color-scheme:dark){
+      text{fill:#e6edf3}
+      .s{fill:#9aa9bb}
+      .card{fill:#161b22;stroke:#30363d}
+      .grid{stroke:#262d36}
+      .axis{stroke:#3d4b5c}
+      .full{fill:#5b6b80}
+      .sieve{fill:#f6c445}
+    }
+  </style>
+  <rect class="card" x=".5" y=".5" width="879" height="265" rx="12"/>
+
+  <text class="h" x="24" y="38">Class-level, 30 commits of apache/commons-text</text>
+  <text class="s" x="24" y="60">Maven, seconds per commit group. Lower is better. The 8 build-input commits (ALL) are not shown.</text>
+  <rect class="full" x="24" y="81" width="14" height="14" rx="3"/>
+  <text class="c" x="44" y="93">full build</text>
+  <rect class="sieve" x="128" y="81" width="14" height="14" rx="3"/>
+  <text class="c" x="148" y="93">Sieve</text>
+  <text class="s" x="856" y="110" text-anchor="end">saved</text>
+
+  <!-- grid: 0..300 s over x 220..740 -->
+  <path class="grid" d="M393.3 116V222M566.7 116V222M740 116V222"/>
+  <path class="axis" d="M220 116V222"/>
+  <g class="s" text-anchor="middle">
+    <text x="220" y="242">0</text>
+    <text x="393.3" y="242">100</text>
+    <text x="566.7" y="242">200</text>
+    <text x="740" y="242">300 s</text>
+  </g>
+
+  <text class="c" x="24" y="138">15 docs/CI commits</text>
+  <text class="s mono" x="24" y="155">NONE</text>
+  <path class="full" d="M220 124H659.7a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <path class="sieve" d="M220 142H238.5a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <text class="v" x="670" y="136.5">256</text>
+  <text class="v" x="248.5" y="154.5">13</text>
+  <text class="p" x="856" y="146" text-anchor="end">−95%</text>
+
+  <text class="c" x="24" y="194">7 source commits</text>
+  <text class="s mono" x="24" y="211">SUBSET</text>
+  <path class="full" d="M220 180H420.5a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <path class="sieve" d="M220 198H342.5a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <text class="v" x="430.5" y="192.5">118</text>
+  <text class="v" x="352.5" y="210.5">73</text>
+  <text class="p" x="856" y="202" text-anchor="end">−38%</text>
+</svg>

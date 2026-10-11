@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 384" width="880" height="384" role="img" aria-labelledby="t d">
+  <title id="t">Local mode, 20 commits: full build vs Sieve</title>
+  <desc id="d">Seconds per commit group, Maven. 4 narrow commits: full build 660, Sieve 84 (-87%). 14 wide commits: 2,288 vs 1,145 (-50%). 2 build-input commits: 362 vs 362 (no change). Total over 20 commits: 3,310 vs 1,591 (-52%).</desc>
+  <style>
+    text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66;font-variant-numeric:tabular-nums}
+    .h{font-size:17px;font-weight:600}
+    .c{font-size:14px}
+    .v{font-size:12px}
+    .p{font-size:15px;font-weight:600}
+    .s{font-size:12.5px;fill:#4b5f78}
+    .card{fill:#f6f8fa;stroke:#d0d7de}
+    .grid{stroke:#d8dee6}
+    .axis{stroke:#9fb0c4}
+    .full{fill:#7d8ca0}
+    .sieve{fill:#d4970a}
+    @media (prefers-color-scheme:dark){
+      text{fill:#e6edf3}
+      .s{fill:#9aa9bb}
+      .card{fill:#161b22;stroke:#30363d}
+      .grid{stroke:#262d36}
+      .axis{stroke:#3d4b5c}
+      .full{fill:#5b6b80}
+      .sieve{fill:#f6c445}
+    }
+  </style>
+  <rect class="card" x=".5" y=".5" width="879" height="383" rx="12"/>
+
+  <text class="h" x="24" y="38">Local mode, 20 commits of a Spring Boot service</text>
+  <text class="s" x="24" y="60">Maven, seconds per commit group. Lower is better.</text>
+  <rect class="full" x="24" y="81" width="14" height="14" rx="3"/>
+  <text class="c" x="44" y="93">full build</text>
+  <rect class="sieve" x="128" y="81" width="14" height="14" rx="3"/>
+  <text class="c" x="148" y="93">Sieve</text>
+  <text class="s" x="856" y="110" text-anchor="end">saved</text>
+
+  <!-- grid: 0..3500 s over x 220..740 -->
+  <path class="grid" d="M368.6 116V342M517.1 116V342M665.7 116V342"/>
+  <path class="axis" d="M220 116V342"/>
+  <g class="s" text-anchor="middle">
+    <text x="220" y="362">0</text>
+    <text x="368.6" y="362">1,000</text>
+    <text x="517.1" y="362">2,000</text>
+    <text x="665.7" y="362">3,000 s</text>
+  </g>
+
+  <!-- groups: label, full bar, Sieve bar, values, saving -->
+  <text class="c" x="24" y="146">4 narrow commits</text>
+  <path class="full" d="M220 124H314.1a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <path class="sieve" d="M220 142H228.5a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <text class="v" x="324" y="136.5">660</text>
+  <text class="v" x="238.5" y="154.5">84</text>
+  <text class="p" x="856" y="146" text-anchor="end">−87%</text>
+
+  <text class="c" x="24" y="202">14 wide commits</text>
+  <path class="full" d="M220 180H555.9a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <path class="sieve" d="M220 198H386.1a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <text class="v" x="566" y="192.5">2,288</text>
+  <text class="v" x="396" y="210.5">1,145</text>
+  <text class="p" x="856" y="202" text-anchor="end">−50%</text>
+
+  <text class="c" x="24" y="258">2 build-input commits</text>
+  <path class="full" d="M220 236H269.8a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <path class="sieve" d="M220 254H269.8a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <text class="v" x="280" y="248.5">362</text>
+  <text class="v" x="280" y="266.5">362</text>
+  <text class="p" x="856" y="258" text-anchor="end">±0%</text>
+
+  <path class="grid" d="M24 288H856"/>
+
+  <text class="c" x="24" y="322" font-weight="600">20 commits total</text>
+  <path class="full" d="M220 300H707.8a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <path class="sieve" d="M220 318H452.4a4 4 0 0 1 4 4v8a4 4 0 0 1 -4 4H220z"/>
+  <text class="v" x="718" y="312.5">3,310</text>
+  <text class="v" x="462" y="330.5">1,591</text>
+  <text class="p" x="856" y="322" text-anchor="end">−52%</text>
+</svg>

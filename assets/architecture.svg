@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 280" width="880" height="280" role="img" aria-labelledby="t d">
+  <title id="t">Sieve architecture</title>
+  <desc id="d">The sieve Rust CLI in src/ selects modules from the Git diff, runs init and refresh, builds the class-file reference graph, and keeps local-mode records. It runs the project's Maven or Gradle build (verify or check), which uses the Gradle init script or the Maven core extension, and reads back JUnit XML. The build starts the test JVM, where the Java agent from agent/, embedded by build.rs, probes tests, filters JUnit classes, and hooks Spring. In local mode the agent calls sieve decide and sieve record.</desc>
+  <style>
+    text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .t{font-size:16px;font-weight:600}
+    .i{font-size:13.5px}
+    .s{font-size:12.5px;fill:#4b5f78}
+    .card{fill:#f6f8fa;stroke:#d0d7de}
+    .node{fill:#fff;stroke:#2c6cb0;stroke-width:1.5}
+    .ext{fill:#fff;stroke:#2c6cb0;stroke-width:1.5;stroke-dasharray:6 4}
+    .rule{stroke:#d8dee6}
+    .edge{fill:none;stroke:#2c6cb0;stroke-width:1.5}
+    .ret{stroke-dasharray:6 4}
+    .tip{fill:#2c6cb0}
+    .hot{fill:none;stroke:#d4970a;stroke-width:2}
+    .hottip{fill:#d4970a}
+    .halo{paint-order:stroke;stroke:#f6f8fa;stroke-width:5px;stroke-linejoin:round}
+    @media (prefers-color-scheme:dark){
+      text{fill:#e6edf3}
+      .s{fill:#9aa9bb}
+      .card{fill:#161b22;stroke:#30363d}
+      .node,.ext{fill:#0d1117;stroke:#6ea8e8}
+      .rule{stroke:#262d36}
+      .edge{stroke:#6ea8e8}
+      .tip{fill:#6ea8e8}
+      .hot{stroke:#f6c445}
+      .hottip{fill:#f6c445}
+      .halo{stroke:#161b22}
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="tip" d="M1 1 9 5 1 9z"/></marker>
+    <marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="hottip" d="M1 1 9 5 1 9z"/></marker>
+  </defs>
+  <rect class="card" x=".5" y=".5" width="879" height="279" rx="12"/>
+
+  <!-- sieve CLI -->
+  <rect class="node" x="24" y="24" width="220" height="176" rx="10"/>
+  <text class="t" x="44" y="52">sieve</text>
+  <text class="s mono" x="224" y="52" text-anchor="end">Rust · src/</text>
+  <path class="rule" d="M40 66H228"/>
+  <g class="i">
+    <text x="44" y="92">Git diff → module selection</text>
+    <text x="44" y="116">init / refresh, POM edits</text>
+    <text x="44" y="140">class-file reference graph</text>
+    <text x="44" y="164">local-mode records</text>
+  </g>
+
+  <!-- build -->
+  <rect class="ext" x="350" y="24" width="180" height="176" rx="10"/>
+  <text class="t" x="370" y="52">Maven / Gradle</text>
+  <path class="rule" d="M366 66H514"/>
+  <g class="i">
+    <text x="370" y="92">the project's build</text>
+    <text class="mono" x="370" y="116" font-size="12.5">gradle.init.gradle</text>
+    <text x="370" y="140">Maven core extension</text>
+    <text class="mono" x="370" y="164" font-size="12.5">agent/maven</text>
+  </g>
+
+  <!-- agent -->
+  <rect class="node" x="636" y="24" width="220" height="176" rx="10"/>
+  <text class="t" x="656" y="52">agent</text>
+  <text class="s mono" x="836" y="52" text-anchor="end">Java · agent/</text>
+  <path class="rule" d="M652 66H840"/>
+  <g class="i">
+    <text x="656" y="92">Boot (Java 8) → Agent (17+)</text>
+    <text x="656" y="116">method and file probes</text>
+    <text x="656" y="140">JUnit filter, Spring hooks</text>
+    <text x="656" y="164">embedded by <tspan class="mono" font-size="12.5">build.rs</tspan></text>
+  </g>
+
+  <!-- edges -->
+  <text class="s halo" x="297" y="106" text-anchor="middle"><tspan class="mono">verify</tspan> / <tspan class="mono">check</tspan></text>
+  <path class="edge" marker-end="url(#a)" d="M244 116H348"/>
+  <path class="edge ret" marker-end="url(#a)" d="M350 150H246"/>
+  <text class="s halo" x="297" y="170" text-anchor="middle">JUnit XML</text>
+
+  <text class="s halo" x="583" y="122" text-anchor="middle">test JVM</text>
+  <path class="edge" marker-end="url(#a)" d="M530 132H634"/>
+
+  <path class="hot" marker-start="url(#h)" marker-end="url(#h)" d="M134 202V228a8 8 0 0 0 8 8H738a8 8 0 0 0 8 -8V202"/>
+  <text class="s halo" x="440" y="258" text-anchor="middle"><tspan class="mono">sieve decide</tspan> / <tspan class="mono">sieve record</tspan> · local mode</text>
+</svg>
