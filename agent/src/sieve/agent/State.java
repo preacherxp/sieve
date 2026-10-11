@@ -382,6 +382,12 @@ final class State {
         }
         CLAIMABLE.add(bucket);
         CONTEXTS.put(context, bucket);
+        try {
+            Object factory = context.getClass().getMethod("getBeanFactory").invoke(context);
+            Probe.context(factory, bucket);
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            error("context bean factory: " + error);
+        }
         Probe.current = bucket;
     }
 
@@ -456,6 +462,7 @@ final class State {
             Set<String> methods = new TreeSet<>();
             Set<String> files = new TreeSet<>();
             for (Bucket bucket : buckets) {
+                methods.addAll(bucket.invocations());
                 boolean[] seen = bucket.methods();
                 for (int i = 0; i < seen.length && i < names.length; i++) {
                     if (seen[i]) {

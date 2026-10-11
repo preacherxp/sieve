@@ -50,7 +50,9 @@ fn configure(clone: &Path, workspace: &Path, config: &Config, message: &str) -> 
         }
     }
     let mut config: Config = serde_json::from_value(serde_json::to_value(config)?)?;
-    config.build_fingerprint = Some(crate::fingerprint::build_inputs(workspace)?);
+    if !crate::js::is_js(&config.tool) {
+        config.build_fingerprint = Some(crate::fingerprint::build_inputs(workspace)?);
+    }
     fs::write(
         workspace.join("impact.json"),
         serde_json::to_string_pretty(&config)? + "\n",
@@ -79,9 +81,11 @@ fn execute(
     extra: &[String],
     log: &Path,
 ) -> Result<Timed> {
-    git(clone, &["clean", "-fdxq"])?;
+    // Installed JavaScript dependencies survive, like a warm CI cache.
+    git(clone, &["clean", "-fdxq", "-e", "node_modules"])?;
     timing::run(
         Command::new(env::current_exe()?)
+            .env("SIEVE_JS_RESULTS", "1")
             .arg("run")
             .arg("--workspace")
             .arg(workspace)
@@ -133,6 +137,9 @@ pub fn main(args: Vec<String>) -> Result<u8> {
     }
     let workspace = Path::new(&workspace.ok_or("--workspace is required")?).canonicalize()?;
     let config = Config::read(&workspace)?;
+    if walk_history && crate::js::is_js(&config.tool) {
+        return Err("--walk needs local mode, which supports only Maven and Gradle".into());
+    }
     if walk_history {
         return walk(
             &workspace, &config, commits, plant, executable, output, extra,
@@ -178,6 +185,7 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         executable_args = vec!["--executable", executable.as_str()];
     }
     let mut records = Vec::new();
+    let mut installed = None;
     for commit in history.lines() {
         let parent = match git(&root, &["rev-parse", &format!("{commit}^")]) {
             Ok(parent) => parent,
@@ -189,13 +197,25 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         let mut record = json!({"commit": commit, "subject": subject});
         // The configured parent, then the commit's tree with the same configuration.
         let prepared = git(&clone, &["checkout", "-q", "--detach", "-f", &parent])
-            .and_then(|_| git(&clone, &["clean", "-fdxq"]))
+            .and_then(|_| git(&clone, &["clean", "-fdxq", "-e", "node_modules"]))
             .and_then(|_| configure(&clone, &clone_workspace, &config, "configured parent"))
             .and_then(|base| {
                 git(&clone, &["read-tree", "-u", "--reset", commit])?;
                 configure(&clone, &clone_workspace, &config, "configured commit")?;
                 Ok(base)
             });
+        // JavaScript dependencies of the commit, reinstalled when its lockfile changes.
+        let prepared = prepared.and_then(|base| {
+            if crate::js::is_js(&config.tool) {
+                let lock = crate::js::lockfiles(&clone_workspace);
+                if installed.as_ref() != Some(&lock) {
+                    installed = None;
+                    crate::js::install(&clone_workspace)?;
+                    installed = Some(lock);
+                }
+            }
+            Ok(base)
+        });
         let base = match prepared {
             Ok(base) => base,
             Err(error) => {

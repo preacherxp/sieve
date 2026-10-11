@@ -54,6 +54,8 @@ pub struct Digest {
     /// The shape without private methods that carry no annotation: only code of the class
     /// itself calls them, and that code's hashes cover them.
     pub api: String,
+    /// The API without method and parameter annotations; type annotations remain structural.
+    pub structure: String,
     /// The wiring split into its parts: the class's access, supertypes and annotations; its
     /// constructors; and each annotated member.
     pub declared: String,
@@ -71,6 +73,8 @@ pub struct Digest {
 pub struct Wired {
     pub hash: String,
     pub annotations: Vec<String>,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
 }
 
 struct Reader<'a> {
@@ -553,6 +557,40 @@ fn annotations(pool: &Pool, list: &Attributes) -> Result<Vec<Info>> {
     Ok(out)
 }
 
+/// Digests by annotation type, retaining the parameter positions and all element values.
+fn annotation_values(pool: &Pool, list: &Attributes) -> Result<BTreeMap<String, String>> {
+    let mut hashes: BTreeMap<String, Hasher> = BTreeMap::new();
+    for (kind, body) in list {
+        let mut r = Reader { bytes: body, at: 0 };
+        let parameters = match kind.as_str() {
+            "RuntimeVisibleAnnotations" | "RuntimeInvisibleAnnotations" => 1,
+            "RuntimeVisibleParameterAnnotations" | "RuntimeInvisibleParameterAnnotations" => {
+                r.u8()?
+            }
+            _ => continue,
+        };
+        for parameter in 0..parameters {
+            for _ in 0..r.u16()? {
+                let name = pool.text(
+                    Reader {
+                        bytes: body,
+                        at: r.at,
+                    }
+                    .u16()?,
+                )?;
+                let name = name
+                    .strip_prefix('L')
+                    .and_then(|name| name.strip_suffix(';'))
+                    .ok_or("Invalid annotation descriptor")?;
+                let h = hashes.entry(name.to_owned()).or_default();
+                h.field(kind.as_bytes()).bytes(&[parameter]);
+                annotation(pool, &mut r, h)?;
+            }
+        }
+    }
+    Ok(hashes.into_iter().map(|(n, h)| (n, h.finish())).collect())
+}
+
 const MAPPINGS: &[&str] = &[
     "org/springframework/web/bind/annotation/RequestMapping",
     "org/springframework/web/bind/annotation/GetMapping",
@@ -795,6 +833,7 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
     attributes(&pool, &class_attributes, &mut wiring, Some(ANNOTATIONS))?;
     let declared = wiring.finish();
     let mut api = shape.clone();
+    let mut structure = shape.clone();
     let mut injection = Hasher::default();
     let mut wired = BTreeMap::new();
     let mut plains = BTreeSet::new();
@@ -826,11 +865,24 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
                     .bytes(&[kind])
                     .bytes(&member.access.to_be_bytes())
                     .field(key.as_bytes());
+                let mut member_structure = member_shape.clone();
+                let kept = member
+                    .attributes
+                    .iter()
+                    .filter(|(n, _)| {
+                        kind == 0
+                            || !ANNOTATIONS.contains(&n.as_str())
+                            || n.ends_with("TypeAnnotations")
+                    })
+                    .cloned()
+                    .collect();
+                attributes(&pool, &kept, &mut member_structure, None)?;
                 attributes(&pool, &member.attributes, &mut member_shape, None)?;
                 let member_shape = member_shape.finish();
                 shape.field(member_shape.as_bytes());
                 if kind == 0 || member.access & ACC_PRIVATE == 0 || annotated {
                     api.field(member_shape.as_bytes());
+                    structure.field(member_structure.finish().as_bytes());
                 }
             }
             if annotated || member.name == "<init>" {
@@ -862,6 +914,7 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
                         Wired {
                             hash: h,
                             annotations: names,
+                            values: annotation_values(&pool, &member.attributes)?,
                         },
                     );
                 }
@@ -871,6 +924,7 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
                 if initializer {
                     shape.field(hash.as_bytes());
                     api.field(hash.as_bytes());
+                    structure.field(hash.as_bytes());
                 }
                 if let Some(body) = body.filter(|_| initializer || member.name == "<init>") {
                     if plain(&pool, body, &name, initializer)? {
@@ -888,6 +942,7 @@ pub fn digest(bytes: &[u8]) -> Result<Digest> {
         wiring: wiring.finish(),
         methods: hashes,
         api: api.finish(),
+        structure: structure.finish(),
         declared,
         injection: injection.finish(),
         wired,
@@ -989,6 +1044,36 @@ mod tests {
         assert_ne!(before["A"].shape, after["A"].shape);
         for (method, hash) in &before["A"].methods {
             assert_eq!(&after["A"].methods[method], hash, "{method}");
+        }
+    }
+
+    #[test]
+    fn method_annotation_values_preserve_structure_but_signatures_do_not() {
+        let source = BASE.replace(
+            "public int one",
+            "@Deprecated(since = \"one\") public int one",
+        );
+        let Some(before) = compile(&[("A.java", &source)]) else {
+            return;
+        };
+        let after = compile(&[(
+            "A.java",
+            &source.replace("since = \"one\"", "since = \"two\""),
+        )])
+        .unwrap();
+        assert_ne!(before["A"].api, after["A"].api);
+        assert_eq!(before["A"].structure, after["A"].structure);
+        assert_ne!(before["A"].wired, after["A"].wired);
+        for edited in [
+            source.replace("int one", "long one"),
+            source.replace("class A", "class A implements java.io.Serializable"),
+            source.replace(
+                "static final String NAME",
+                "@Deprecated static final String NAME",
+            ),
+        ] {
+            let after = compile(&[("A.java", &edited)]).unwrap();
+            assert_ne!(before["A"].structure, after["A"].structure);
         }
     }
 

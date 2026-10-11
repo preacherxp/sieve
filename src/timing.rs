@@ -187,10 +187,13 @@ pub fn clear_reports(workspace: &Path) -> Result<()> {
         workspace.join("target/failsafe-reports"),
         // Gradle keeps the results of a skipped up-to-date `Test` task; without them it reruns.
         workspace.join("build/test-results"),
+        workspace.join(crate::js::RESULTS),
     ];
     for dir in folders {
         if dir.is_dir() {
             fs::remove_dir_all(dir)?;
+        } else if dir.is_file() {
+            fs::remove_file(dir)?;
         }
     }
     Ok(())

@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class Bucket {
     private volatile boolean[] methods = new boolean[4096];
     private final Set<String> files = ConcurrentHashMap.newKeySet();
+    private final Set<String> invocations = ConcurrentHashMap.newKeySet();
 
     void hit(int id) {
         boolean[] seen = methods;
@@ -28,6 +29,14 @@ public final class Bucket {
 
     void file(String path) {
         files.add(path);
+    }
+
+    void invocation(String method) {
+        invocations.add(method);
+    }
+
+    public Set<String> invocations() {
+        return invocations;
     }
 
     public synchronized boolean[] methods() {

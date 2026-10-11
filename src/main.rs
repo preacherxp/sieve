@@ -5,6 +5,7 @@ mod classes;
 mod fingerprint;
 mod fixtures;
 mod generated;
+mod js;
 mod records;
 mod replay;
 mod reports;
@@ -61,6 +62,10 @@ struct Config {
     /// Speed-ups that local `run` enables by default, as with `--with`; `--without` overrides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     with: Vec<String>,
+    /// Jest/Vitest: the directories whose script files Sieve maps to related test files
+    /// (ADR 0006). A change anywhere else selects every test.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<String>,
 }
 
 /// Documentation outside module sources. Module sources stay test inputs whatever their name.
@@ -144,8 +149,37 @@ impl Config {
     }
 
     fn validate(&self, workspace: &Path) -> Result<()> {
-        if !matches!(self.tool.as_str(), "maven" | "gradle") || self.modules.is_empty() {
-            return Err("impact.json requires tool maven/gradle and a nonempty module map".into());
+        if js::is_js(&self.tool) {
+            if self.modules.len() != 1 || self.modules.get(".").is_none_or(|d| !d.is_empty()) {
+                return Err("jest/vitest projects support only the single module \".\"".into());
+            }
+            if self.sources.is_empty() || !self.sources.iter().all(|s| s != "." && valid_module(s))
+            {
+                return Err(
+                    "jest/vitest projects require relative source directories in sources".into(),
+                );
+            }
+            if self.class_level
+                || self.records.is_some()
+                || !self.generated.is_empty()
+                || !self.with.is_empty()
+                || self.build_fingerprint.is_some()
+                || self.shared_tests.is_some()
+            {
+                return Err(
+                    "jest/vitest projects support only tool, modules, sources, and ignore".into(),
+                );
+            }
+        } else if !self.sources.is_empty() {
+            return Err("sources applies only to jest/vitest projects".into());
+        }
+        if !matches!(self.tool.as_str(), "maven" | "gradle" | "jest" | "vitest")
+            || self.modules.is_empty()
+        {
+            return Err(
+                "impact.json requires tool maven/gradle/jest/vitest and a nonempty module map"
+                    .into(),
+            );
         }
         for (module, dependencies) in &self.modules {
             if !valid_module(module)
@@ -849,7 +883,7 @@ fn main_result() -> Result<u8> {
         println!(
             "sieve <select|run> [--workspace PATH] [--base REV | --full]\n\
                   [--records | --ci] [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
-                  sieve <init|refresh> [--workspace PATH] [--tool maven|gradle] [--executable PATH]\n\
+                  sieve <init|refresh> [--workspace PATH] [--tool maven|gradle|jest|vitest] [--executable PATH]\n\
                   sieve env [--workspace PATH] [--base REV]\n\
                   sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
                   sieve classify --workspace PATH [--commits N]\n\
@@ -925,6 +959,14 @@ fn main_result() -> Result<u8> {
     };
     levers.on.extend(config.with.iter().cloned());
     levers.validate()?;
+    if js::is_js(&config.tool) {
+        if records {
+            return Err("--records and --ci support only Maven and Gradle".into());
+        }
+        return js::main(
+            &command, &config, &workspace, base, output, executable, &extra,
+        );
+    }
     let local = records || config.records == Some(true);
     if local && command == "run" {
         if local_default {
@@ -1451,6 +1493,36 @@ mod tests {
                 "{extra}"
             );
         }
+    }
+
+    #[test]
+    fn javascript_settings_are_validated() {
+        let temp = tempfile::tempdir().unwrap();
+        let config =
+            |value: serde_json::Value| -> Config { serde_json::from_value(value).unwrap() };
+        let js = |extra: serde_json::Value| {
+            let mut value =
+                serde_json::json!({"tool": "vitest", "modules": {".": []}, "sources": ["src"]});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            config(value)
+        };
+        assert!(js(serde_json::json!({})).validate(temp.path()).is_ok());
+        for extra in [
+            serde_json::json!({"sources": []}),
+            serde_json::json!({"sources": ["."]}),
+            serde_json::json!({"sources": ["../x"]}),
+            serde_json::json!({"class_level": true}),
+            serde_json::json!({"records": true}),
+            serde_json::json!({"build_fingerprint": "x"}),
+            serde_json::json!({"modules": {".": [], "a": []}}),
+        ] {
+            assert!(js(extra.clone()).validate(temp.path()).is_err(), "{extra}");
+        }
+        let maven = serde_json::json!({"tool": "maven", "modules": {".": []}, "sources": ["src"]});
+        assert!(config(maven).validate(temp.path()).is_err());
     }
 
     #[test]

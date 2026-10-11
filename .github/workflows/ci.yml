@@ -180,6 +180,37 @@ jobs:
         run: |
           rustup toolchain install 1.92.0 --profile minimal
           cargo +1.92.0 test --locked --test records -- --include-ignored --test-threads=1
+  javascript:
+    name: Jest and Vitest selection
+    needs: [rust]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # JDK 25 compiles the embedded test-JVM agent.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: projects/js/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-debug-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
+      - name: Select, run, and replay projects/js with both runners
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          npm ci --prefix projects/js --no-audit --no-fund
+          cargo +1.92.0 test --locked --test js -- --ignored --test-threads=1
   container-tests:
     name: ${{ matrix.service }} container
     runs-on: ubuntu-latest

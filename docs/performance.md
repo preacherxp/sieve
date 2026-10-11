@@ -275,3 +275,29 @@ Seconds, totals per commit kind; the 2026-10-01 Sieve column is the walk above.
   selected a full context test, or one had passed since the change.
 
 One benchmark and one machine, built by the same author as the tool.
+
+## JavaScript and TypeScript: Jest and Vitest replays (2026-10-08)
+
+`sieve replay --run` over the last 30 first-parent commits of two single-package projects
+(ADR 0006), with the source roots `sieve init` proposed, on an Apple M4 Pro, macOS 26.6,
+Node 22.15. Each commit ran the full suite and the selection from clean trees; dependency
+installs are excluded from the timings.
+
+| Project | Runner | Roots | ALL / SUBSET / NONE | Full s | Selected s | Cases full → selected | Missed |
+|---|---|---|---|---|---|---|---|
+| react-hook-form `e76876b` | Jest 30.4 | `src` | 2 / 28 / 0 | 86.7 | 88.5 | 44,635 → 29,091 | 0 |
+| i18next `edaea71` | Vitest 4.1 | `src`, `test` | 17 / 8 / 5 | 39.8 | 29.5 | 29,297 → 23,031 | 0 |
+
+- **No failure was missed, but none could have been.** Every replayed commit passed its full
+  suite, so this shows no false failure and measures time; the oracle in
+  [`projects/js`](../projects/js) carries the safety claim until planted bugs exist for JS.
+- **Selection does not pay on suites this fast.** react-hook-form's full Jest run takes about
+  3 s; selecting a third fewer cases saved nothing once the runner query (about 0.5 s) was
+  added. Test-only commits ran 1 test file in 1.3 s instead of 2.8 s, but most commits touch
+  core modules that 53–57 of its 124 test files import.
+- **i18next's savings came from `NONE`.** Five documentation commits skipped a 1–2 s suite.
+  Most other commits change files outside the source roots: the committed bundle
+  `i18next.js`, `index.d.ts`, and `package-lock.json` at the root select every test.
+
+Two small, fast suites on one machine; the measurement for slower suites (minutes of Jest
+with `ts-jest`) is still open.

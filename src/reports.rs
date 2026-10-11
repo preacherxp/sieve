@@ -103,6 +103,9 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
 }
 
 pub(crate) fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
+    if crate::js::is_js(tool) {
+        return crate::js::read_results(workspace);
+    }
     let mut reports = Reports::default();
     for (prefix, path) in report_files(workspace, tool)? {
         parse_report(&path, &prefix, &mut reports)?;

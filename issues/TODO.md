@@ -36,10 +36,13 @@ catalogs for internal services stay outside this repository.
       project classes that name it; keys only the framework reads still rerun every reader.
 - [ ] Narrow framework-read configuration keys (`spring.*`, `server.*`) by the auto-configuration
       that binds them, and migrations that alter existing tables by the tables tests touch.
-- [ ] Member-level shapes for components: an annotation added to one method reruns all users of
-      the class, not only callers of that method.
-- [ ] Lazily created beans count only for the test class that first used them; attribute them to
-      the context that holds them.
+- [x] Member-level selection for value edits to existing invocation-local method annotations;
+      unchanged mappings do not widen parameter edits. Native checks cover rejected requests,
+      intercepted calls without body execution, unrelated methods, and older snapshots.
+- [ ] Narrow annotation additions/removals when changes to proxy construction can be ruled out;
+      these still rerun users of the class.
+- [x] Attribute lazy singleton initialization and FactoryBean product creation to their owning
+      Spring test context. Native checks cover both test orders and failed creation cleanup.
 - [ ] Revisit the AOT class cache once the JDK can cache classes with directories on the class path
       (issue 10).
 

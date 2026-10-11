@@ -22,6 +22,9 @@ public final class Probe {
     /** Set when a read may have gone unrecorded; the run then keeps no records. */
     public static volatile boolean failed;
 
+    /** Each Spring context owns the initialization of the singletons its factory creates. */
+    private static final java.util.Map<Object, Bucket> SINGLETONS = new java.util.WeakHashMap<>();
+
     private Probe() {}
 
     public static void roots(Path workspace) {
@@ -38,6 +41,47 @@ public final class Probe {
 
     public static void hit(int id) {
         current.hit(id);
+    }
+
+    public static void context(Object factory, Bucket bucket) {
+        synchronized (SINGLETONS) {
+            SINGLETONS.put(factory, bucket);
+        }
+    }
+
+    public static Bucket singletonStarting(Object factory) {
+        Bucket previous = current;
+        try {
+            synchronized (SINGLETONS) {
+                Bucket bucket = SINGLETONS.get(factory);
+                if (bucket != null) {
+                    current = bucket;
+                }
+            }
+        } catch (Throwable error) {
+            failed = true;
+        }
+        return previous;
+    }
+
+    public static void singletonFinished(Bucket previous) {
+        current = previous;
+    }
+
+    /** A Spring interceptor or argument resolver can return or reject a call before its body. */
+    public static void invocation(java.lang.reflect.Method method, Object target) {
+        try {
+            if (method.getDeclaringClass().isInterface() && target != null) {
+                java.lang.reflect.Method resolved = target.getClass().getMethod(method.getName(), method.getParameterTypes());
+                if (!java.lang.reflect.Proxy.isProxyClass(resolved.getDeclaringClass())) {
+                    method = resolved;
+                }
+            }
+            String descriptor = java.lang.invoke.MethodType.methodType(method.getReturnType(), method.getParameterTypes()).descriptorString();
+            current.invocation(method.getDeclaringClass().getName().replace('.', '/') + "#" + method.getName() + descriptor);
+        } catch (Throwable error) {
+            failed = true;
+        }
     }
 
     public static void file(Object target) {

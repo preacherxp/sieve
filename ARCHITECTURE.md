@@ -197,6 +197,7 @@ catch it.
 | Source | Responsibility |
 |---|---|
 | `main.rs` | Argument parsing, `Config`, `Selection`, Git diff, module selection, build commands |
+| `js.rs`, `vitest.helper.mjs` | Jest/Vitest projects (ADR 0006): path rules, runner queries, runs, replay results |
 | `setup.rs` | `init`/`refresh`, build tool detection, Maven POM adapter, Gradle script extraction |
 | `fingerprint.rs` | Hash of conventional build inputs |
 | `classes.rs` | Class-file parser and class-level impact graph |

@@ -659,8 +659,8 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         }
         if matches!(arg.as_str(), "--help" | "-h") {
             println!(
-                "sieve init|refresh [--workspace PATH] [--tool maven|gradle] [--executable PATH] [-- BUILD_FLAGS]\n\
-                Discovers JVM modules, writes impact.json, and installs Maven test plugin properties.\n\
+                "sieve init|refresh [--workspace PATH] [--tool maven|gradle|jest|vitest] [--executable PATH] [-- BUILD_FLAGS]\n\
+                Discovers JVM modules or Jest/Vitest source roots, writes impact.json, and installs Maven test plugin properties.\n\
                 init refuses existing configuration; refresh rediscovers the graph and preserves additional declared edges."
             );
             return Ok(0);
@@ -690,8 +690,8 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
     }
     let tool =
         match tool {
-            Some(tool) if matches!(tool.as_str(), "maven" | "gradle") => tool,
-            Some(_) => return Err("--tool must be maven or gradle".into()),
+            Some(tool) if matches!(tool.as_str(), "maven" | "gradle" | "jest" | "vitest") => tool,
+            Some(_) => return Err("--tool must be maven, gradle, jest, or vitest".into()),
             None => match (
                 workspace.join("pom.xml").is_file(),
                 [
@@ -705,12 +705,25 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
             ) {
                 (true, false) => "maven".into(),
                 (false, true) => "gradle".into(),
+                (false, false) if crate::js::detect(&workspace).is_some() => {
+                    crate::js::detect(&workspace).unwrap()?
+                }
                 _ => return Err(
                     "Cannot unambiguously detect the build tool; specify --tool maven or gradle"
                         .into(),
                 ),
             },
         };
+    if crate::js::is_js(&tool) {
+        if previous.as_ref().is_some_and(|p| p.tool != tool) {
+            return Err("refresh cannot change the build tool".into());
+        }
+        let config = crate::js::configure(&workspace, &tool, executable, &extra, previous)?;
+        config.validate(&workspace)?;
+        fs::write(config_path, serde_json::to_string_pretty(&config)? + "\n")?;
+        println!("Configured {tool} test selection in {} with source roots {}. Review and commit impact.json.\nRun: sieve run --workspace {} --base origin/main", workspace.display(), config.sources.join(", "), workspace.display());
+        return Ok(0);
+    }
     let executable = executable.unwrap_or_else(|| default_executable(&workspace, &tool));
     if tool == "maven" {
         check_execution_skips(&fs::read_to_string(workspace.join("pom.xml"))?)?;

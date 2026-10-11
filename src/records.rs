@@ -57,6 +57,8 @@ struct Shape {
     #[serde(default)]
     api: String,
     #[serde(default)]
+    structure: String,
+    #[serde(default)]
     declared: String,
     #[serde(default)]
     injection: String,
@@ -440,6 +442,7 @@ impl Current {
                     supers: d.supers.clone(),
                     component,
                     api: d.api.clone(),
+                    structure: d.structure.clone(),
                     declared: d.declared.clone(),
                     injection: d.injection.clone(),
                     wired: d.wired.clone(),
@@ -990,6 +993,8 @@ struct Wiring {
     added: BTreeSet<String>,
     /// Classes whose users run, with the reason: components whose changes stay inside them.
     classes: BTreeMap<String, String>,
+    /// Existing concrete methods whose annotation values changed without changing the API.
+    members: BTreeMap<String, BTreeSet<String>>,
     /// Changes that only a context start shows when they break it.
     startup: BTreeSet<String>,
 }
@@ -1057,6 +1062,28 @@ const LOCAL_ANNOTATIONS: &[&str] = &[
     "java/lang/Deprecated",
     "java/lang/SafeVarargs",
     "java/lang/FunctionalInterface",
+];
+
+/// Value edits confined to an invocation; bean/serialization mappings remain class-level.
+const MEMBER_ANNOTATIONS: &[&str] = &[
+    "org/springframework/transaction/annotation/Transactional",
+    "jakarta/transaction/Transactional",
+    "javax/transaction/Transactional",
+    "org/springframework/security/access/prepost/",
+    "org/springframework/security/access/annotation/Secured",
+    "jakarta/annotation/security/",
+    "javax/annotation/security/",
+    "org/springframework/cache/annotation/",
+    "org/springframework/scheduling/annotation/Async",
+    "org/springframework/retry/annotation/",
+    "org/springframework/web/bind/annotation/PathVariable",
+    "org/springframework/web/bind/annotation/RequestParam",
+    "org/springframework/web/bind/annotation/RequestBody",
+    "org/springframework/web/bind/annotation/RequestHeader",
+    "org/springframework/web/bind/annotation/RequestPart",
+    "org/springframework/web/bind/annotation/CookieValue",
+    "org/springframework/web/bind/annotation/ResponseStatus",
+    "org/springframework/web/bind/annotation/ResponseBody",
 ];
 
 /// Library supertypes that no injection point or framework callback looks for.
@@ -1160,6 +1187,7 @@ fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) 
             .cloned()
             .collect(),
         classes: BTreeMap::new(),
+        members: BTreeMap::new(),
         startup: BTreeSet::new(),
     };
     let names: BTreeSet<&String> = then.keys().chain(now.keys()).collect();
@@ -1190,6 +1218,13 @@ fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) 
                     }
                     members.insert(key.clone());
                     for annotation in x.into_iter().chain(y).flat_map(|w| &w.annotations) {
+                        if x.zip(y).is_some_and(|(x, y)| {
+                            x.values
+                                .get(annotation)
+                                .is_some_and(|value| y.values.get(annotation) == Some(value))
+                        }) {
+                            continue;
+                        }
                         let found = current.effect(annotation);
                         if found == Effect::Route {
                             patterns.extend(a.routes.get(key).into_iter().flatten().cloned());
@@ -1215,12 +1250,38 @@ fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) 
             ),
         };
         if narrowed {
+            let member_only = a.is_some_and(|a| {
+                !a.structure.is_empty()
+                    && a.structure == b.structure
+                    && a.injection == b.injection
+                    && !members.is_empty()
+                    && members.iter().all(|key| {
+                        !key.starts_with("field ")
+                            && a.wired
+                                .get(key)
+                                .zip(b.wired.get(key))
+                                .is_some_and(|(x, y)| {
+                                    x.annotations == y.annotations
+                                        && !x.values.is_empty()
+                                        && x.values.keys().eq(y.values.keys())
+                                        && x.values != y.values
+                                        && x.values.iter().all(|(a, value)| {
+                                            y.values.get(a) == Some(value)
+                                                || listed(a, MEMBER_ANNOTATIONS)
+                                        })
+                                })
+                    })
+            }) && current.class(name).is_some_and(|c| !c.abstract_);
             // Interfaces and abstract classes run no code of their own for the members
             // Spring implements, such as repository queries: callers of those members do.
-            if !current.class(name).is_some_and(|c| c.abstract_) {
+            if !member_only && !current.class(name).is_some_and(|c| c.abstract_) {
                 members.clear();
             }
-            let mut owners = BTreeSet::from([name.as_str()]);
+            let mut owners = if member_only {
+                hierarchy(&BTreeSet::from([name.as_str()]), now)
+            } else {
+                BTreeSet::from([name.as_str()])
+            };
             while let Some(sub) = current.classes.iter().find(|c| {
                 !members.is_empty()
                     && !owners.contains(c.name.as_str())
@@ -1241,7 +1302,11 @@ fn wiring(then: &Snapshot, now: &Snapshot, current: &Current, workspace: &Path) 
                         .or_insert_with(|| format!("{reason}#{key}"));
                 }
             }
-            wiring.classes.insert(name.clone(), reason.clone());
+            if member_only {
+                wiring.members.insert(name.clone(), members);
+            } else {
+                wiring.classes.insert(name.clone(), reason.clone());
+            }
             wiring.startup.insert(reason);
         } else {
             changed.insert(name.clone());
@@ -1564,6 +1629,9 @@ fn jvm_context(workspace: &Path, dir: &Path) -> String {
         });
     values.insert("jvm:arguments".into(), arguments);
     let mut h = bytecode::Hasher::default();
+    for (_, bytes) in JARS {
+        h.field(bytes);
+    }
     for (name, value) in &values {
         h.field(name.as_bytes()).field(value.as_bytes());
     }
@@ -1787,8 +1855,20 @@ impl Decider<'_> {
             .collect();
         for name in related {
             let (a, b) = (then.get(name), self.now.get(name));
-            if a.map(|s| (&s.api, &s.supers)) != b.map(|s| (&s.api, &s.supers)) {
+            if a.map(|s| (&s.api, &s.supers)) != b.map(|s| (&s.api, &s.supers))
+                && !wiring.members.contains_key(name)
+            {
                 return Some(format!("Structural change: {name}"));
+            }
+        }
+        for (owner, members) in &wiring.members {
+            let owners = hierarchy(&BTreeSet::from([owner.as_str()]), &self.now);
+            if let Some(key) = members.iter().find(|key| {
+                owners
+                    .iter()
+                    .any(|owner| record.methods.contains_key(&format!("{owner}#{key}")))
+            }) {
+                return Some(format!("Spring wiring changed: {owner}#{key}"));
             }
         }
         if let Some(reason) = &wiring.all {
@@ -2649,6 +2729,10 @@ fn invocation(
     portable: bool,
 ) -> Result<String> {
     let mut h = bytecode::Hasher::default();
+    // New probes must not trust records gathered by an older agent.
+    for (_, bytes) in JARS {
+        h.field(bytes);
+    }
     let tool = match portable {
         // The same wrapper or build tool, wherever it is installed.
         true => Path::new(executable)
@@ -2774,9 +2858,6 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         .field(base.as_deref().unwrap_or_default().as_bytes())
         .field(context.as_bytes())
         .field(env!("CARGO_PKG_VERSION").as_bytes());
-    for (_, bytes) in JARS {
-        key.field(bytes);
-    }
     // The files that records list, as they are now; stored with what this run recorded.
     let keyed = |key: &bytecode::Hasher| -> Result<String> {
         let mut key = key.clone();

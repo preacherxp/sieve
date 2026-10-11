@@ -40,6 +40,10 @@ _Avoid_: affected test, impacted test
 **Source root**:
 A directory of a JavaScript or TypeScript package, declared in `impact.json`, whose script files Sieve maps to related test files; a change anywhere else selects every test.
 _Avoid_: roots (Jest's `roots` option is where Jest looks for files)
+
+**Runner-loaded file**:
+A file the test runner loads itself rather than through a test's imports: its configuration, setup files, global setup and teardown, test environment, transforms, resolvers, module-mapper targets, and `__mocks__` modules, plus everything they import. A change to one selects every test.
+_Avoid_: setup file (only one kind), config file
 _Avoid_: baseline, reference
 
 **Body change**:

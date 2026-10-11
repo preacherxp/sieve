@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "sources": ["src", "test"],
+  "scenarios": [
+    {
+      "id": "leaf-source",
+      "description": "A source imported directly and transitively",
+      "changes": [{ "path": "src/math.ts", "append": "export const zero = 0;\n" }],
+      "mode": "SUBSET",
+      "tests": ["src/format.test.ts", "src/math.test.ts", "test/report.test.ts"]
+    },
+    {
+      "id": "test-file",
+      "description": "A changed test file selects itself",
+      "changes": [{ "path": "src/math.test.ts", "append": "// edited\n" }],
+      "mode": "SUBSET",
+      "tests": ["src/math.test.ts"]
+    },
+    {
+      "id": "unreached-entry",
+      "description": "An entry point no test imports selects nothing",
+      "changes": [{ "path": "src/main.ts", "append": "// edited\n" }],
+      "mode": "NONE",
+      "tests": []
+    },
+    {
+      "id": "setup-file",
+      "description": "A setup file runs before every test",
+      "changes": [{ "path": "src/setupTests.ts", "append": "// edited\n" }],
+      "mode": "ALL",
+      "tests": []
+    },
+    {
+      "id": "setup-import",
+      "description": "A file that only a setup file imports",
+      "changes": [{ "path": "src/mocks/handlers.ts", "append": "// edited\n" }],
+      "mode": "ALL",
+      "tests": []
+    },
+    {
+      "id": "imported-json",
+      "description": "Non-script files select every test, imported or not",
+      "changes": [{ "path": "src/labels.json", "write": "{ \"prefix\": \"n=\", \"unit\": \"\" }\n" }],
+      "mode": "ALL",
+      "tests": []
+    },
+    {
+      "id": "snapshot",
+      "description": "A snapshot file selects only its own test file",
+      "changes": [{ "path": "src/__snapshots__/format.test.ts.snap", "write": "// snapshot\n" }],
+      "mode": "SUBSET",
+      "tests": ["src/format.test.ts"]
+    },
+    {
+      "id": "manual-mock",
+      "description": "Manual mocks are loaded by the runner",
+      "changes": [{ "path": "src/__mocks__/math.ts", "write": "export const add = () => 0;\n" }],
+      "mode": "ALL",
+      "tests": []
+    },
+    {
+      "id": "deleted-source",
+      "description": "A deleted file can break its former importers",
+      "changes": [{ "path": "src/main.ts", "delete": true }],
+      "mode": "ALL",
+      "tests": []
+    },
+    {
+      "id": "package-json",
+      "description": "Build inputs lie outside the source roots",
+      "changes": [{ "path": "package.json", "append": "\n" }],
+      "mode": "ALL",
+      "tests": []
+    },
+    {
+      "id": "documentation",
+      "description": "Documentation outside the source roots is ignored",
+      "changes": [{ "path": "README.md", "append": "More.\n" }],
+      "mode": "NONE",
+      "tests": []
+    }
+  ]
+}

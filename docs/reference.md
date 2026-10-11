@@ -371,17 +371,23 @@ it hands `sieve record` what each top-level test class executed: every project m
 whether loaded from the build's output directories or from a jar the build packaged in the
 workspace (Failsafe tests the packaged jar), and every workspace file it opened, looked up, or listed through the JDK's file APIs
 (including class-path resource lookups, which also record resources that do not exist
-yet, and directory listings). Test property files named by `@TestPropertySource` count
+yet, and directory listings). Spring handler and intercepted method attempts also count,
+including requests rejected before the body and calls answered by an interceptor.
+Test property files named by `@TestPropertySource` count
 as read while the context starts. Work done while a Spring
 test context or Spring Boot application starts counts for every test class that uses the
-context, including classes that ran after it was cached. Work that outlives a test class,
+context, including classes that ran after it was cached. Lazy singleton initialization
+and `FactoryBean` product creation also count for every test class using the owning
+Spring test context. Prototype beans retain their test's evidence; factory products
+conservatively count with the context even when the factory does not cache them.
+Work that outlives a test class,
 such as a message it sent and did not await, counts for that class. Records live in
 `.sieve/`, which ignores itself in Git and survives `mvn clean`. They accumulate across a
 test class's passing runs until the class itself changes.
 
 A test class is dropped when its last run passed and none of the following changed since:
 
-- the test class, its nested classes, or the JDK;
+- the test class, its nested classes, the JDK, or Sieve's embedded agent;
 - build inputs (including parent POMs outside the workspace), unless the edit only bumped
   dependency versions: the set of artifacts on the test class path is unchanged and only
   jar contents differ. Then only the test classes that ran code of a changed jar, or read
@@ -429,6 +435,14 @@ changed ones. Any other change, such as a listener, `@Bean` method, lifecycle ca
 aspect pointcut, class annotation, supertype, or a removed component, reruns every context
 test that loads the component, as in class-level selection.
 
+On an existing concrete method, a value edit to an annotation that acts only on calls
+selects tests that executed or attempted that method, or used a class calling it. For example, changing
+one handler's `@RequestParam` name leaves tests of another handler unchanged. This requires
+unchanged annotation types, constructors, fields, signatures, and class declaration;
+unchanged request mappings on the method do not widen the edit. Annotation additions and
+removals, changed mappings, unknown annotations, and older snapshots without this evidence
+retain the wider class or context selection. The context startup check still applies.
+
 A changed Spring Boot configuration file (`application*` or `bootstrap*`, YAML or
 properties) is compared key by key: comment and formatting edits change nothing, and a
 changed key reruns the tests that use a project class naming it, in a placeholder such as
@@ -471,8 +485,7 @@ adoption, measurement, and the test-setup changes that pay off most.
 Records assume that every path a test can take has shown up in one of its passing runs
 since the test class last changed, and that tests do not depend on what earlier tests
 left behind. Not tracked: undeclared environment variables, external services,
-floating Docker image tags, jars that are not on the test class path (other agents), and lazily
-created beans, whose startup counts only for the test class that first used them. JVMs
+floating Docker image tags, and jars that are not on the test class path (other agents). JVMs
 older than Java 17 (back to Java 8) load the agent but keep it inactive, so every test
 runs; so do class files newer than the vendored ASM can read. Surefire
 with `useSystemClassLoader=false` is not supported. Multi-module projects keep
@@ -765,6 +778,54 @@ cache hits. The CI cost script separately sums completed job durations and measu
 the span between the earliest job start and latest job completion, including failed
 jobs. This repository retains full-suite validation after the selected stage, so
 faster selected feedback does not establish faster final CI completion.
+
+## JavaScript and TypeScript (Jest, Vitest)
+
+Single-package projects tested with Jest or Vitest select test files through the runner's
+own import graph ([ADR 0006](adr/0006-select-javascript-tests-through-the-runner.md)).
+Workspaces (monorepos) are not supported yet.
+
+```bash
+npm ci                                  # init and run load the project's own runner
+sieve init                              # detects jest or vitest in package.json
+sieve run --workspace . --base origin/main -- --config jest.ci.config.js
+```
+
+`init` writes `impact.json` with `"tool": "jest"` or `"vitest"`, the single module `"."`, and
+`sources`: `src` plus every top-level directory that holds a test file. Review the source
+roots and commit the file; there is no build fingerprint and nothing to `refresh` unless
+the roots change. Each changed path decides the selection:
+
+| Changed path | Selects |
+|---|---|
+| Ignored (`ignore` globs; the defaults never hide files in source roots) | nothing |
+| Outside the source roots (`package.json`, lockfiles, `tsconfig.json`, runner configuration) | every test |
+| Deleted, in a `__mocks__` directory, or not a script (`.json`, `.css`, fixtures) | every test |
+| `__snapshots__/<test file>.snap` | that test file |
+| A script (`.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.mts`, `.cts`) that a runner-loaded file imports, directly or not | every test |
+| Any other script | its related test files: the files that import it, directly or not |
+
+Runner-loaded files are setup files, global setup, test environments, transforms,
+resolvers, and module-mapper targets, resolved on every run from `jest --showConfig` or
+Vitest's resolved configuration, plus, for Vitest, the files its configuration imports. A script that no test file
+reaches selects nothing (`NONE`), as an unreached class does at class level, and `run` then
+starts no runner. A failed runner query selects every test.
+
+`run` executes `node_modules/.bin/jest` or `node_modules/.bin/vitest` (`--executable`
+overrides it): `jest --runTestsByPath FILES…` or `vitest run FILES…` for a `SUBSET`, the
+plain command for `ALL`. Arguments after `--` go to both the queries and the run, so pass
+`--config` and project filters there. Environment variables and flags inside
+`package.json` scripts (such as `cross-env TZ=…`) are not applied; set them on the CI step.
+`--records`, `--ci`, `class_level`, and `generated` are not available for these projects.
+
+Selection assumes tests reach project code only through literal `import`/`require`
+specifiers or runner-loaded files. Scripts that tests spawn, workers started by path,
+script files read as fixtures, and computed imports are invisible: keep such files out of
+the source roots. Type checking is not part of the selected run; keep `tsc` as its own CI
+step. `replay --run` works for these projects: it installs each commit's dependencies from
+its lockfile (npm, pnpm, Yarn, or Bun) and reads the runner's JSON results.
+[`projects/js`](../projects/js) carries both configurations and the oracle
+`scenarios.json`; `cargo test --test js -- --ignored` checks both runners against it.
 
 ## Replaying real history
 

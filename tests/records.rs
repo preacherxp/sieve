@@ -951,6 +951,303 @@ fn failsafe_tests_of_the_packaged_jar_record_main_code() {
 }
 
 #[test]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
+fn records_member_annotations_select_only_callers() {
+    let p = Project::new();
+    let controller = "src/main/java/example/GreetingController.java";
+    p.edit(
+        controller,
+        "@RequestParam String name",
+        "@RequestParam(\"name\") String name",
+    );
+    p.edit(
+        controller,
+        "    @GetMapping(\"/greet\")",
+        "    @GetMapping(\"/status\")\n    public String status() { return \"ok\"; }\n\n    @GetMapping(\"/greet\")",
+    );
+    write(
+        &p.root(),
+        "src/test/java/example/ControllerStatusTest.java",
+        r#"package example;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+@WebMvcTest(GreetingController.class)
+class ControllerStatusTest {
+    @Autowired MockMvc mvc;
+    @MockitoBean GreetingService service;
+    @Test void status() throws Exception {
+        mvc.perform(get("/status")).andExpect(content().string("ok"));
+    }
+}
+"#,
+    );
+    let rejected = fs::read_to_string(
+        p.root()
+            .join("src/test/java/example/GreetingControllerTest.java"),
+    )
+    .unwrap()
+    .replace("GreetingControllerTest", "RejectedGreetingTest")
+    .replace(".param(\"name\",", ".param(\"guest\",")
+    .replace(
+        "content().string(\"mocked\")",
+        "org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest()",
+    );
+    write(
+        &p.root(),
+        "src/test/java/example/RejectedGreetingTest.java",
+        rejected,
+    );
+    p.expect(
+        "first run",
+        &with(ALL, &["ControllerStatusTest", "RejectedGreetingTest"]),
+    );
+    p.edit(
+        controller,
+        "@RequestParam(\"name\")",
+        "@RequestParam(\"guest\")",
+    );
+    let (code, selection, starts) = p.run(&[]);
+    assert_eq!((code, starts), (1, 1), "{selection:#}");
+    let ran = names(&selection["tests"]);
+    assert!(ran.contains("GreetingControllerTest"), "{selection:#}");
+    assert!(ran.contains("RejectedGreetingTest"), "{selection:#}");
+    assert!(!ran.contains("ControllerStatusTest"), "{selection:#}");
+    assert!(
+        ran.iter().all(|t| t == "GreetingControllerTest"
+            || t == "RejectedGreetingTest"
+            || BOOT.contains(&t.as_str())),
+        "{selection:#}"
+    );
+    assert_eq!(
+        selection["reasons"]["example.GreetingControllerTest"],
+        "Spring wiring changed: example/GreetingController#greet(Ljava/lang/String;)Ljava/lang/String;"
+    );
+    p.edit(
+        controller,
+        "@RequestParam(\"guest\")",
+        "@RequestParam(\"name\")",
+    );
+    p.expect(
+        "failed caller reruns after restoring its parameter",
+        &["GreetingControllerTest", "RejectedGreetingTest"],
+    );
+
+    // Old snapshots cannot establish that an annotation edit left the structure unchanged.
+    for entry in fs::read_dir(p.root().join(".sieve/snapshots")).unwrap() {
+        let path = entry.unwrap().path();
+        let mut snapshot: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for shape in snapshot.as_object_mut().unwrap().values_mut() {
+            shape.as_object_mut().unwrap().remove("structure");
+        }
+        fs::write(path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    }
+    p.edit(
+        controller,
+        "@RequestParam(\"name\")",
+        "@RequestParam(\"guest\")",
+    );
+    let (code, selection, _) = p.run(&[]);
+    assert_eq!(code, 1, "{selection:#}");
+    assert!(
+        names(&selection["tests"])
+            .is_superset(&set(&["GreetingControllerTest", "ControllerStatusTest"])),
+        "{selection:#}"
+    );
+}
+
+#[test]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
+fn records_intercepted_method_attempts_select_only_callers() {
+    let p = Project::new();
+    let service = "src/test/java/intercepted/CachedService.java";
+    write(
+        &p.root(),
+        service,
+        r#"package intercepted;
+@org.springframework.stereotype.Component
+public class CachedService {
+    @org.springframework.cache.annotation.Cacheable("before")
+    public String cached() { throw new AssertionError("body must not run"); }
+    public String status() { return "ok"; }
+    static Object proxy() {
+        var factory = new org.springframework.aop.framework.ProxyFactory(new CachedService());
+        factory.addAdvice((org.aopalliance.intercept.MethodInterceptor) invocation -> {
+            if (invocation.getMethod().getName().equals("cached")) {
+                return invocation.getMethod().getAnnotation(org.springframework.cache.annotation.Cacheable.class).value()[0];
+            }
+            return invocation.proceed();
+        });
+        return factory.getProxy();
+    }
+}
+"#,
+    );
+    for (test, method, value) in [
+        ("CachedTest", "cached", "before"),
+        ("StatusTest", "status", "ok"),
+    ] {
+        write(
+            &p.root(),
+            &format!("src/test/java/intercepted/{test}.java"),
+            format!(
+                "package intercepted;\nclass {test} {{\n    @org.junit.jupiter.api.Test void call() throws Exception {{\n        Object proxy = CachedService.proxy();\n        org.junit.jupiter.api.Assertions.assertEquals(\"{value}\", proxy.getClass().getMethod(\"{method}\").invoke(proxy));\n    }}\n}}\n"
+            ),
+        );
+    }
+    p.expect("first run", &with(ALL, &["CachedTest", "StatusTest"]));
+    let record: Value = serde_json::from_slice(
+        &fs::read(p.root().join(".sieve/records/intercepted.CachedTest.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(record["methods"]
+        .as_object()
+        .unwrap()
+        .contains_key("intercepted/CachedService#cached()Ljava/lang/String;"));
+    p.edit(service, "Cacheable(\"before\")", "Cacheable(\"after\")");
+    let (code, selection, _) = p.run(&[]);
+    assert_eq!(code, 1, "{selection:#}");
+    let ran = names(&selection["tests"]);
+    assert!(ran.contains("CachedTest"), "{selection:#}");
+    assert_eq!(ran.len(), 2, "{selection:#}");
+    assert!(
+        ran.iter()
+            .all(|t| t == "CachedTest" || BOOT.contains(&t.as_str())),
+        "{selection:#}"
+    );
+    assert_eq!(
+        selection["reasons"]["intercepted.CachedTest"],
+        "Spring wiring changed: intercepted/CachedService#cached()Ljava/lang/String;"
+    );
+}
+
+#[test]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
+fn records_share_lazy_singleton_initialization_in_both_test_orders() {
+    for order in ["alphabetical", "reversealphabetical"] {
+        let p = Project::new();
+        write(
+            &p.root(),
+            "src/test/java/lazy/LazyConfig.java",
+            r#"package lazy;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import org.springframework.context.annotation.*;
+@Configuration
+class LazyConfig {
+    @Bean @Lazy LazyState lazyState() throws IOException {
+        try (var in = LazyConfig.class.getResourceAsStream("/lazy.txt")) {
+            return new LazyState(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+    }
+    @Bean @Lazy String broken() { throw new IllegalStateException("broken bean"); }
+    @Bean @Lazy org.springframework.beans.factory.FactoryBean<LazyState> factoryState() {
+        return new org.springframework.beans.factory.FactoryBean<>() {
+            public LazyState getObject() throws IOException {
+                try (var in = LazyConfig.class.getResourceAsStream("/factory.txt")) {
+                    return new LazyState(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+                }
+            }
+            public Class<?> getObjectType() { return LazyState.class; }
+        };
+    }
+    @Bean @Lazy org.springframework.beans.factory.FactoryBean<String> brokenFactory() {
+        return new org.springframework.beans.factory.FactoryBean<>() {
+            public String getObject() throws IOException { throw new IOException("broken product"); }
+            public Class<?> getObjectType() { return String.class; }
+        };
+    }
+}
+class LazyState {
+    final String value;
+    LazyState(String value) { this.value = value; }
+    String value() { return value; }
+}
+"#,
+        );
+        for name in ["LazyFirstTest", "LazySecondTest"] {
+            let extra = if name == "LazyFirstTest" {
+                r#"@Test void failedCreationRestoresTheTestBucket() throws Exception {
+        assertThrows(org.springframework.beans.BeansException.class, () -> context.getBean("broken"));
+        assertThrows(org.springframework.beans.BeansException.class, () -> context.getBean("brokenFactory"));
+        try (var in = getClass().getResourceAsStream("/only-first.txt")) {
+            assertEquals("own", new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }"#
+            } else {
+                ""
+            };
+            write(
+                &p.root(),
+                &format!("src/test/java/lazy/{name}.java"),
+                format!(
+                    r#"package lazy;
+import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
+import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+@SpringJUnitConfig(LazyConfig.class)
+class {name} {{
+    @Autowired ApplicationContext context;
+    @Test void readsSharedState() {{
+        assertEquals("ready", context.getBean("lazyState", LazyState.class).value());
+        assertEquals("factory", context.getBean("factoryState", LazyState.class).value());
+    }}
+    {extra}
+}}
+"#
+                ),
+            );
+        }
+        write(&p.root(), "src/test/resources/lazy.txt", "ready");
+        write(&p.root(), "src/test/resources/factory.txt", "factory");
+        write(&p.root(), "src/test/resources/only-first.txt", "own");
+        let option = format!("-Dsurefire.runOrder={order}");
+        let (code, selection, starts) = p.run(&[&option]);
+        assert_eq!((code, starts), (0, 1), "{order}: {selection:#}");
+        assert_eq!(
+            names(&selection["tests"]),
+            set(&with(ALL, &["LazyFirstTest", "LazySecondTest"]))
+        );
+        for name in ["LazyFirstTest", "LazySecondTest"] {
+            let path = p.root().join(format!(".sieve/records/lazy.{name}.json"));
+            let record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let files = record["files"].as_object().unwrap();
+            assert!(
+                files.keys().any(|f| f.ends_with("/lazy.txt")),
+                "{order}: {name}: {record:#}"
+            );
+            assert!(
+                files.keys().any(|f| f.ends_with("/factory.txt")),
+                "{order}: {name}: {record:#}"
+            );
+            assert_eq!(
+                files.keys().any(|f| f.ends_with("/only-first.txt")),
+                name == "LazyFirstTest",
+                "{order}: {name}: {record:#}"
+            );
+        }
+        p.edit("src/test/resources/factory.txt", "factory", "broken");
+        let (code, selection, starts) = p.run(&[&option]);
+        assert_eq!((code, starts), (1, 1), "{order}: {selection:#}");
+        assert_eq!(
+            names(&selection["tests"]),
+            set(&["LazyFirstTest", "LazySecondTest"]),
+            "{order}: {selection:#}"
+        );
+        assert!(
+            selection["reason"].as_str().unwrap().contains("failed: 2"),
+            "{selection:#}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
 fn context_attribution_holds_in_reverse_test_class_order() {
     let p = Project::new();

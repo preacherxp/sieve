@@ -8,11 +8,14 @@ import java.security.CodeSource;
 import java.security.ProtectionDomain;
 import java.util.List;
 import java.util.Set;
+import sieve.agent.asm.AnnotationVisitor;
 import sieve.agent.asm.ClassReader;
 import sieve.agent.asm.ClassVisitor;
 import sieve.agent.asm.ClassWriter;
+import sieve.agent.asm.Label;
 import sieve.agent.asm.MethodVisitor;
 import sieve.agent.asm.Opcodes;
+import sieve.agent.asm.TypePath;
 import sieve.probe.Probe;
 
 /**
@@ -24,6 +27,12 @@ final class Transformer implements ClassFileTransformer {
     private static final String PROBE = "sieve/probe/Probe";
     private static final String HIT = "(I)V";
     private static final String FILE = "(Ljava/lang/Object;)V";
+    private static final String SINGLETONS = "org/springframework/beans/factory/support/DefaultSingletonBeanRegistry";
+    private static final String FACTORY_BEANS = "org/springframework/beans/factory/support/FactoryBeanRegistrySupport";
+    private static final String BUCKET = "sieve/probe/Bucket";
+    private static final Set<String> INVOCATIONS = Set.of("org/springframework/aop/framework/ReflectiveMethodInvocation",
+            "org/springframework/web/method/support/InvocableHandlerMethod",
+            "org/springframework/web/reactive/result/method/InvocableHandlerMethod");
     private static final Set<String> LISTINGS = Set.of("list", "listFiles", "newDirectoryStream");
     /** File-system provider methods whose first parameter is the path they open, list, or probe. */
     private static final Set<String> FILE_METHODS = Set.of("newByteChannel", "newFileChannel", "newAsynchronousFileChannel",
@@ -66,9 +75,13 @@ final class Transformer implements ClassFileTransformer {
         if (name == null) {
             return null;
         }
+        boolean creation = name.equals(SINGLETONS) || name.equals(FACTORY_BEANS);
         try {
             if (jdk.contains(name)) {
                 return fileProbes(bytes);
+            }
+            if (creation) {
+                bytes = singletonProbes(bytes);
             }
             // Proxies defined into an output directory's domain have no class file there.
             boolean project = false;
@@ -86,7 +99,7 @@ final class Transformer implements ClassFileTransformer {
         }
         String jar = jar(domain);
         if (jar.isEmpty()) {
-            return null;
+            return creation ? bytes : null;
         }
         // A library class: every method callable from outside its jar reports the jar, so that
         // a dependency bump reruns the tests that executed it. One ASM cannot read counts for
@@ -95,8 +108,11 @@ final class Transformer implements ClassFileTransformer {
         try {
             return libraryProbes(bytes, id);
         } catch (Throwable error) {
+            if (INVOCATIONS.contains(name)) {
+                State.error(name + ": " + error);
+            }
             Probe.always(id);
-            return null;
+            return creation ? bytes : null;
         }
     }
 
@@ -182,14 +198,134 @@ final class Transformer implements ClassFileTransformer {
         });
     }
 
+    /** Wrap singleton creation in a finally block, including beans first requested after refresh. */
+    private static byte[] singletonProbes(byte[] bytes) {
+        ClassReader reader = new ClassReader(bytes);
+        ClassWriter writer = new ClassWriter(reader, ClassWriter.COMPUTE_MAXS);
+        boolean factory = reader.getClassName().equals(FACTORY_BEANS);
+        String method = factory ? "getObjectFromFactoryBean" : "getSingleton";
+        String targetDescriptor = factory
+                ? "(Lorg/springframework/beans/factory/FactoryBean;Ljava/lang/String;Z)Ljava/lang/Object;"
+                : "(Ljava/lang/String;Lorg/springframework/beans/factory/ObjectFactory;)Ljava/lang/Object;";
+        // FactoryBean products conservatively share their factory's context evidence.
+        Object[] arguments = factory
+                ? new Object[] {FACTORY_BEANS, "org/springframework/beans/factory/FactoryBean", "java/lang/String", Opcodes.INTEGER}
+                : new Object[] {SINGLETONS, "java/lang/String", "org/springframework/beans/factory/ObjectFactory"};
+        int token = arguments.length;
+        boolean[] found = {false};
+        reader.accept(new ClassVisitor(Opcodes.ASM9, writer) {
+            @Override
+            public MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                MethodVisitor next = super.visitMethod(access, name, descriptor, signature, exceptions);
+                if (!name.equals(method) || !descriptor.equals(targetDescriptor)
+                        || (access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) {
+                    return next;
+                }
+                found[0] = true;
+                return new MethodVisitor(Opcodes.ASM9, next) {
+                    private final Label start = new Label();
+                    private final Label end = new Label();
+                    private final Label handler = new Label();
+
+                    @Override
+                    public void visitCode() {
+                        super.visitCode();
+                        super.visitVarInsn(Opcodes.ALOAD, 0);
+                        super.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, "singletonStarting", "(Ljava/lang/Object;)L" + BUCKET + ";", false);
+                        super.visitVarInsn(Opcodes.ASTORE, token);
+                        super.visitLabel(start);
+                    }
+
+                    @Override
+                    public void visitVarInsn(int opcode, int slot) {
+                        super.visitVarInsn(opcode, slot >= token ? slot + 1 : slot);
+                    }
+
+                    @Override
+                    public void visitIincInsn(int slot, int increment) {
+                        super.visitIincInsn(slot >= token ? slot + 1 : slot, increment);
+                    }
+
+                    @Override
+                    public void visitFrame(int type, int count, Object[] locals, int stackCount, Object[] stack) {
+                        Object[] extended = new Object[Math.max(token, count) + 1];
+                        java.util.Arrays.fill(extended, Opcodes.TOP);
+                        System.arraycopy(locals, 0, extended, 0, Math.min(token, count));
+                        extended[token] = BUCKET;
+                        if (count > token) {
+                            System.arraycopy(locals, token, extended, token + 1, count - token);
+                        }
+                        super.visitFrame(Opcodes.F_NEW, extended.length, extended, stackCount, stack);
+                    }
+
+                    @Override
+                    public void visitLocalVariable(String name, String descriptor, String signature, Label start, Label end, int slot) {
+                        super.visitLocalVariable(name, descriptor, signature, start, end, slot >= token ? slot + 1 : slot);
+                    }
+
+                    @Override
+                    public AnnotationVisitor visitLocalVariableAnnotation(int type, TypePath path, Label[] start, Label[] end, int[] slots, String descriptor, boolean visible) {
+                        int[] extended = slots.clone();
+                        for (int i = 0; i < extended.length; i++) {
+                            if (extended[i] >= token) extended[i]++;
+                        }
+                        return super.visitLocalVariableAnnotation(type, path, start, end, extended, descriptor, visible);
+                    }
+
+                    private void restore() {
+                        super.visitVarInsn(Opcodes.ALOAD, token);
+                        super.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, "singletonFinished", "(L" + BUCKET + ";)V", false);
+                    }
+
+                    @Override
+                    public void visitInsn(int opcode) {
+                        if (opcode == Opcodes.ARETURN) restore();
+                        super.visitInsn(opcode);
+                    }
+
+                    @Override
+                    public void visitMaxs(int stack, int locals) {
+                        super.visitLabel(end);
+                        super.visitTryCatchBlock(start, end, handler, null);
+                        super.visitLabel(handler);
+                        Object[] frame = java.util.Arrays.copyOf(arguments, token + 1);
+                        frame[token] = BUCKET;
+                        super.visitFrame(Opcodes.F_NEW, frame.length, frame, 1, new Object[] {"java/lang/Throwable"});
+                        restore();
+                        super.visitInsn(Opcodes.ATHROW);
+                        super.visitMaxs(Math.max(2, stack), locals + 1);
+                    }
+                };
+            }
+        }, ClassReader.EXPAND_FRAMES);
+        if (!found[0]) throw new IllegalStateException("Spring singleton creation hook unavailable");
+        return writer.toByteArray();
+    }
+
     /** Private methods are only called from their own class, whose other methods report already. */
     private static byte[] libraryProbes(byte[] bytes, int id) {
-        return prepend(bytes, (code, owner, access, method, descriptor) -> {
+        boolean[] found = {false};
+        byte[] probed = prepend(bytes, (code, owner, access, method, descriptor) -> {
+            boolean advised = owner.equals("org/springframework/aop/framework/ReflectiveMethodInvocation") && method.equals("proceed");
+            boolean handler = (owner.equals("org/springframework/web/method/support/InvocableHandlerMethod") && method.equals("invokeForRequest"))
+                    || (owner.equals("org/springframework/web/reactive/result/method/InvocableHandlerMethod") && method.equals("invoke"));
+            if ((advised || handler) && (access & Opcodes.ACC_STATIC) == 0) {
+                found[0] = true;
+                code.visitVarInsn(Opcodes.ALOAD, 0);
+                code.visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, advised ? "getMethod" : "getBridgedMethod", "()Ljava/lang/reflect/Method;", false);
+                code.visitVarInsn(Opcodes.ALOAD, 0);
+                code.visitMethodInsn(Opcodes.INVOKEVIRTUAL, owner, advised ? "getThis" : "getBean", "()Ljava/lang/Object;", false);
+                code.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, "invocation", "(Ljava/lang/reflect/Method;Ljava/lang/Object;)V", false);
+            }
             if ((access & Opcodes.ACC_PRIVATE) == 0) {
                 code.visitLdcInsn(id);
                 code.visitMethodInsn(Opcodes.INVOKESTATIC, PROBE, "hit", HIT, false);
             }
         });
+        if (INVOCATIONS.contains(new ClassReader(bytes).getClassName()) && !found[0]) {
+            throw new IllegalStateException("Spring method invocation hook unavailable");
+        }
+        return probed;
     }
 
     /**
