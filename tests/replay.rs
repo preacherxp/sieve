@@ -59,6 +59,11 @@ exit 1
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(output.stdout.is_empty());
+        let markdown = fs::read_to_string(format!("{}.md", report.display())).unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&markdown));
+        assert!(markdown.contains("No usable timing pairs; no savings can be reported."));
+        assert!(markdown.contains("Excluded from savings: 1 replayed commits"));
         let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
         let record = &report["records"][0];
         assert_eq!(record["full"]["exit"], 1);
@@ -80,4 +85,29 @@ exit 1
                 .any(|id| id == "pricing:unit:example.PriceTest"));
         }
     }
+}
+
+#[test]
+fn replay_preview_keeps_json_stdout_and_explains_absent_measurements() {
+    let temp = fixture("maven");
+    let root = temp.path().join("project");
+    write(&root, "README.md", "Documentation only.\n");
+    commit(&root, "edit");
+    let output = cli(&[
+        "replay",
+        "--workspace",
+        root.to_str().unwrap(),
+        "--commits",
+        "1",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["summary"]["replayed"], 1);
+    assert_eq!(report["summary"]["modes"]["NONE"], 1);
+    assert!(report["summary"].get("full_seconds").is_none());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Preview only: no builds ran"));
 }

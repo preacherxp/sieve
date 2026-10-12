@@ -28,7 +28,49 @@ done
         );
         let workspace = root.to_str().unwrap();
         let executable = build.to_str().unwrap();
-        success(&["init", "--workspace", workspace, "--executable", executable]);
+        let setup = |command| {
+            let output = cli(&[
+                command,
+                "--workspace",
+                workspace,
+                "--executable",
+                executable,
+            ]);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let output = setup("init");
+        assert!(
+            output.contains("Mode: module-level; modules: 1"),
+            "{output}"
+        );
+        assert!(
+            output.contains("source changes still run its full suite"),
+            "{output}"
+        );
+        assert!(output.contains("\"class_level\": true"), "{output}");
+        assert!(
+            output.contains("Developer trial: sieve run --records"),
+            "{output}"
+        );
+        let lifecycle = if tool == "maven" {
+            "clean verify"
+        } else {
+            "clean check"
+        };
+        assert!(output.contains(&format!("Build: {lifecycle}")), "{output}");
+        assert!(
+            output.contains("sieve replay --workspace . --commits 20 --run"),
+            "{output}"
+        );
+        assert!(
+            output.contains("keep existing full-suite checks"),
+            "{output}"
+        );
         let mut config: Value =
             serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
         assert_ne!(config["class_level"], true, "{tool}");
@@ -37,19 +79,68 @@ done
         config["records"] = json!(false);
         config["record_env"] = json!(["SERVICE_MODE"]);
         write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
-        success(&[
-            "refresh",
-            "--workspace",
-            workspace,
-            "--executable",
-            executable,
-        ]);
-        let config: Value =
+        let output = setup("refresh");
+        assert!(output.contains("Mode: class-level; modules: 1"), "{output}");
+        assert!(
+            !output.contains("source changes still run its full suite"),
+            "{output}"
+        );
+        let mut config: Value =
             serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
         assert_eq!(config["class_level"], true, "{tool}");
         assert_eq!(config["records"], false, "{tool}");
         assert_eq!(config["record_env"], json!(["SERVICE_MODE"]), "{tool}");
+        config["records"] = json!(true);
+        write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
+        let output = setup("refresh");
+        assert!(
+            output.contains("Mode: local records (developer machines only); modules: 1"),
+            "{output}"
+        );
+        assert!(
+            output.contains("Keep records disabled in consumer CI"),
+            "{output}"
+        );
+        assert!(output.contains("incremental"), "{output}");
+        assert!(output.contains("--commits 20 --walk"), "{output}");
+        assert!(
+            !output.contains("Commit the reviewed configuration"),
+            "{output}"
+        );
+        assert!(!output.contains("Build: clean"), "{output}");
+        assert!(
+            !output.contains("source changes still run its full suite"),
+            "{output}"
+        );
     }
+}
+
+#[test]
+fn setup_does_not_suggest_local_records_for_a_single_child_module() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "build.gradle", "plugins { id 'java' }");
+    fs::create_dir(root.join("app")).unwrap();
+    executable(
+        &root.join("gradlew"),
+        r#"#!/bin/sh
+for arg do
+  case "$arg" in -Pimpact.output=*) echo '{"tool":"gradle","modules":{"app":[]}}' > "${arg#*=}" ;; esac
+done
+"#,
+    );
+    let output = cli(&["init", "--workspace", root.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.contains("source changes still run its full suite"),
+        "{output}"
+    );
+    assert!(!output.contains("Developer trial:"), "{output}");
 }
 
 #[test]
@@ -118,7 +209,19 @@ cat model.json > "$output"
         serde_json::to_vec(&json!({"tool":"gradle","modules":{"a":[],"b":[],"removed":[]}}))
             .unwrap(),
     );
-    success(&["init", "--workspace", root.to_str().unwrap()]);
+    let output = cli(&["init", "--workspace", root.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.contains("Mode: module-level; modules: 3"),
+        "{output}"
+    );
+    assert!(!output.contains("Single module:"), "{output}");
+    assert!(!output.contains("Developer trial:"), "{output}");
     let original = fs::read(root.join("impact.json")).unwrap();
     assert_eq!(
         cli(&["init", "--workspace", root.to_str().unwrap()])

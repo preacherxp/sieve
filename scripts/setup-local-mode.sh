@@ -97,5 +97,6 @@ Local mode is set up. From $service, before and after every edit:
   sieve run --base origin/main       # static fallback after a green run with the same invocation
   sieve run --full                   # everything, still recording
   JDK_JAVA_OPTIONS="\$(sieve env)" mvn verify   # the same selection, plain Maven
-Records live in .sieve/, which Git ignores. Commit impact.json if the team should share it.
+Records live in .sieve/, which Git ignores. This developer checkout has records:true.
+Keep records:true out of shared CI configuration; use explicit sieve run --records for team developer commands.
 EOF

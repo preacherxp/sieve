@@ -2886,7 +2886,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
             &mut selection,
         );
         write(&selection)?;
-        print_summary(&selection);
+        print_summary(&selection, config.modules.len());
         return Ok(0);
     }
     // Gradle's incremental compilation removes the output of deleted sources itself.
@@ -2994,7 +2994,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     if !failed.is_empty() {
         selection.reason = format!("{}; failed: {}", selection.reason, failed.len());
     }
-    // Every test class the JVMs discovered, unless named tests limited discovery.
+    // Failed builds and custom tasks may stop before every test JVM discovers its classes.
     let suite: BTreeSet<String> = selection
         .tests
         .iter()
@@ -3008,12 +3008,13 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         config,
         true,
         &skipped,
-        (!explicit).then_some(&suite),
+        (!explicit && !goals && status.success() && failed.is_empty() && !suite.is_empty())
+            .then_some(&suite),
         started,
         &mut selection,
     );
     write(&selection)?;
-    print_summary(&selection);
+    print_summary(&selection, config.modules.len());
     let passed = status.success() && failed.is_empty();
     write_json(
         &state,
@@ -3064,12 +3065,12 @@ fn summarize_run(
 }
 
 /// Prints the summary last, below the build output and the selection.
-fn print_summary(selection: &Selection) {
+fn print_summary(selection: &Selection, modules: usize) {
     if let Some(summary) = &selection.summary {
         for line in summary.lines() {
             eprintln!("{line}");
         }
-        summary.publish();
+        summary.publish(selection, modules);
     }
 }
 

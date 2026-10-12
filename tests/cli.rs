@@ -328,6 +328,64 @@ fn runner_propagates_failure_and_records_selection_first() {
     assert_eq!(selection["mode"], "ALL");
 }
 
+#[cfg(all(unix, feature = "agent"))]
+#[test]
+fn failed_build_keeps_timing_history_without_claiming_saved_work() {
+    for local in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("project");
+        write(&root, "pom.xml", "<project/>");
+        write(
+            &root,
+            "impact.json",
+            r#"{"tool":"maven","modules":{".":[]}}"#,
+        );
+        write(
+            &root,
+            ".sieve/timings.json",
+            r#"{"classes":{"example.OldTest":{"cases":2,"seconds":10.0}}}"#,
+        );
+        let build = temp.path().join("failing-build");
+        executable(&build, "#!/bin/sh\nexit 7\n");
+        let report = temp.path().join("selection.json");
+        let job = temp.path().join("job.md");
+        let mut command = std::process::Command::new(BIN);
+        command.args([
+            "run",
+            "--workspace",
+            root.to_str().unwrap(),
+            "--full",
+            "--executable",
+            build.to_str().unwrap(),
+            "--output",
+            report.to_str().unwrap(),
+        ]);
+        if local {
+            command.arg("--records");
+        }
+        let output = command
+            .env("SIEVE_CACHE_DIR", temp.path().join("cache"))
+            .env("GITHUB_STEP_SUMMARY", &job)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+        assert_eq!(report["summary"]["suite_known"], false);
+        assert_eq!(report["summary"]["serial_test_seconds_avoided"], 0.0);
+        let job = fs::read_to_string(job).unwrap();
+        assert!(job.contains("| Test classes | 0 | Unknown |"), "{job}");
+        assert!(!job.contains("avoided"), "{job}");
+        let history: Value =
+            serde_json::from_slice(&fs::read(root.join(".sieve/timings.json")).unwrap()).unwrap();
+        assert_eq!(history["classes"]["example.OldTest"]["seconds"], 10.0);
+    }
+}
+
 #[test]
 #[ignore = "requires Java 17 and Maven/Gradle; exercised by the fixture CI workflow"]
 fn installs_build_adapters() {

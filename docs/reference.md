@@ -194,6 +194,12 @@ build cleans only its reactor, Sieve also deletes the Surefire/Failsafe report f
 of the other modules. NONE runs only `clean`, without compilation or tests. No baseline metadata or selection cache is
 needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
+Before replacing an existing CI command, compare its tasks with Sieve's Maven
+`clean verify` or Gradle `clean check`. Partial selection scopes these to
+`-pl <modules> -am` or `:<module>:check`; arbitrary existing tasks are not preserved
+automatically. Coverage aggregation and packaging see only built modules. Keep required
+custom tasks and report consumers in place, and verify they work with those outputs.
+
 ### Class-level selection
 
 Module-level selection runs every test of a selected module, and a single-module
@@ -321,16 +327,17 @@ sieve run --records  # first time: every test runs and leaves a record; then onl
 
 `--records` enables local mode with or without `impact.json`; without one it uses
 defaults and treats OpenAPI specifications (`<inputSpec>`) as generated inputs.
-Alternatively, commit `"records": true` in `impact.json` to enable it for subsequent
-`run` commands, including `--base` and `--full`. Without either opt-in, selection is
-static and requires `impact.json`. For a configured local project:
+`"records": true` in `impact.json` also enables it for subsequent `run` commands,
+including `--base` and `--full`. Keep that setting out of shared CI configuration:
+use explicit `--records` on developer machines, and module or class selection in CI.
+Without either opt-in, selection is static and requires `impact.json`:
 
 ```bash
-sieve run --base origin/main   # static fallback after a green run with the same invocation
-sieve run --full               # run everything, still recording
+sieve run --records --base origin/main   # static fallback after a green run with the same invocation
+sieve run --records --full               # run everything, still recording
 ```
 
-`sieve run` starts Maven once with an incremental `verify`. It
+`sieve run --records` starts Maven once with an incremental `verify`. It
 adds `clean` only when stale output is possible (a file deleted
 or renamed since the last run, a build input edit, a `generated` input edit, no
 earlier run, or a failed/interrupted previous run). A content edit that preserves file metadata also cleans to prevent stale
@@ -340,26 +347,29 @@ after `--` are appended; if they name goals or phases, they replace `verify`.
 Concurrent wrapper runs in one workspace are serialized through an OS file lock.
 
 Every `run`, in local and static mode, ends with a summary below the build output, which
-`--output` also records under `summary`:
+`--output` also records under `summary`. Test classes and cases that ran come from the
+build's XML reports. A partial run without a complete suite inventory reports an unknown
+total instead of claiming every test ran. When `GITHUB_STEP_SUMMARY` is set, the summary
+is also written to the job page with selection mode, reason, and selected/total modules
+for testing.
 
-```text
-sieve: ran 1 of 11 test classes (9 of 117 test cases) in 6.1 s
-sieve: saved ~12.4 s of an estimated 18.5 s full run (67% less, 3.0x faster)
-```
+Historical durations in `.sieve/timings.json` estimate the **serial test execution time
+avoided** for skipped classes. They do not measure wall-clock savings: parallel tests,
+shared Spring contexts, container startup, and compilation change that relationship.
+Missing durations remain unknown. Static selection keeps durations only where local
+mode already created `.sieve/`. Use [replay](#replaying-real-history) to measure both
+full and selected build wall time; its report excludes inconclusive comparisons.
 
-The test classes and cases that ran come from the build's XML reports. The skipped ones
-count with the cases and seconds they reported when they last ran, kept per top-level
-class in `.sieve/timings.json`; the estimated full run is this run plus those seconds. A
-skipped class's seconds include the Spring context or containers it started, unless an
-earlier class in that JVM had already started them, so the estimate tends to be low.
-Skipped test classes without a recorded run count as classes, and the summary then gives
-the time saved as a lower bound, or as unknown; abstract fixtures are not counted. Static
-selection keeps durations only where local mode already created `.sieve/`.
+In JSON, `suite_known: false` means class/case totals reflect current or historical
+observations, not a complete inventory of the current suite.
+`serial_test_seconds_avoided` names the historical estimate. The compatibility fields
+`saved_seconds` and `estimated_full_seconds` remain available as legacy additive
+estimates; they are neither measured wall-clock savings nor full-build forecasts.
 
-On Gradle, `sieve run` starts one build on the Gradle daemon and never adds `clean`:
+On Gradle, `sieve run --records` starts one build on the Gradle daemon and never adds `clean`:
 Gradle's incremental compilation removes the output of deleted sources itself. By default
 it runs every `Test` task (`impactTests`, added by Sieve's init script) without linters or
-packaging; task names after `--` replace it, such as `sieve run -- check`. The init script
+packaging; task names after `--` replace it, such as `sieve run --records -- check`. The init script
 adds the agent to the `Test` tasks' JVMs only, never to the Gradle or Kotlin daemons.
 Gradle's own `--tests` filter always runs the named tests, through the `test` task when
 no task is named.
@@ -488,9 +498,8 @@ left behind. Not tracked: undeclared environment variables, external services,
 floating Docker image tags, and jars that are not on the test class path (other agents). JVMs
 older than Java 17 (back to Java 8) load the agent but keep it inactive, so every test
 runs; so do class files newer than the vendored ASM can read. Surefire
-with `useSystemClassLoader=false` is not supported. Multi-module projects keep
-today's module- and class-level behavior; CI can share records (see
-[Records in CI](#records-in-ci)). Plain Gradle runs without Sieve get no records.
+with `useSystemClassLoader=false` is not supported. Multi-module projects and consumer
+CI use module- or class-level selection. Plain Gradle runs without Sieve get no records.
 
 The agent is Java (`agent/`), compiled by `build.rs` for Java 17 against small API stubs,
 with a vendored and relocated copy of ASM (`agent/asm`, BSD-3-Clause), and embedded in the
@@ -584,45 +593,19 @@ mode on for any single-module Maven or Gradle project, and leaves the workspace 
 
 ### Records in CI
 
-`sieve run --ci` is local mode with records that hold on other machines and checkouts. The
+`sieve run --ci` is an experimental implementation for evaluating record portability.
+It is not supported for consumer CI rollout; use module or class selection and retain
+full-suite validation there. Local mode remains a developer-machine feature.
+
+The flag enables local mode with a different invocation key. The
 invocation key uses the build tool's file name instead of its path, and leaves out `PATH` and
 `JAVA_HOME`; the JDK itself is still compared. In the test JVM's properties, the workspace,
 local Maven repository, home, JDK, and temporary directories become placeholders, so the
 test class path still names every dependency jar, and the host's identity (`user.name`,
 `os.version`, library paths, proxy hosts) is left out. Records from `--ci` and plain local
-runs never match each other.
-
-The default branch runs every test and refreshes the records (`sieve run --ci --full`); pull
-requests restore them and skip the test classes whose records are unchanged (`sieve run
---ci`). Cache these paths between runs, but not the rest of `.sieve/`, which describes one
-machine's build output:
-
-```yaml
-- uses: actions/cache/restore@v4
-  with:
-    path: |
-      .sieve/records
-      .sieve/snapshots
-      .sieve/settings
-      .sieve/contexts
-      .sieve/classpaths
-      .sieve/timings.json
-    key: sieve-records-${{ github.sha }}
-    restore-keys: sieve-records-
-- run: sieve run --ci ${{ github.event_name != 'pull_request' && '--full' || '' }}
-- uses: actions/cache/save@v4
-  if: ${{ !cancelled() }}
-  with:
-    path: |  # the same paths
-    key: sieve-records-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-```
-
-GitHub Actions caches are scoped by branch: a pull request reads its own records first,
-then the default branch's, and never overwrites the default branch's records. Records are
-evidence about bytecode hashes, not about a commit, so records from any earlier commit stay
-valid: a test is skipped only when everything it executed and read is unchanged. Keep the
-full suite on the default branch, which catches what a selection misses at merge time. When
-`GITHUB_STEP_SUMMARY` is set, the run summary is also written to the job page.
+runs never match each other. `--ci --full` runs every test and refreshes this experimental
+record set. These mechanics do not remove local mode's assumptions about independent
+tests, observed execution paths, or undeclared external inputs.
 
 ## GitHub CI
 
@@ -834,8 +817,7 @@ project instead: configure it with `sieve init` (and optionally `class_level`/`i
 then replay its recent first-parent commits.
 
 ```bash
-sieve replay --workspace . --commits 30 --run --output /tmp/replay.json \
-  -- -Dmaven.test.failure.ignore=true
+sieve replay --workspace . --commits 20 --run --output /tmp/replay.json
 ```
 
 Each commit is replayed in a shared clone: its parent and its tree are each committed
@@ -843,9 +825,50 @@ with the workspace's `impact.json` (and Maven adapter), so the compared change i
 the commit's. Without `--run`, only selections are recorded. With `--run`, every commit
 runs `sieve run --full` and `sieve run --base PARENT` from clean trees with the same build
 arguments. The report lists selection modes, test cases, seconds, and **missed
-failures**: tests failing in the full run that the selected run did not execute. The
-command exits with 1 when any failure was missed. Pass failure-ignore flags so full runs
-collect every failure. Logs are kept next to the `--output` file.
+failures**: tests failing in the full run whose failures the selected run did not reproduce.
+The command exits with 1 for missed failures or build/report problems that prevent
+validation. Pass failure-ignore flags so full runs
+collect every failure only during evaluation (for Maven, append
+`-- -Dmaven.test.failure.ignore=true`); never add them to production test execution.
+
+JSON remains on stdout unless `--output` writes it to a file. A readable Markdown report
+appears on stderr and, with `--output /tmp/replay.json`, in `/tmp/replay.json.md`; build
+logs remain in `/tmp/replay.json.logs`. Preview runs without `--run` show selections
+without claiming measured savings. Run reports compare full and selected build wall time
+overall and by selection mode, excluding skipped or inconclusive pairs. The report also
+excludes pairs with differing failures or missing/invalid timing data. It shows failure
+evidence and counts of full-suite selection reasons; inspect JSON for each commit's
+details. An intentional `ALL` run is not necessarily a fallback.
+
+A successful exit with no missed failures is not enough to adopt. Selected-only failures
+can still leave replay's exit code at zero; inspect that count, inconclusive comparisons,
+and whether any full run actually failed. Without failing full runs, the history provides
+no evidence that selection catches real failures. JSON totals retain all recorded
+timings for compatibility; use the Markdown report's usable pairs for savings claims.
+Timings cover the compared builds, not checkout, installation, queue time, or final CI
+completion. Summed historical test durations in a normal `run` summary are estimates of
+serial test time avoided, not this measured wall-clock comparison.
+
+### Pilot checklist
+
+Start with three teams whose JVM suites are expensive and whose typical changes affect
+a limited part of the tests. For each repository:
+
+1. Record the native test command, JDK, profiles, caches, required reports, and baseline
+   PR feedback time. Time setup and note every manual configuration or build change.
+2. Run `init` once in the CI build environment; review the graph and POM changes. For
+   single-module services, evaluate `class_level` explicitly. Keep records local with
+   `--records`, and retain the existing required full-suite checks.
+3. Replay at least 20 representative commits with `--run`, saving reports outside the
+   workspace. Review source/test changes separately from docs-only changes. Count `ALL`,
+   `MODULES`, `SUBSET`, and `NONE`; inspect full-selection reasons, differing failures,
+   failing full runs, and inconclusive comparisons before deciding whether to proceed.
+4. During a month of rollout, record selected feedback time and final CI completion
+   separately, fallback frequency, discrepancies against the full suite, and minutes
+   spent maintaining configuration. Stop relying on selection if a failure is missed.
+5. After the month, record whether each team still has Sieve enabled and why. Compare
+   measured source-change savings with installation and maintenance effort before
+   expanding the rollout.
 
 See [coverage and remaining cases](test-coverage.md) and
 [measurements](performance.md) for evidence and limits.

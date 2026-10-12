@@ -776,7 +776,41 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
     }
     config.build_fingerprint = Some(crate::fingerprint::build_inputs(&workspace)?);
     fs::write(config_path, serde_json::to_string_pretty(&config)? + "\n")?;
-    println!("Configured {tool} test selection in {}. Commit impact.json and any POM changes.\nRun: sieve run --workspace {} --base origin/main", workspace.display(), workspace.display());
+    let local = config.records == Some(true);
+    let mode = if local {
+        "local records (developer machines only)"
+    } else if config.class_level {
+        "class-level"
+    } else {
+        "module-level"
+    };
+    println!(
+        "Configured {tool} test selection in {}.\nMode: {mode}; modules: {}. Review impact.json and any POM changes.",
+        workspace.display(),
+        config.modules.len()
+    );
+    if local {
+        println!("Keep records disabled in consumer CI; prefer explicit sieve run --records for developer runs.");
+    } else {
+        println!("Commit the reviewed configuration and POM changes.");
+        if config.modules.len() == 1 {
+            if !config.class_level {
+                println!("Single module: source changes still run its full suite. Evaluate \"class_level\": true in impact.json to narrow test classes.");
+            }
+            if config.modules.contains_key(".") {
+                println!("Developer trial: sieve run --records (Java 17+ test JVM; first run records every test).");
+            }
+        }
+    }
+    let lifecycle = match (tool.as_str(), local) {
+        ("maven", false) => "clean verify",
+        ("gradle", false) => "clean check",
+        ("maven", true) => "verify (incremental; cleans when needed)",
+        _ => "Test tasks (incremental; other check tasks need an explicit check argument)",
+    };
+    println!("Build: {lifecycle}. Review custom tasks, coverage and packaging; partial selection limits build outputs.");
+    let evaluation = if local { "--walk" } else { "--run" };
+    println!("From this workspace, evaluate: sieve replay --workspace . --commits 20 {evaluation}\nAppend the same build flags used by the reference build after --. Compare wall time and missed failures; keep existing full-suite checks.");
     Ok(0)
 }
 

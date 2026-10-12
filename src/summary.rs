@@ -3,7 +3,7 @@
 use crate::{
     classes,
     reports::{self, Cost},
-    Result,
+    Result, Selection,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -32,14 +32,19 @@ pub struct Summary {
     pub classes_total: usize,
     pub cases_run: usize,
     pub cases_total: usize,
+    /// Without a complete inventory, totals describe current or historical observations.
+    pub suite_known: bool,
     /// Skipped test classes that never reported a run, so their cases and seconds are unknown.
     #[serde(skip_serializing_if = "is_zero")]
     pub unmeasured: usize,
     /// This run, from start to the end of the build.
     pub seconds: f64,
-    /// This run plus what the skipped test classes took when they last ran.
+    /// Legacy additive estimate, not a wall-clock prediction under parallel execution.
     pub estimated_full_seconds: f64,
+    /// Legacy estimate including build overhead when no build started.
     pub saved_seconds: f64,
+    /// Sum of historical skipped-class durations; parallel classes overlap in wall time.
+    pub serial_test_seconds_avoided: f64,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -47,7 +52,7 @@ fn is_zero(n: &usize) -> bool {
 }
 
 /// Combines the classes that ran (`ran`, from this build's reports) with the skipped ones:
-/// those the selection dropped, plus, without a known `suite`, every class that ran before.
+/// those the selection dropped, plus every recorded class when no build was needed.
 /// `concrete` tells whether a class without a recorded run is a runnable test. Without a
 /// build, the full run's build `overhead` counts as saved as well.
 #[allow(clippy::too_many_arguments)]
@@ -65,13 +70,14 @@ fn compute(
         classes_run: ran.len(),
         cases_run: ran.values().map(|c| c.cases).sum(),
         seconds,
+        suite_known,
         ..Summary::default()
     };
     let mut saved = 0.0;
     let mut measured = 0;
     let candidates = skipped
         .iter()
-        .chain(store.keys().filter(|_| !suite_known))
+        .chain(store.keys().filter(|_| !suite_known && !built))
         .filter(|class| !ran.contains_key(*class))
         .collect::<BTreeSet<_>>();
     for class in candidates {
@@ -87,6 +93,7 @@ fn compute(
     }
     summary.classes_total = summary.classes_run + measured + summary.unmeasured;
     summary.cases_total += summary.cases_run;
+    summary.serial_test_seconds_avoided = saved;
     if !built && measured > 0 {
         saved += overhead;
     }
@@ -196,15 +203,35 @@ fn plural(n: usize, word: &str) -> String {
 
 impl Summary {
     /// The summary as Markdown, for a CI job page.
-    pub fn markdown(&self) -> String {
-        let cases = match self.unmeasured {
-            0 => self.cases_total.to_string(),
-            _ => format!("{}+", self.cases_total),
+    pub fn markdown(&self, selection: &Selection, modules: usize) -> String {
+        let classes = if self.suite_known {
+            self.classes_total.to_string()
+        } else {
+            "Unknown".into()
         };
-        let mut text = format!(
-            "### Sieve test selection\n\n| | Ran | Total |\n| --- | ---: | ---: |\n\
-             | Test classes | {} | {} |\n| Test cases | {} | {cases} |\n\n",
-            self.classes_run, self.classes_total, self.cases_run
+        let cases = match (self.suite_known, self.unmeasured) {
+            (false, _) => "Unknown".into(),
+            (true, 0) => self.cases_total.to_string(),
+            (true, _) => format!("{}+", self.cases_total),
+        };
+        let selected_modules = if selection.mode == "NONE" {
+            0
+        } else {
+            selection.modules.len()
+        };
+        let reason: String = selection.reason.chars().fold(String::new(), |mut text, c| {
+            if "\\`*_{}[]<>()#!|".contains(c) {
+                text.push('\\');
+            }
+            text.push(if c == '\n' || c == '\r' { ' ' } else { c });
+            text
+        });
+        let mut text =
+            format!(
+            "### Sieve test selection\n\nSelection: **{}** — {} of {modules} modules selected for testing.\n\n\
+             Reason: {reason}\n\n| | Ran | Total |\n| --- | ---: | ---: |\n\
+             | Test classes | {} | {classes} |\n| Test cases | {} | {cases} |\n\n",
+            selection.mode, selected_modules, self.classes_run, self.cases_run
         );
         for line in self.lines() {
             text += line.strip_prefix("sieve: ").unwrap_or(&line);
@@ -214,7 +241,7 @@ impl Summary {
     }
 
     /// Appends the Markdown summary to GitHub Actions' job summary, when running there.
-    pub fn publish(&self) {
+    pub fn publish(&self, selection: &Selection, modules: usize) {
         let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") else {
             return;
         };
@@ -222,7 +249,9 @@ impl Summary {
             .append(true)
             .create(true)
             .open(path)
-            .and_then(|mut file| std::io::Write::write_all(&mut file, self.markdown().as_bytes()));
+            .and_then(|mut file| {
+                std::io::Write::write_all(&mut file, self.markdown(selection, modules).as_bytes())
+            });
         if let Err(error) = appended {
             eprintln!("sieve: cannot write the job summary: {error}");
         }
@@ -231,7 +260,14 @@ impl Summary {
     /// Human-readable lines for the end of the build output.
     pub fn lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        if self.classes_total == 0 {
+        if !self.suite_known {
+            lines.push(format!(
+                "sieve: ran {} ({}) in {:.1} s; full-suite total unknown",
+                plural(self.classes_run, "test class"),
+                plural(self.cases_run, "test case"),
+                self.seconds
+            ));
+        } else if self.classes_total == 0 {
             lines.push(format!("sieve: ran no tests in {:.1} s", self.seconds));
         } else if self.classes_run == self.classes_total {
             lines.push(format!(
@@ -249,6 +285,8 @@ impl Summary {
                 "sieve: ran {} of {} test classes ({cases}) in {:.1} s",
                 self.classes_run, self.classes_total, self.seconds
             ));
+        }
+        if self.classes_total > self.classes_run {
             let measured = self.classes_total - self.classes_run - self.unmeasured;
             let unknown = format!(
                 "{} {}",
@@ -256,22 +294,16 @@ impl Summary {
                 if self.unmeasured == 1 { "has" } else { "have" }
             );
             lines.push(if measured == 0 {
-                format!("sieve: time saved unknown: {unknown} no recorded duration yet")
+                format!("sieve: serial test time avoided unknown: {unknown} no recorded duration yet")
             } else if self.unmeasured == 0 {
-                let percent = 100.0 * self.saved_seconds / self.estimated_full_seconds;
-                // Factors for runs that started no build say little.
-                let speedup = match self.seconds >= 1.0 {
-                    true => format!(", {:.1}x faster", self.estimated_full_seconds / self.seconds),
-                    false => String::new(),
-                };
                 format!(
-                    "sieve: saved ~{:.1} s of an estimated {:.1} s full run ({percent:.0}% less{speedup})",
-                    self.saved_seconds, self.estimated_full_seconds
+                    "sieve: estimated serial test time avoided: ~{:.1} s; wall-clock savings not measured",
+                    self.serial_test_seconds_avoided
                 )
             } else {
                 format!(
-                    "sieve: saved at least ~{:.1} s of an estimated {:.1}+ s full run; {unknown} no recorded duration yet",
-                    self.saved_seconds, self.estimated_full_seconds
+                    "sieve: estimated serial test time avoided: ~{:.1} s; {unknown} no recorded duration yet; wall-clock savings not measured",
+                    self.serial_test_seconds_avoided
                 )
             });
         }
@@ -324,17 +356,19 @@ mod tests {
                 classes_total: 4,
                 cases_run: 9,
                 cases_total: 48,
+                suite_known: true,
                 unmeasured: 1,
                 seconds: 6.0,
                 estimated_full_seconds: 14.5,
                 saved_seconds: 8.5,
+                serial_test_seconds_avoided: 8.5,
             }
         );
         assert_eq!(
             summary.lines(),
             [
                 "sieve: ran 1 of 4 test classes (9 test cases) in 6.0 s",
-                "sieve: saved at least ~8.5 s of an estimated 14.5+ s full run; 1 skipped test class has no recorded duration yet",
+                "sieve: estimated serial test time avoided: ~8.5 s; 1 skipped test class has no recorded duration yet; wall-clock savings not measured",
             ]
         );
         let measured = compute(
@@ -351,7 +385,7 @@ mod tests {
             measured.lines(),
             [
                 "sieve: ran 1 of 3 test classes (9 of 48 test cases) in 6.0 s",
-                "sieve: saved ~8.5 s of an estimated 14.5 s full run (59% less, 2.4x faster)",
+                "sieve: estimated serial test time avoided: ~8.5 s; wall-clock savings not measured",
             ]
         );
         // Static selection without local mode keeps no durations.
@@ -369,13 +403,13 @@ mod tests {
             unknown.lines(),
             [
                 "sieve: ran 1 of 2 test classes (9 test cases) in 6.0 s",
-                "sieve: time saved unknown: 1 skipped test class has no recorded duration yet",
+                "sieve: serial test time avoided unknown: 1 skipped test class has no recorded duration yet",
             ]
         );
     }
 
     #[test]
-    fn without_a_known_suite_every_recorded_class_counts() {
+    fn unknown_suite_uses_explicit_skips_unless_no_build_was_needed() {
         let ran = costs(&[("a.ATest", 2, 1.0)]);
         let store = costs(&[("a.ATest", 2, 1.0), ("b.BTest", 3, 2.0)]);
         let summary = compute(
@@ -388,7 +422,8 @@ mod tests {
             0.0,
             |_| true,
         );
-        assert_eq!((summary.classes_total, summary.cases_total), (2, 5));
+        assert_eq!((summary.classes_total, summary.cases_total), (1, 2));
+        assert_eq!(summary.serial_test_seconds_avoided, 0.0);
         // A run that starts no build also saves the build's own overhead.
         let none = compute(
             &BTreeMap::new(),
@@ -403,11 +438,11 @@ mod tests {
         assert_eq!(
             none.lines(),
             [
-                "sieve: ran 0 of 2 test classes (0 of 5 test cases) in 0.2 s",
-                "sieve: saved ~9.0 s of an estimated 9.2 s full run (98% less)",
+                "sieve: ran 0 test classes (0 test cases) in 0.2 s; full-suite total unknown",
+                "sieve: estimated serial test time avoided: ~3.0 s; wall-clock savings not measured",
             ]
         );
-        // A full run reports everything as run.
+        // Seeing only the classes that ran does not establish a complete suite inventory.
         let all = compute(
             &store,
             &store,
@@ -420,7 +455,7 @@ mod tests {
         );
         assert_eq!(
             all.lines(),
-            ["sieve: ran all 2 test classes (5 test cases) in 9.0 s"]
+            ["sieve: ran 2 test classes (5 test cases) in 9.0 s; full-suite total unknown"]
         );
     }
 
@@ -431,25 +466,86 @@ mod tests {
             classes_total: 10,
             cases_run: 3,
             cases_total: 117,
+            suite_known: true,
             unmeasured: 0,
             seconds: 5.2,
             estimated_full_seconds: 16.7,
             saved_seconds: 11.5,
+            serial_test_seconds_avoided: 11.5,
         };
-        let text = summary.markdown();
+        let config: crate::Config =
+            serde_json::from_str(r#"{"tool":"maven","modules":{"one":[],"two":[]}}"#).unwrap();
+        let mut selection = config.all("Changed <source> [name](url)\ninput");
+        selection.mode = "MODULES";
+        selection.modules.remove("two");
+        let text = summary.markdown(&selection, config.modules.len());
+        assert!(
+            text.contains("Selection: **MODULES** — 1 of 2 modules selected for testing."),
+            "{text}"
+        );
+        assert!(
+            text.contains(r"Reason: Changed \<source\> \[name\]\(url\) input"),
+            "{text}"
+        );
         assert!(text.contains("| Test classes | 1 | 10 |"), "{text}");
         assert!(text.contains("| Test cases | 3 | 117 |"), "{text}");
         assert!(
-            text.contains("saved ~11.5 s of an estimated 16.7 s full run (69% less, 3.2x faster)"),
+            text.contains(
+                "estimated serial test time avoided: ~11.5 s; wall-clock savings not measured"
+            ),
             "{text}"
         );
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("summary.md");
         std::env::set_var("GITHUB_STEP_SUMMARY", &path);
-        summary.publish();
-        summary.publish();
+        summary.publish(&selection, config.modules.len());
+        summary.publish(&selection, config.modules.len());
         std::env::remove_var("GITHUB_STEP_SUMMARY");
         assert_eq!(fs::read_to_string(path).unwrap(), text.repeat(2));
+    }
+
+    #[test]
+    fn fresh_partial_run_does_not_claim_the_observed_tests_are_the_whole_suite() {
+        let ran = costs(&[("one.ATest", 2, 1.0)]);
+        let summary = compute(&ran, &ran, &BTreeSet::new(), false, 4.0, true, 0.0, |_| {
+            true
+        });
+        let config: crate::Config =
+            serde_json::from_str(r#"{"tool":"maven","modules":{"one":[],"two":[]}}"#).unwrap();
+        let selection = config.select(set(&["one/src/main/java/A.java"]), "");
+        let text = summary.markdown(&selection, config.modules.len());
+        assert!(text.contains("1 of 2 modules selected"), "{text}");
+        assert!(text.contains("| Test classes | 1 | Unknown |"), "{text}");
+        assert!(text.contains("| Test cases | 2 | Unknown |"), "{text}");
+        assert!(!text.contains("ran all"), "{text}");
+        assert!(!text.contains("faster"), "{text}");
+        let mut none = config.all("No changes since the last passing run; no build started");
+        none.mode = "NONE";
+        assert!(summary
+            .markdown(&none, 2)
+            .contains("0 of 2 modules selected"));
+    }
+
+    #[test]
+    fn parallel_test_durations_are_not_presented_as_wall_clock_speedup() {
+        let ran = costs(&[("ATest", 1, 10.0)]);
+        let store = costs(&[("BTest", 1, 10.0), ("CTest", 1, 10.0)]);
+        let summary = compute(
+            &ran,
+            &store,
+            &set(&["BTest", "CTest"]),
+            true,
+            10.0,
+            true,
+            0.0,
+            |_| true,
+        );
+        assert_eq!(summary.serial_test_seconds_avoided, 20.0);
+        let text = summary.lines().join("\n");
+        assert!(text.contains("serial test time avoided: ~20.0 s"), "{text}");
+        assert!(text.contains("wall-clock savings not measured"), "{text}");
+        assert!(!text.contains("faster"), "{text}");
+        assert!(!text.contains("%"), "{text}");
     }
 
     #[test]

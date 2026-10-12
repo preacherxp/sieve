@@ -1221,7 +1221,7 @@ fn main_result() -> Result<u8> {
             for line in summary.lines() {
                 eprintln!("{line}");
             }
-            summary.publish();
+            summary.publish(&selection, config.modules.len());
             selection.summary = Some(summary);
             write(&selection)?;
         }

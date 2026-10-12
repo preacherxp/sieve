@@ -25,7 +25,6 @@ cargo install --git https://github.com/preacherxp/sieve --locked
 
 ```bash
 sieve init                              # detects Maven/Gradle, writes impact.json
-sieve run --workspace . --base origin/main
 ```
 
 `init` writes `impact.json` (module graph, ignore globs, options) and, for Maven, adds
@@ -34,11 +33,42 @@ build changes; until then, each module selection first checks the graph with the
 and selects everything if the graph changed. Gradle needs no build-file edits; a bundled
 init script does the work.
 
+Module selection is the default. On a single-module service, a source change still
+runs every test in that module. To evaluate selection within it, add
+`"class_level": true` to `impact.json`; [review its limits](docs/reference.md#class-level-selection)
+and measure before adopting it. For developer-only runtime records, use explicit
+`sieve run --records` commands; keep `"records": true` out of shared CI configuration.
+
 ```bash
 sieve select --base origin/main         # preview the decision, no build
 sieve run --base origin/main --output /tmp/selection.json -- -Pci
 sieve run --full                        # always everything
 ```
+
+Static execution uses the existing wrapper with Maven `clean verify` or Gradle
+`clean check`, scoped to selected modules. Check custom tasks, coverage aggregation,
+and packaging before replacing a CI command: only built modules produce outputs.
+Applicable build flags go after `--`.
+
+## Evaluate on your history
+
+Keep the existing full-suite check while comparing recent commits in the same JDK,
+profiles, and dependency environment as CI:
+
+```bash
+sieve replay --workspace . --commits 20 --run --output /tmp/sieve-replay.json
+```
+
+The terminal report and `/tmp/sieve-replay.json.md` show measured build wall time,
+selection modes and full-suite reasons, missed or selected-only failures, and inconclusive
+comparisons; JSON and build logs remain available for inspection. Savings require usable
+pairs with matching failure outcomes. Review the report even after a successful exit.
+A history with no failing full runs provides no evidence of catching real failures. Keep output
+outside the workspace or in an ignored directory so it cannot affect selection.
+
+Use the [pilot checklist](docs/reference.md#pilot-checklist) to compare three teams'
+setup effort, PR feedback time, and continued use after a month. Local developer
+evaluation has a [separate guide](docs/local-mode-adoption.md).
 
 ## How it works
 
@@ -72,7 +102,7 @@ edits rerun only the tests that executed them.
 
 ## Measured
 
-Twenty commits of a Spring Boot service with Testcontainers (62 test classes, 233 tests)
+Twenty commits of a purpose-built Spring Boot benchmark with Testcontainers (62 test classes, 233 tests)
 replayed with `sieve replay --walk --plant`, seconds per commit kind, Maven. Every planted
 bug was caught; no real failure was missed.
 
@@ -81,7 +111,7 @@ bug was caught; no real failure was missed.
 Total: 3,310 s to 1,591 s (-52%); Gradle shows -54%.
 
 Thirty first-parent commits of `apache/commons-text` (103 test classes), class-level,
-`sieve replay --run`:
+`sieve replay --run` (no failing full runs in this window):
 
 ![commons-text: docs/CI commits 256 s to 13 s, source commits 118 s to 73 s](assets/measured-commons-text.svg)
 
@@ -94,17 +124,22 @@ Full data, machines, and caveats: [docs/performance.md](docs/performance.md).
 
 ## CI
 
+Use module or class selection in consumer CI. Run `init` once in the CI build
+environment, review and commit its changes, and retain required full-suite validation
+during rollout. Preserve the existing JDK setup, caches, permissions, and report uploads.
 Pull requests select against the base; everything else runs the full suite.
 
 ```yaml
 - uses: actions/checkout@v4
   with: { fetch-depth: 0, persist-credentials: false }
-- run: |
+- shell: bash
+  run: |
     curl -fsSL "https://raw.githubusercontent.com/preacherxp/sieve/$SIEVE_VERSION/install.sh" | sh
     echo "$HOME/.local/bin" >> "$GITHUB_PATH"
   env:
-    SIEVE_VERSION: <tag>  # a release, such as v0.3.0
-- run: |
+    SIEVE_VERSION: <verified-release-tag>
+- shell: bash
+  run: |
     args=()
     if [ "$EVENT" = pull_request ]; then args=(--base "$BASE"); else args=(--full); fi
     sieve run --workspace . "${args[@]}" --output "$RUNNER_TEMP/selection.json"
@@ -115,11 +150,12 @@ Pull requests select against the base; everything else runs the full suite.
 
 The installer checks the release checksum and needs neither Rust nor a JDK. Runners without
 a prebuilt binary can use `cargo install --git https://github.com/preacherxp/sieve --locked
---rev <sha>` instead.
+--rev <verified-commit-sha>` instead, with Rust 1.92+ and JDK 17+ `javac`.
 
-Local-mode records can be shared across CI runs with `sieve run --ci` and a cache of
-`.sieve/records`; see [the reference](docs/reference.md#records-in-ci). Keep a full-suite
-job on the default branch.
+Publish available selection JSON and native test reports with `if: always()`, guarding
+optional files. Missing Git history runs the full suite; build and test failures still
+fail the job. Local-mode records are for developer machines; `--ci` is experimental
+and is not supported for consumer CI rollout. See [the reference](docs/reference.md#records-in-ci).
 
 ## Architecture
 
