@@ -220,7 +220,310 @@ fn with(names: &[&str], more: &[&'static str]) -> Vec<&'static str> {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[cfg(feature = "agent")]
+fn native_tests_without_listener_events_remain_active_and_report_why() {
+    let p = Project::of("projects/single-maven");
+    write(
+        &p.root(),
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true}"#,
+    );
+    executable(
+        &p.temp.path().join("tool-counting"),
+        &format!(
+            r#"#!/bin/sh
+echo start >> '{}'
+mkdir -p target/surefire-reports
+cat > target/surefire-reports/TEST-example.NativeTest.xml <<'REPORT'
+<testsuite name="example.NativeTest" tests="1" failures="0" errors="0" skipped="0" time="0.1"><testcase classname="example.NativeTest" name="works" time="0.1"/></testsuite>
+REPORT
+"#,
+            p.temp.path().join("starts").display()
+        ),
+    );
+    for _ in 0..2 {
+        let (code, selection, starts) = p.run(&[]);
+        assert_eq!((code, starts), (0, 1), "{selection:#}");
+        assert_eq!(selection["mode"], "ALL");
+        assert_eq!(names(&selection["tests"]), set(&["NativeTest"]));
+        let reason = selection["reason"].as_str().unwrap();
+        assert!(
+            reason.contains("without Sieve execution-listener events"),
+            "{reason}"
+        );
+        assert!(reason.contains("Java 17+"), "{reason}");
+    }
+    // Even listener events do not validate a run whose probes failed.
+    let wrapper = p.temp.path().join("tool-counting");
+    let script = fs::read_to_string(&wrapper).unwrap();
+    executable(
+        &wrapper,
+        &format!(
+            r#"{script}
+cat > .sieve/run/summary-1234-untrusted.json <<'SUMMARY'
+{{"ran":["example.NativeTest"],"dropped":[],"notes":["Agent error, no records kept: failed probe"],"reliable":false}}
+SUMMARY
+"#
+        ),
+    );
+    for _ in 0..2 {
+        let (code, selection, starts) = p.run(&[]);
+        assert_eq!((code, starts), (0, 1), "{selection:#}");
+        assert!(
+            selection["reason"]
+                .as_str()
+                .unwrap()
+                .contains("incomplete runtime evidence; no-build shortcut disabled"),
+            "{selection:#}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Java 17+ and Maven with the single-module fixture's dependencies"]
+fn records_select_overlapping_classes_and_skip_an_independent_cohort() {
+    let p = Project::of("projects/single-maven");
+    fs::remove_dir_all(p.root().join("src")).unwrap();
+    write(
+        &p.root(),
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true}"#,
+    );
+    write(
+        &p.root(),
+        "src/main/java/example/Service.java",
+        r#"
+package example;
+public class Service {
+    public static int first() { return 1; }
+    public static int second() { return 2; }
+    public static int independent() { return 3; }
+}
+"#,
+    );
+    write(
+        &p.root(),
+        "src/test/resources/junit-platform.properties",
+        "junit.jupiter.execution.parallel.enabled=true\njunit.jupiter.execution.parallel.mode.default=concurrent\njunit.jupiter.execution.parallel.config.strategy=fixed\njunit.jupiter.execution.parallel.config.fixed.parallelism=2\n",
+    );
+    write(
+        &p.root(),
+        "src/test/java/example/Rendezvous.java",
+        r#"
+package example;
+class Rendezvous {
+    static final java.util.concurrent.CyclicBarrier both = new java.util.concurrent.CyclicBarrier(2);
+    static void meet() throws Exception { both.await(15, java.util.concurrent.TimeUnit.SECONDS); }
+}
+"#,
+    );
+    for (name, method, value) in [("FirstTest", "first", 1), ("SecondTest", "second", 2)] {
+        write(
+            &p.root(),
+            &format!("src/test/java/example/{name}.java"),
+            format!(
+                r#"
+package example;
+class {name} {{
+    @org.junit.jupiter.api.Test void checks() throws Exception {{
+        Rendezvous.meet();
+        int actual = java.util.concurrent.CompletableFuture.supplyAsync(Service::{method}).join();
+        org.junit.jupiter.api.Assertions.assertEquals({value}, actual);
+        Rendezvous.meet();
+    }}
+}}
+"#
+            ),
+        );
+    }
+    write(
+        &p.root(),
+        "src/test/java/example/IndependentTest.java",
+        r#"
+package example;
+@org.junit.jupiter.api.parallel.Isolated
+class IndependentTest {
+    @org.junit.jupiter.api.Test void checks() {
+        org.junit.jupiter.api.Assertions.assertEquals(3, Service.independent());
+    }
+}
+"#,
+    );
+    p.expect(
+        "first parallel run",
+        &["FirstTest", "SecondTest", "IndependentTest"],
+    );
+    for name in ["FirstTest", "SecondTest"] {
+        let record: Value = serde_json::from_slice(
+            &fs::read(p.root().join(format!(".sieve/records/example.{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        for method in ["example/Service#first()I", "example/Service#second()I"] {
+            assert!(record["methods"].get(method).is_some(), "{record:#}");
+        }
+    }
+    p.edit(
+        "src/main/java/example/Service.java",
+        "return 1;",
+        "int value = 1; return value;",
+    );
+    let selection = p.expect("changed concurrent cohort", &["FirstTest", "SecondTest"]);
+    assert_eq!(
+        names(&selection["skipped"]),
+        set(&["IndependentTest"]),
+        "{selection:#}"
+    );
+    p.edit(
+        "src/main/java/example/Service.java",
+        "return value;",
+        "return value + 1;",
+    );
+    let (code, failed, _) = p.run(&[]);
+    assert_ne!(code, 0, "{failed:#}");
+    assert_eq!(
+        names(&failed["tests"]),
+        set(&["FirstTest", "SecondTest"]),
+        "{failed:#}"
+    );
+}
+
+#[test]
+#[ignore = "requires Java 17+ and Maven with the single-module fixture's dependencies"]
+fn records_must_run_bypasses_unchanged_build_and_respects_native_filters() {
+    let p = Project::of("projects/single-maven");
+    write(
+        &p.root(),
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true,"must_run":["example.*"]}"#,
+    );
+    let (code, first, _) = p.run(&[]);
+    assert_eq!(code, 0, "{first:#}");
+    assert!(!names(&first["tests"]).is_empty(), "{first:#}");
+    let (code, repeated, starts) = p.run(&[]);
+    assert_eq!((code, starts), (0, 1), "{repeated:#}");
+    assert_eq!(
+        names(&repeated["tests"]),
+        names(&first["tests"]),
+        "{repeated:#}"
+    );
+    for test in repeated["tests"].as_array().unwrap() {
+        assert_eq!(
+            repeated["reasons"][test.as_str().unwrap()],
+            "Always run: matched must_run policy"
+        );
+    }
+    let selected = first["tests"][0].as_str().unwrap();
+    let filter = format!("-Dtest={selected}");
+    let (code, explicit, _) = p.run(&["test", &filter]);
+    assert_eq!(code, 0, "{explicit:#}");
+    assert_eq!(
+        explicit["tests"],
+        serde_json::json!([selected]),
+        "{explicit:#}"
+    );
+    assert!(explicit["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Explicit native test filter"));
+}
+
+#[test]
+#[ignore = "requires Java 17+ and Maven with the single-module fixture's dependencies"]
+fn records_nested_must_run_selects_the_enclosing_class() {
+    let p = Project::of("projects/single-maven");
+    write(
+        &p.root(),
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true,"must_run":["example.PolicyTest$Inner"]}"#,
+    );
+    write(
+        &p.root(),
+        "src/test/java/example/PolicyTest.java",
+        r#"
+package example;
+class PolicyTest {
+    @org.junit.jupiter.api.Nested class Inner {
+        @org.junit.jupiter.api.Test void runs() { org.junit.jupiter.api.Assertions.assertTrue(true); }
+    }
+}
+"#,
+    );
+    let (code, first, _) = p.run(&[]);
+    assert_eq!(code, 0, "{first:#}");
+    assert!(names(&first["tests"]).contains("PolicyTest"), "{first:#}");
+    let repeated = p.expect("nested always-run policy", &["PolicyTest"]);
+    assert_eq!(
+        repeated["reasons"]["example.PolicyTest"],
+        "Always run: matched must_run policy"
+    );
+}
+
+#[test]
+#[ignore = "requires Java 17+ and Maven with the single-module fixture's dependencies"]
+fn records_agent_replacement_at_same_path_invalidates_no_build_shortcut() {
+    let p = Project::of("projects/single-maven");
+    write(
+        &p.root(),
+        "impact.json",
+        r#"{"tool":"maven","modules":{".":[]},"records":true}"#,
+    );
+    let agent = p.temp.path().join("other-agent.jar");
+    let source = p.temp.path().join("OtherAgent.java");
+    let classes = p.temp.path().join("agent-classes");
+    fs::create_dir(&classes).unwrap();
+    let manifest = p.temp.path().join("agent.mf");
+    fs::write(&manifest, "Premain-Class: OtherAgent\n").unwrap();
+    let build = |version| {
+        fs::write(&source, format!("public class OtherAgent {{ public static void premain(String options) {{}} public static int version() {{ return {version}; }} }}")).unwrap();
+        let output = Command::new("javac")
+            .args(["--release", "17", "-d"])
+            .arg(&classes)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new("jar")
+            .args(["--create", "--file"])
+            .arg(&agent)
+            .arg("--manifest")
+            .arg(&manifest)
+            .arg("-C")
+            .arg(&classes)
+            .arg(".")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    build(1);
+    let argument = format!("-DargLine=-javaagent:{}", agent.display());
+    let (code, first, starts) = p.run(&[&argument]);
+    assert_eq!((code, starts), (0, 1), "{first:#}");
+    let (code, unchanged, starts) = p.run(&[&argument]);
+    assert_eq!((code, starts), (0, 0), "{unchanged:#}");
+    build(2);
+    let (code, replaced, starts) = p.run(&[&argument]);
+    assert_eq!((code, starts), (0, 1), "{replaced:#}");
+    assert_eq!(replaced["tests"], first["tests"], "{replaced:#}");
+    assert!(
+        replaced["reasons"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|reason| reason.as_str().unwrap().contains("agent:")),
+        "{replaced:#}"
+    );
+}
+
+#[test]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn records_skip_unchanged_tests_and_rerun_what_changed() {
     let p = Project::new();
     let first = p.expect("first run", ALL);
@@ -437,7 +740,7 @@ fn records_skip_unchanged_tests_and_rerun_what_changed() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn plain_maven_gets_the_same_selection_through_java_options() {
     let p = Project::new();
     p.expect("first run", ALL);
@@ -472,7 +775,7 @@ fn plain_maven_gets_the_same_selection_through_java_options() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn tests_without_records_fall_back_to_static_selection_against_the_base() {
     let p = Project::new();
     p.expect("first run", ALL);
@@ -546,7 +849,7 @@ fn extracted_agent_is_verified_and_replaced() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the sample's dependencies"]
+#[ignore = "requires a Java 17+ JDK and Maven with the sample's dependencies"]
 fn local_records_invalidate_properties_environment_and_preserved_metadata_edits() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("project");
@@ -646,7 +949,7 @@ fn local_records_invalidate_properties_environment_and_preserved_metadata_edits(
 }
 
 #[test]
-#[ignore = "requires Docker, a Java 24+ JDK, and Maven"]
+#[ignore = "requires Docker, a Java 21+ JDK, and Maven"]
 fn container_reuse_keeps_containers_between_runs() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("project");
@@ -694,7 +997,7 @@ fn container_reuse_keeps_containers_between_runs() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn catalog_times_edits_and_planted_bugs_catch_a_broken_selector() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = temp.path().join("catalog.json");
@@ -772,7 +1075,7 @@ fn catalog_times_edits_and_planted_bugs_catch_a_broken_selector() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn commit_walk_carries_records_forward_and_cleans_after_deletions() {
     let p = Project::new();
     let root = p.root();
@@ -849,7 +1152,7 @@ fn commit_walk_carries_records_forward_and_cleans_after_deletions() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn records_cover_shared_state_annotations_and_context_structure() {
     let p = Project::new();
     p.expect("first run", ALL);
@@ -922,7 +1225,7 @@ fn records_cover_shared_state_annotations_and_context_structure() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the sample's dependencies"]
+#[ignore = "requires a Java 17+ JDK and Maven with the sample's dependencies"]
 fn failsafe_tests_of_the_packaged_jar_record_main_code() {
     // Failsafe runs integration tests against the jar the build packaged, not
     // `target/classes`; their records must still hold the main code they ran.
@@ -1248,7 +1551,7 @@ class {name} {{
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn context_attribution_holds_in_reverse_test_class_order() {
     let p = Project::new();
     let reverse = ["-Dsurefire.runOrder=reversealphabetical"];
@@ -1286,12 +1589,12 @@ fn context_attribution_holds_in_reverse_test_class_order() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Gradle 8.14+ on PATH (or IMPACT_GRADLE)"]
+#[ignore = "requires a Java 17+ JDK and Gradle 8.14+ on PATH (or IMPACT_GRADLE)"]
 fn gradle_records_skip_unchanged_tests_on_one_daemon_build() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("project");
     copy(&Path::new(ROOT).join("projects/single-gradle"), &root);
-    // Tests run on the JDK that runs Gradle, which local mode needs to be Java 24+.
+    // Tests run on the JDK that runs Gradle; runtime records require Java 17+.
     let build = fs::read_to_string(root.join("build.gradle")).unwrap();
     let build: String = build
         .lines()
@@ -1425,7 +1728,7 @@ fn gradle_records_skip_unchanged_tests_on_one_daemon_build() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn version_plugin_properties_do_not_invalidate_records() {
     let p = Project::new();
     // As jgitver does, the build itself passes per-commit values into the test JVM; the
@@ -1523,7 +1826,7 @@ fn build_jar(dir: &Path, name: &str, version: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn dependency_bumps_rerun_the_tests_that_used_the_bumped_jar() {
     let p = Project::new();
     // Jars outside the workspace, as a repository would hold them.
@@ -1656,7 +1959,7 @@ fn version_bumps_rerun_only_the_tests_that_ran_the_library(
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 17+ JDK and Maven with the fixture's dependencies"]
 fn maven_version_bumps_rerun_only_the_tests_that_ran_the_library() {
     version_bumps_rerun_only_the_tests_that_ran_the_library(
         Project::of("projects/version-bump"),
@@ -1686,7 +1989,7 @@ fn maven_version_bumps_rerun_only_the_tests_that_ran_the_library() {
 }
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Gradle 8.14+ on PATH (or IMPACT_GRADLE)"]
+#[ignore = "requires a Java 17+ JDK and Gradle 8.14+ on PATH (or IMPACT_GRADLE)"]
 fn gradle_version_bumps_rerun_only_the_tests_that_ran_the_library() {
     version_bumps_rerun_only_the_tests_that_ran_the_library(
         Project::gradle("projects/version-bump"),
@@ -1718,7 +2021,7 @@ const CACHED: &[&str] = &[
 ];
 
 #[test]
-#[ignore = "requires a Java 24+ JDK and Maven with the fixture's dependencies"]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
 fn ci_records_hold_in_another_checkout_with_other_tool_locations() {
     // The default branch records every test.
     let main = Project::new();

@@ -84,6 +84,11 @@ struct Raw {
     #[serde(default)]
     started: u64,
     parallel: bool,
+    /// New agents union the evidence of overlapping test classes.
+    #[serde(default)]
+    parallel_safe: bool,
+    #[serde(default)]
+    selection_note: String,
     errors: Vec<String>,
     dropped: Vec<String>,
     /// Jars of the test class path outside the workspace.
@@ -107,6 +112,8 @@ struct Summary {
     ran: BTreeSet<String>,
     dropped: BTreeSet<String>,
     notes: Vec<String>,
+    #[serde(default)]
+    reliable: bool,
 }
 
 fn prepare(workspace: &Path) -> Result<PathBuf> {
@@ -324,7 +331,11 @@ struct Current {
 /// Build inputs: the workspace's, and the parent POMs it inherits from outside it.
 fn build_inputs(workspace: &Path) -> Result<String> {
     let mut h = bytecode::Hasher::default();
-    h.field(fingerprint::build_inputs(workspace)?.as_bytes());
+    let config = read_json::<Config>(&workspace.join("impact.json"));
+    let build_logic = config
+        .as_ref()
+        .map_or(&[][..], |c| c.build_logic.as_slice());
+    h.field(fingerprint::build_inputs_with_logic(workspace, build_logic)?.as_bytes());
     let mut pom = workspace.join("pom.xml");
     for _ in 0..8 {
         let Ok(xml) = fs::read_to_string(&pom) else {
@@ -698,19 +709,28 @@ pub fn record(args: Vec<String>) -> Result<u8> {
         ran: raw.tests.iter().map(|t| t.name.clone()).collect(),
         dropped: raw.dropped.iter().cloned().collect(),
         notes: Vec::new(),
+        reliable: false,
     };
     // Without complete evidence only failures are kept; older records stay as they were, and
     // their hashes no longer match whatever changed since.
-    let trusted = !raw.parallel && raw.errors.is_empty() && !context.is_empty();
+    let trusted =
+        (!raw.parallel || raw.parallel_safe) && raw.errors.is_empty() && !context.is_empty();
+    if !raw.selection_note.is_empty() {
+        summary.notes.push(raw.selection_note.clone());
+    }
     if context.is_empty() {
         summary
             .notes
             .push("Agent supplied no invocation context; no records kept".into());
     }
-    if raw.parallel {
+    if raw.parallel && !raw.parallel_safe {
         summary
             .notes
             .push("Test classes ran in parallel or a probe failed; no records kept".into());
+    } else if raw.parallel {
+        summary
+            .notes
+            .push("Overlapping test classes share conservative runtime evidence".into());
     }
     for error in &raw.errors {
         summary
@@ -721,6 +741,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
     // Class files rewritten while the JVM ran, as by an IDE's build, were not what it tested.
     let started = SystemTime::UNIX_EPOCH + Duration::from_millis(raw.started);
     let trusted = trusted && !(raw.started > 0 && current.newest > started);
+    summary.reliable = trusted;
     if raw.started > 0 && current.newest > started {
         summary
             .notes
@@ -766,6 +787,7 @@ pub fn record(args: Vec<String>) -> Result<u8> {
             })
         });
         if !probed {
+            summary.reliable = false;
             summary.notes.push(format!(
                 "{}: no method of the test class was probed; no record kept",
                 test.name
@@ -1612,6 +1634,31 @@ fn jvm_context(workspace: &Path, dir: &Path) -> String {
         });
         values.insert(format!("env:{name}"), value);
     }
+    // Agents may transform project bytecode even when their path and JVM options stay fixed.
+    let cwd = inputs
+        .properties
+        .get("user.dir")
+        .map_or(workspace, Path::new);
+    for path in external_agents(inputs.arguments.as_deref().unwrap_or_default(), cwd) {
+        let Ok(bytes) = fs::read(&path) else {
+            return String::new();
+        };
+        let path = path.to_string_lossy().into_owned();
+        values.insert(
+            format!("agent:{}", placeholders(&path)),
+            bytecode::hash(&bytes),
+        );
+        let agents = dir.join("agents");
+        if fs::create_dir_all(&agents).is_err()
+            || write_json(
+                &agents.join(format!("{}.json", bytecode::hash(path.as_bytes()))),
+                &path,
+            )
+            .is_err()
+        {
+            return String::new();
+        }
+    }
     // Without system properties, listed on their own, and without Sieve's agent.
     let arguments = inputs
         .arguments
@@ -1638,6 +1685,36 @@ fn jvm_context(workspace: &Path, dir: &Path) -> String {
     let digest = h.finish();
     describe(dir, &digest, &values);
     digest
+}
+
+fn external_agents(arguments: &[String], cwd: &Path) -> Vec<PathBuf> {
+    arguments
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("-javaagent:"))
+        .map(|agent| agent.split_once('=').map_or(agent, |(path, _)| path))
+        .filter(|path| {
+            Path::new(path)
+                .file_name()
+                .is_none_or(|name| name != "sieve-agent.jar")
+        })
+        .map(|path| cwd.join(path))
+        .collect()
+}
+
+/// Previously observed agent paths also invalidate the no-build shortcut after replacement.
+fn agent_inputs(dir: &Path) -> Result<String> {
+    let mut values = BTreeMap::new();
+    let agents = dir.join("agents");
+    if agents.is_dir() {
+        for entry in fs::read_dir(agents)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                let agent: String = serde_json::from_slice(&fs::read(path)?)?;
+                values.insert(agent.clone(), file_hash(Path::new(&agent)));
+            }
+        }
+    }
+    Ok(bytecode::hash(&serde_json::to_vec(&values)?))
 }
 
 /// Lists the context's inputs by name with a digest of each value, so that `context_change`
@@ -1970,6 +2047,19 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     let current = Current::load(&workspace)?;
     let now = current.snapshot();
     let tests = current.tests();
+    let config = if workspace.join("impact.json").is_file() {
+        Some(Config::read(&workspace)?)
+    } else {
+        None
+    };
+    let forced: BTreeSet<String> = current
+        .classes
+        .iter()
+        .filter(|class| class.test)
+        .map(|class| class.name.replace('/', "."))
+        .filter(|name| config.as_ref().is_some_and(|c| c.must_run(name)))
+        .map(|name| name.split('$').next().unwrap().to_owned())
+        .collect();
     let mut decider = Decider {
         workspace: &workspace,
         dir: dir.clone(),
@@ -1989,6 +2079,10 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     let mut reasons = BTreeMap::new();
     let broken = env::var_os("SIEVE_BROKEN_SELECTOR").is_some();
     for test in &tests {
+        if forced.contains(test) {
+            reasons.insert(test.clone(), "Always run: matched must_run policy".into());
+            continue;
+        }
         if broken {
             // Test hook: a selector that drops everything, which planted bugs must catch.
             skip.insert(test.clone());
@@ -2492,7 +2586,7 @@ fn has_goals(tool: &str, extra: &[String]) -> bool {
 
 /// Tests requested by name always run: Surefire's `-Dtest`, Failsafe's `-Dit.test`, Gradle's
 /// `--tests`.
-fn explicit_tests(extra: &[String]) -> bool {
+pub(crate) fn explicit_tests(extra: &[String]) -> bool {
     extra.iter().any(|a| {
         a.starts_with("-Dtest=")
             || a.starts_with("-Dit.test=")
@@ -2526,10 +2620,11 @@ fn jvm_pid(path: &Path, prefix: &str) -> String {
         .map_or_else(|| std::process::id().to_string(), str::to_owned)
 }
 
-fn summarize(dir: &Path, selection: &mut Selection) -> Result<()> {
+fn summarize(dir: &Path, selection: &mut Selection) -> Result<bool> {
     let mut ran = BTreeSet::new();
     let mut dropped = BTreeSet::new();
     let mut decided = false;
+    let mut reliable = true;
     let mut notes = Vec::new();
     // Each test JVM decides about every test class, but only the classes it discovered count:
     // Surefire and Failsafe, or two Gradle `Test` tasks, see the others under another context.
@@ -2551,6 +2646,7 @@ fn summarize(dir: &Path, selection: &mut Selection) -> Result<()> {
             }
         } else if name.starts_with("summary-") {
             if let Some(summary) = read_json::<Summary>(&path) {
+                reliable &= summary.reliable;
                 let jvm = handled.entry(jvm_pid(&path, "summary")).or_default();
                 jvm.extend(summary.ran.iter().chain(&summary.dropped).cloned());
                 ran.extend(summary.ran);
@@ -2590,15 +2686,15 @@ fn summarize(dir: &Path, selection: &mut Selection) -> Result<()> {
         (true, false) => "NONE",
         (false, false) => "SUBSET",
     };
-    if !decided && !ran.is_empty() {
-        notes.push("No selection was made: tests were requested explicitly, ran in parallel, or the test JVM lacks Java 24+".into());
+    if !decided && !ran.is_empty() && notes.is_empty() {
+        notes.push("No record selection decision was reported by the test JVM; check .sieve/agent.log and the build output (requires Java 17+ and a supported JUnit Platform provider)".into());
     }
     if !notes.is_empty() {
         selection.reason = format!("{}; {}", selection.reason, notes.join("; "));
     }
     selection.tests = ran;
     selection.skipped = dropped;
-    Ok(())
+    Ok(reliable)
 }
 
 /// Local speed-ups, each switched with `--with`/`--without NAME`.
@@ -2862,6 +2958,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let keyed = |key: &bytecode::Hasher| -> Result<String> {
         let mut key = key.clone();
         key.field(recorded_files(&dir, workspace).as_bytes());
+        key.field(agent_inputs(&dir)?.as_bytes());
         // IDE and plain Maven builds can change bytecode without changing workspace sources.
         key.field(output_state(workspace)?.as_bytes());
         Ok(key.finish())
@@ -2872,7 +2969,12 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let last: Option<LastRun> = read_json(&state);
     let mut selection = config.all("Test records decide inside the test JVM");
     selection.mode = "RECORDS";
-    if !full && !explicit && !goals && last.as_ref().is_some_and(|l| l.passed && l.key == key) {
+    if !full
+        && !explicit
+        && !goals
+        && config.must_run.is_empty()
+        && last.as_ref().is_some_and(|l| l.passed && l.key == key)
+    {
         selection.mode = "NONE";
         selection.reason = "No changes since the last passing run; no build started".into();
         summarize_run(
@@ -2985,7 +3087,13 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         build_tool.env("JDK_JAVA_OPTIONS", java_options(&option));
     }
     let status = build_tool.current_dir(workspace).args(&args).status()?;
-    summarize(&dir, &mut selection)?;
+    let reliable = summarize(&dir, &mut selection)?;
+    if !reliable {
+        selection.reason = format!(
+            "{}; incomplete runtime evidence; no-build shortcut disabled",
+            selection.reason
+        );
+    }
     if !status.success() && selection.tests.is_empty() && selection.skipped.is_empty() {
         selection.reason = format!("{}; the build failed before any test ran", selection.reason);
     }
@@ -2993,6 +3101,39 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let failed = mark_failures(&dir, workspace, &selection.tests, status.success())?;
     if !failed.is_empty() {
         selection.reason = format!("{}; failed: {}", selection.reason, failed.len());
+    }
+    let native = match crate::reports::read_reports(workspace, &config.tool) {
+        Ok(reports) => reports,
+        Err(_) if !status.success() => Default::default(),
+        Err(error) => return Err(error),
+    };
+    let unobserved: BTreeSet<String> = native
+        .executed
+        .iter()
+        .map(|id| {
+            id.rsplit(':')
+                .next()
+                .unwrap_or(id)
+                .split('$')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .filter(|name| !selection.tests.contains(name))
+        .collect();
+    let observed = unobserved.is_empty();
+    if !observed {
+        selection.reason = format!(
+            "{}; {} test classes ran without Sieve execution-listener events; record selection is inactive for them (requires Java 17+ and a supported JUnit Platform provider); no-build shortcut disabled",
+            selection.reason,
+            unobserved.len()
+        );
+        selection.tests.extend(unobserved);
+        selection.mode = if selection.skipped.is_empty() {
+            "ALL"
+        } else {
+            "SUBSET"
+        };
     }
     // Failed builds and custom tasks may stop before every test JVM discovers its classes.
     let suite: BTreeSet<String> = selection
@@ -3008,14 +3149,19 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
         config,
         true,
         &skipped,
-        (!explicit && !goals && status.success() && failed.is_empty() && !suite.is_empty())
-            .then_some(&suite),
+        (!explicit
+            && !goals
+            && status.success()
+            && failed.is_empty()
+            && observed
+            && !suite.is_empty())
+        .then_some(&suite),
         started,
         &mut selection,
     );
     write(&selection)?;
     print_summary(&selection, config.modules.len());
-    let passed = status.success() && failed.is_empty();
+    let passed = status.success() && failed.is_empty() && observed && reliable;
     write_json(
         &state,
         &LastRun {
@@ -3077,6 +3223,31 @@ fn print_summary(selection: &Selection, modules: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_agent_replacement_changes_the_no_build_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("other agent.jar");
+        fs::write(&agent, "original").unwrap();
+        let paths = external_agents(
+            &[
+                "-javaagent:other agent.jar=output=somewhere".into(),
+                "-javaagent:/cache/sieve-agent.jar=options".into(),
+                "-Xmx128m".into(),
+            ],
+            temp.path(),
+        );
+        assert_eq!(paths, vec![agent.clone()]);
+        let dir = prepare(temp.path()).unwrap();
+        fs::create_dir(dir.join("agents")).unwrap();
+        write_json(&dir.join("agents/other.json"), &agent.to_str().unwrap()).unwrap();
+        let first = agent_inputs(&dir).unwrap();
+        fs::write(&agent, "replacement").unwrap();
+        let replaced = agent_inputs(&dir).unwrap();
+        assert_ne!(first, replaced);
+        fs::remove_file(&agent).unwrap();
+        assert_ne!(replaced, agent_inputs(&dir).unwrap());
+    }
 
     #[test]
     fn jar_slots_drop_the_version_and_keep_the_classifier() {
@@ -3265,6 +3436,7 @@ mod tests {
             ran: ran.iter().map(|s| s.to_string()).collect(),
             dropped: dropped.iter().map(|s| s.to_string()).collect(),
             notes: Vec::new(),
+            reliable: true,
         };
         write_json(
             &run.join("summary-1-5.json"),

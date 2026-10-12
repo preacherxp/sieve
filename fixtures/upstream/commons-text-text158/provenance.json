@@ -1,0 +1,88 @@
+{
+  "project": "Apache Commons Text",
+  "repository": "https://github.com/apache/commons-text",
+  "issue": "TEXT-158",
+  "fix_revision": "38727e31d978350b76edba1683a081a114fe345f",
+  "buggy_revision": "ac09fd74ed1c71de634f58f5ec89e66d729e0ffc",
+  "fix_url": "https://github.com/apache/commons-text/commit/38727e31d978350b76edba1683a081a114fe345f",
+  "issue_url": "https://issues.apache.org/jira/browse/TEXT-158",
+  "files": [
+    {
+      "path": "src/main/java/org/apache/commons/text/similarity/JaccardSimilarity.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/main/java/org/apache/commons/text/similarity/JaccardSimilarity.java",
+      "sha256": "fcf616981299f55223819926477d7775e038978545eadd8ebba2d3db9248616c",
+      "git_blob": "4f29139260620886f3943f600e932d18ac4f00fb"
+    },
+    {
+      "path": "src/main/java/org/apache/commons/text/similarity/JaccardDistance.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/main/java/org/apache/commons/text/similarity/JaccardDistance.java",
+      "sha256": "d589230007376b038e29a725a0fe61fe822ca89b66238e3d192ca64482802a02",
+      "git_blob": "fe956b20bcd3b84ef7bb57fcfd6de6d64664bea0"
+    },
+    {
+      "path": "src/main/java/org/apache/commons/text/similarity/SimilarityScore.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/main/java/org/apache/commons/text/similarity/SimilarityScore.java",
+      "sha256": "9fc67b1e9e96ca174dd21c4c609be5277df062e9b21f34c92e02183a9af1a190",
+      "git_blob": "2156c2817cc5887527115b10819c1a5c6f09ecf1"
+    },
+    {
+      "path": "src/main/java/org/apache/commons/text/similarity/EditDistance.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/main/java/org/apache/commons/text/similarity/EditDistance.java",
+      "sha256": "456c3752924a66abbdb62a3fd6034e7ac38676e2a596450b9061999f93c5d1a0",
+      "git_blob": "d330f78bd81712490772bebd3b567a135e3712e7"
+    },
+    {
+      "path": "src/main/java/org/apache/commons/text/similarity/HammingDistance.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/main/java/org/apache/commons/text/similarity/HammingDistance.java",
+      "sha256": "3141205c92054ada7ed0b45a7f65402ca3252aa9498178fbe3c439e8b4bbe58a",
+      "git_blob": "183fbd97374f550564e2a112c7bc86c69ebc2b52"
+    },
+    {
+      "path": "src/test/java/org/apache/commons/text/similarity/JaccardSimilarityTest.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/test/java/org/apache/commons/text/similarity/JaccardSimilarityTest.java",
+      "sha256": "a02551892fa17f83144bec0cebe03f668dc829fa2761d60ee972de6f5214ff09",
+      "git_blob": "827a35f68cdfce8e8f87ca3b8a6c3a12c75c014e"
+    },
+    {
+      "path": "src/test/java/org/apache/commons/text/similarity/JaccardDistanceTest.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/test/java/org/apache/commons/text/similarity/JaccardDistanceTest.java",
+      "sha256": "6a2434995d9282bcdd127c90ac70882a66b95cd7e301430eefc53226cc9e2554",
+      "git_blob": "7b43665799111d4c5fd1dd79d850625ae146ecea"
+    },
+    {
+      "path": "src/test/java/org/apache/commons/text/similarity/HammingDistanceTest.java",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "src/test/java/org/apache/commons/text/similarity/HammingDistanceTest.java",
+      "sha256": "ff982e6c6a399c1caaba8e5f667d061513348649287a2ee96fec3529d01f9a73",
+      "git_blob": "edad76af96d91051b1bf074562c560a46f09a87d"
+    },
+    {
+      "path": "LICENSE.txt",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+    },
+    {
+      "path": "NOTICE.txt",
+      "revision": "38727e31d978350b76edba1683a081a114fe345f",
+      "upstream_path": "NOTICE.txt",
+      "sha256": "9ad4ec6b60a0d6ffa269c116fd117ce41d67c31fc301c8a2cba309f1d72cfde3",
+      "git_blob": "2731b6259339eca342baca05f6777ba63cd20616"
+    },
+    {
+      "path": "regression/JaccardSimilarity.java",
+      "revision": "ac09fd74ed1c71de634f58f5ec89e66d729e0ffc",
+      "upstream_path": "src/main/java/org/apache/commons/text/similarity/JaccardSimilarity.java",
+      "sha256": "cd4acabf18adf11a95d0435e3ab799fa22257c2f41597170367adbdc00b1639d",
+      "git_blob": "d1478cbca8c04e00251d19e5a6274ecab6520d15"
+    }
+  ]
+}

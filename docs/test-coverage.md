@@ -168,14 +168,14 @@ Evidence: [setup](../src/setup.rs), [Gradle adapter](../src/gradle.init.gradle),
 | BUILD-02 | P0 | Repeat `init`, encounter an existing Maven profile, or fail build-model discovery. Refuse conflicts, preserve existing configuration, and make no edits after failed discovery. Ordinary native commands still run all tests after installation. | Implemented; see evidence below |
 | BUILD-03 | P0 | Prefer an executable project wrapper over PATH; honor `--executable` for both setup and execution. Missing or non-executable commands fail clearly. | Implemented; see evidence below |
 | BUILD-04 | P0 | Reject malformed/unknown configuration fields, missing module directories, unknown dependency names, invalid module paths, ambiguous build-tool detection, and duplicate Maven coordinates. Never silently report `NONE`. | Implemented; see evidence below |
-| BUILD-05 | P0 | Accept nested modules whose directories match their place in the build (`native_nested_modules_build_by_directory`); reject other custom layouts, composite builds, Android, Kotlin Multiplatform, and Gradle below the supported minimum during automatic setup, with actionable errors and no generated setup. | Implemented layouts/plugin-ID rejection; below-minimum Gradle runtime not locally exercised |
+| BUILD-05 | P0 | Accept nested modules whose directories match their place in the build (`native_nested_modules_build_by_directory`); reject other custom layouts, application composites, Android, Kotlin Multiplatform, and Gradle below the supported minimum during automatic setup, with actionable errors and no generated setup. | Implemented layouts/plugin-ID rejection; below-minimum Gradle runtime not locally exercised |
 | BUILD-06 | P0 | Maven parent inheritance, properties, and active profiles produce the correct module graph in the CI environment. Execution receives the applicable profile/property flags; selected tests and unrelated POM configuration are preserved. | Implemented; see evidence below |
 | BUILD-07 | P0 | Maven Surefire and Failsafe honor per-module skipping, including inherited/plugin-specific configuration. Skipping provider tests must not remove artifacts needed by selected consumers. | Implemented; see evidence below |
 | BUILD-08 | P0 | Gradle Groovy and Kotlin DSL: single package, direct child modules, and custom `Test` tasks connected to `check`. Every selected test task runs and every excluded test task skips. | Implemented; see evidence below |
 | BUILD-09 | P0 | Java-only, Kotlin-only, and mixed sources preserve Java-to-Kotlin and Kotlin-to-Java test reachability at module boundaries. Include test resources. | Implemented; native mixed-language consumer regression |
-| BUILD-10 | P1 | Forward applicable native arguments after `--` intact. Coverage, packaging, and custom tasks required by a consumer's existing job still execute; validate behavior when selection is `NONE` and those outputs would be absent. | Missing |
+| BUILD-10 | P1 | Forward applicable native arguments after `--` intact. Coverage, packaging, and custom tasks required by a consumer's existing job still execute; validate behavior when selection is `NONE` and those outputs would be absent. | Implemented explicit `--task`; native packaging/custom suite/report regression in `tests/native_tasks.rs` |
 | BUILD-11 | P0 | Exercise the declared JDK/Maven/Gradle/Kotlin compatibility combinations with actual `init` and selected execution. Cover both branches of the Gradle project-dependency API adapter. Keep Java 8/11 smoke fixtures separate from Java 17 sample features. | Existing matrix; each run still needs verification |
-| BUILD-12 | P2 | A consumer using JUnit 4, JUnit 5, TestNG, parameterized/dynamic tests, or nonstandard suite names retains native test discovery and accurate report accounting. | Partial: JUnit 4/5, parameterized tests, and two methods in one class exist |
+| BUILD-12 | P2 | A consumer using JUnit 4, JUnit 5/6, Spock, Kotest, TestNG, parameterized/dynamic tests, or nonstandard suite names retains native test discovery and accurate report accounting. | Partial: existing JUnit 4/5 cases plus native JUnit 6 nested/dynamic, Spock, Kotest, and both TestNG provider paths in `tests/compatibility_modes.rs`; class selection, record precision, failure retention, and legacy inactive fallback verified. Arbitrary suite-name accounting remains consumer work. |
 
 Non-`Test` Gradle tasks that launch tests, custom generated-source layouts, and
 external dependency substitution need an explicit support decision before adding
@@ -308,7 +308,11 @@ for parallel CI. No speed percentage should be inferred from test counts alone.
   new checks remain unexecuted locally.
 - BUILD-09 includes a native Java consumer of a Kotlin provider in a separate
   module, alongside existing Java-only and Kotlin DSL checks. BUILD-10 covers forwarded flags and native packaging, not arbitrary consumer
-  coverage/analysis plugins. BUILD-12 remains conditional consumer work (P2).
+  coverage/analysis plugins. BUILD-12 now includes five native engine/provider cases,
+  with passing baselines, irrelevant edits, and independently confirmed planted failures
+  on Temurin 22.0.2/Maven 3.9.16. Runtime records are active for JUnit 6, Spock, Kotest,
+  and TestNG through Surefire 3.6; legacy TestNG runs conservatively with an inactive
+  diagnostic. Unusual suite-name accounting and other build-tool combinations remain P2.
 - PERF-01..09 are workload categories, not a claim of completed measurements.
   This repository supplies localized/shared/docs fixtures and actual CI job costs.
   Many-module/large-single-module workloads, cold image/dependency caches, native

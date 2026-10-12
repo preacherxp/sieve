@@ -6,6 +6,8 @@ mod fingerprint;
 mod fixtures;
 mod generated;
 mod js;
+mod observation;
+mod receipt;
 mod records;
 mod replay;
 mod reports;
@@ -66,6 +68,12 @@ struct Config {
     /// (ADR 0006). A change anywhere else selects every test.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sources: Vec<String>,
+    /// Test class patterns added to every JVM selection, including unchanged runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    must_run: Vec<String>,
+    /// Workspace-local included Gradle builds supplying convention plugins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    build_logic: Vec<String>,
 }
 
 /// Documentation outside module sources. Module sources stay test inputs whatever their name.
@@ -139,6 +147,8 @@ struct Selection {
     /// `run` only: tests run against the suite, and the estimated time saved.
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<summary::Summary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observation: Option<observation::Observation>,
 }
 
 impl Config {
@@ -165,6 +175,8 @@ impl Config {
                 || !self.with.is_empty()
                 || self.build_fingerprint.is_some()
                 || self.shared_tests.is_some()
+                || !self.must_run.is_empty()
+                || !self.build_logic.is_empty()
             {
                 return Err(
                     "jest/vitest projects support only tool, modules, sources, and ignore".into(),
@@ -233,6 +245,28 @@ impl Config {
         }) {
             return Err(format!("Invalid record_ignore_properties entry: {pattern:?}").into());
         }
+        for pattern in &self.must_run {
+            if pattern.is_empty()
+                || !pattern
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '$' | '*' | '?'))
+            {
+                return Err(format!("Invalid must_run class pattern: {pattern:?}").into());
+            }
+        }
+        for root in &self.build_logic {
+            if self.tool != "gradle"
+                || root == "."
+                || !valid_module(root)
+                || !workspace.join(root).is_dir()
+                || !workspace
+                    .join(root)
+                    .canonicalize()?
+                    .starts_with(workspace.canonicalize()?)
+            {
+                return Err(format!("Invalid Gradle build_logic directory: {root:?}").into());
+            }
+        }
         records::Levers {
             on: self.with.iter().cloned().collect(),
             off: BTreeSet::new(),
@@ -262,6 +296,16 @@ impl Config {
             "tool": "maven", "modules": {".": []}, "records": true, "generated": generated,
         }))
         .ok()
+    }
+
+    fn must_run(&self, class: &str) -> bool {
+        self.must_run.iter().any(|pattern| {
+            glob(pattern.as_bytes(), class.as_bytes())
+                || (!class.contains('$')
+                    && pattern
+                        .split_once('$')
+                        .is_some_and(|(outer, _)| glob(outer.as_bytes(), class.as_bytes())))
+        })
     }
 
     fn generated_input(&self, path: &str) -> bool {
@@ -326,6 +370,7 @@ impl Config {
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
             summary: None,
+            observation: None,
             reason: reason.into(),
         }
     }
@@ -336,6 +381,16 @@ impl Config {
         let mut reaching = BTreeSet::new();
         let mut sources = BTreeSet::new();
         for path in &changed {
+            if self
+                .build_logic
+                .iter()
+                .any(|root| path == root || path.starts_with(&format!("{root}/")))
+            {
+                let mut result =
+                    self.all(format!("Gradle convention-plugin input changed: {path}"));
+                result.changed = changed;
+                return result;
+            }
             if self.ignored(path, prefix) {
                 continue;
             }
@@ -392,6 +447,7 @@ impl Config {
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
             summary: None,
+            observation: None,
         }
     }
 }
@@ -590,6 +646,126 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
     args
 }
 
+/// Explicit tasks retain the consumer's complete build graph; only tests are filtered.
+fn task_args(
+    config: &Config,
+    selection: &Selection,
+    filter: Option<&Path>,
+    tasks: &[String],
+) -> Vec<String> {
+    if tasks.is_empty() {
+        return build_args(config, selection, filter);
+    }
+    let mut args: Vec<String> = if config.tool == "maven" {
+        vec!["-B".into(), "-ntp".into()]
+    } else {
+        vec!["--console=plain".into()]
+    };
+    args.extend_from_slice(tasks);
+    if selection.mode == "ALL" {
+        return args;
+    }
+    let none = selection.mode == "NONE";
+    if config.tool == "maven" {
+        for module in config.modules.keys() {
+            args.push(format!(
+                "-D{}={}",
+                setup::skip_property(module),
+                none || !selection.modules.contains(module)
+            ));
+        }
+        if let Some(excludes) = filter.filter(|_| selection.mode == "SUBSET") {
+            for plugin in ["surefire", "failsafe"] {
+                args.push(format!("-D{plugin}.excludesFile={}", excludes.display()));
+            }
+        }
+    } else {
+        let modules: Vec<_> = selection
+            .modules
+            .iter()
+            .filter(|_| !none)
+            .map(String::as_str)
+            .collect();
+        args.push(format!("-Pimpact.modules={}", modules.join(",")));
+    }
+    args
+}
+
+/// Explicit tasks may reuse build outputs, but this run must not report old test XML.
+fn clear_reports(config: &Config, workspace: &Path) -> Result<()> {
+    reports::clear_native_reports(workspace, &config.tool)
+}
+
+/// Forced tests are additive. Without class-level opt-in, retain every test of the originally
+/// selected modules, even when the build must compile other modules to discover forced classes.
+fn refine_policy(
+    selection: &mut Selection,
+    config: &Config,
+    classes: &[classes::Class],
+    workspace: &Path,
+    maven: bool,
+    preserve: Option<&BTreeSet<String>>,
+    dirs: &[(PathBuf, bool)],
+) -> Result<BTreeSet<String>> {
+    let mut unselected = if let Some(modules) = preserve {
+        let mut unselected = BTreeSet::new();
+        for class in classes
+            .iter()
+            .filter(|c| c.test && !c.annotation && !c.name.contains('$'))
+        {
+            let name = class.name.replace('/', ".");
+            let kept = dirs.iter().filter(|(_, test)| *test).any(|(dir, _)| {
+                if !dir.join(format!("{}.class", class.name)).is_file() {
+                    return false;
+                }
+                let owner = config
+                    .modules
+                    .keys()
+                    .filter(|m| dir.starts_with(workspace.join(m)))
+                    .max_by_key(|m| m.len());
+                owner.is_none_or(|module| modules.contains(module))
+            });
+            if kept {
+                selection.tests.insert(name.clone());
+                selection.reasons.insert(name, "Selected module".into());
+            } else {
+                unselected.insert(name);
+            }
+        }
+        selection.mode = if selection.tests.is_empty() {
+            "NONE"
+        } else {
+            "SUBSET"
+        };
+        unselected
+    } else {
+        selection.refine(classes, workspace, maven)?
+    };
+    if selection.mode != "MODULES" {
+        for class in classes.iter().filter(|c| c.test && !c.annotation) {
+            let name = class.name.replace('/', ".");
+            let top = name.split('$').next().unwrap_or(&name);
+            if config.must_run(&name) || config.must_run(top) {
+                selection.tests.insert(top.to_owned());
+                selection
+                    .reasons
+                    .insert(top.to_owned(), "Required by must_run policy".into());
+                unselected.remove(top);
+            }
+        }
+        selection.mode = if selection.tests.is_empty() {
+            "NONE"
+        } else {
+            "SUBSET"
+        };
+        if !config.must_run.is_empty() {
+            selection.reason = "Changed tests and additive must_run policy".into();
+        }
+    }
+    unselected.retain(|test| !selection.tests.contains(test));
+    Ok(unselected)
+}
+
 /// A scoped Maven build cleans only its reactor; test reports of the other modules would
 /// otherwise survive and misreport this run.
 fn remove_stale_reports(config: &Config, selection: &Selection, workspace: &Path) -> Result<()> {
@@ -660,12 +836,30 @@ struct ClassRequest {
     /// each module's excludes file and part of the refined selection, below `modules/`.
     dir: PathBuf,
     output: Option<PathBuf>,
+    #[serde(default)]
+    observe: bool,
+    #[serde(default)]
+    preserve_modules: Option<BTreeSet<String>>,
+    #[serde(default = "module_mode")]
+    mode: String,
+    #[serde(default)]
+    capture_receipt: bool,
+    #[serde(default)]
+    receipt: Option<receipt::Receipt>,
+}
+
+fn module_mode() -> String {
+    "MODULES".into()
 }
 
 impl ClassRequest {
     fn selection(&self, config: &Config) -> Selection {
         let mut selection = config.all(self.reason.clone());
-        selection.mode = "MODULES";
+        selection.mode = match self.mode.as_str() {
+            "ALL" => "ALL",
+            "NONE" => "NONE",
+            _ => "MODULES",
+        };
         selection.modules = self.modules.clone();
         selection.sources = self.sources.clone();
         selection.changed = self.changed.clone();
@@ -676,6 +870,8 @@ impl ClassRequest {
 /// The refined selection that `sieve classes` reports back to `run`.
 #[derive(Deserialize, Serialize)]
 struct Refined {
+    #[serde(default)]
+    module: Option<String>,
     mode: String,
     #[serde(default)]
     tests: BTreeSet<String>,
@@ -688,6 +884,12 @@ struct Refined {
 impl Refined {
     fn of(selection: Selection, unselected: BTreeSet<String>) -> Self {
         Refined {
+            module: selection
+                .modules
+                .iter()
+                .next()
+                .filter(|_| selection.modules.len() == 1)
+                .cloned(),
             mode: selection.mode.into(),
             tests: selection.tests,
             reasons: selection.reasons,
@@ -712,7 +914,9 @@ fn merge_refined(
         selection.reasons.extend(part.reasons.clone());
         unselected.extend(part.unselected.iter().cloned());
     }
-    selection.mode = if parts.iter().any(|p| p.mode == "MODULES") {
+    selection.mode = if parts.iter().any(|p| p.mode == "ALL") {
+        "ALL"
+    } else if parts.iter().any(|p| p.mode == "MODULES") {
         "MODULES"
     } else if selection.tests.is_empty() {
         "NONE"
@@ -730,59 +934,197 @@ fn merge_refined(
 /// module's excludes file from standard output, which stays empty when every test runs.
 /// Analysis problems keep every test.
 fn classes_command(args: Vec<String>) -> Result<u8> {
-    let (file, module) = match args.as_slice() {
-        [flag, file] if flag == "--request" => (file, None),
-        [flag, file, option, dir] if flag == "--request" && option == "--module" => {
-            (file, Some(dir))
+    let (mut file, mut module, mut suite, mut classpath) = (None, None, None, None);
+    let mut repeated = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if arg == "--repeat" {
+            repeated = true;
+            continue;
         }
-        _ => return Err("Usage: sieve classes --request FILE [--module DIR]".into()),
-    };
+        let value = args
+            .next()
+            .ok_or_else(|| format!("Missing value for {arg}"))?;
+        match arg.as_str() {
+            "--request" => file = Some(value),
+            "--module" => module = Some(value),
+            "--suite" => suite = Some(value),
+            "--classpath" => classpath = Some(value),
+            _ => return Err(format!("Unknown classes option: {arg}").into()),
+        }
+    }
+    let file = file.ok_or("Usage: sieve classes --request FILE [--module DIR --suite NAME]")?;
     let request: ClassRequest = serde_json::from_slice(&fs::read(file)?)?;
     let config = Config::read(&request.workspace)?;
     match module {
-        Some(dir) => maven_classes(&config, &request, Path::new(dir)),
+        Some(dir) => maven_classes(
+            &config,
+            &request,
+            Path::new(&dir),
+            suite.as_deref().unwrap_or("unit"),
+            classpath.as_deref().map(Path::new),
+            repeated,
+        ),
         None => gradle_classes(&config, &request),
     }
+}
+
+fn receipt_inventory(
+    request: &ClassRequest,
+    suites: &BTreeMap<String, Vec<PathBuf>>,
+) -> Result<receipt::Exclusions> {
+    if !request.capture_receipt && request.receipt.is_none() {
+        return Ok(BTreeMap::new());
+    }
+    let inventory = match receipt::inventory(suites) {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            eprintln!("sieve: cannot verify suite inputs; running tests without receipt exclusions: {error}");
+            return Ok(BTreeMap::new());
+        }
+    };
+    let dir = request.dir.join("inventory");
+    fs::create_dir_all(&dir)?;
+    let inputs = request.dir.join("inventory-inputs");
+    fs::create_dir_all(&inputs)?;
+    for (suite, digest) in &inventory {
+        let path = dir.join(format!("{}.json", bytecode::hash(suite.as_bytes())));
+        fs::write(
+            path,
+            serde_json::to_vec(&BTreeMap::from([(suite, digest)]))?,
+        )?;
+        fs::write(
+            inputs.join(format!("{}.json", bytecode::hash(suite.as_bytes()))),
+            serde_json::to_vec(&BTreeMap::from([(suite, &suites[suite])]))?,
+        )?;
+    }
+    Ok(request
+        .receipt
+        .as_ref()
+        .map(|r| receipt::excluded(r, &inventory))
+        .unwrap_or_default())
+}
+
+/// A receipt excludes an outer class as a unit, including any nested policy matches.
+fn receipt_must_run(config: &Config, test: &str, test_dirs: &[PathBuf]) -> bool {
+    if config.must_run(test) {
+        return true;
+    }
+    if config.must_run.is_empty() {
+        return false;
+    }
+    let path = PathBuf::from(test.replace('.', "/"));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(test);
+    let nested = format!("{name}$");
+    let package = test
+        .rsplit_once('.')
+        .map(|(package, _)| format!("{package}."))
+        .unwrap_or_default();
+    for dir in test_dirs {
+        let folder = dir.join(path.parent().unwrap_or(Path::new("")));
+        let entries = match fs::read_dir(folder) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return true,
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return true;
+            };
+            let Ok(name) = entry.file_name().into_string() else {
+                return true;
+            };
+            if name.starts_with(&nested)
+                && name.ends_with(".class")
+                && config.must_run(&format!("{package}{}", name.trim_end_matches(".class")))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn gradle_classes(config: &Config, request: &ClassRequest) -> Result<u8> {
     let mut selection = request.selection(config);
     let listing = request.dir.join("classes.json");
-    let unselected = class_dirs(config, &request.workspace, &listing)
-        .and_then(|dirs| classes::load(&dirs))
-        .and_then(|classes| selection.refine(&classes, &request.workspace, false))
-        .unwrap_or_else(|error| {
-            selection.reason = format!("Class-level selection unavailable: {error}");
-            BTreeSet::new()
-        });
-    let filter = if selection.mode == "MODULES" {
-        "all\n".to_owned()
+    let unselected = if selection.mode == "MODULES" {
+        class_dirs(config, &request.workspace, &listing)
+            .and_then(|dirs| {
+                let classes = classes::load(&dirs)?;
+                refine_policy(
+                    &mut selection,
+                    config,
+                    &classes,
+                    &request.workspace,
+                    false,
+                    request.preserve_modules.as_ref(),
+                    &dirs,
+                )
+            })
+            .unwrap_or_else(|error| {
+                selection.reason = format!("Class-level selection unavailable: {error}");
+                BTreeSet::new()
+            })
     } else {
-        selection
-            .tests
+        BTreeSet::new()
+    };
+    #[derive(Deserialize)]
+    struct Suites {
+        #[serde(default)]
+        suites: BTreeMap<String, Vec<PathBuf>>,
+        #[serde(default)]
+        tests: Vec<PathBuf>,
+    }
+    let suites: Suites = serde_json::from_slice(&fs::read(&listing)?)?;
+    let mut excluded = receipt_inventory(request, &suites.suites)?;
+    for tests in excluded.values_mut() {
+        tests.retain(|test| !receipt_must_run(config, test, &suites.tests));
+    }
+    fs::write(
+        request.dir.join("remaining.json"),
+        serde_json::to_vec(&excluded)?,
+    )?;
+    let filter = if request.observe || matches!(selection.mode, "MODULES" | "ALL") {
+        "all\n".to_owned()
+    } else if selection.mode == "NONE" {
+        "none\n".to_owned()
+    } else {
+        unselected
             .iter()
-            .fold("filter\n".to_owned(), |text, test| text + test + "\n")
+            .fold("exclude\n".to_owned(), |text, test| text + test + "\n")
     };
     fs::write(request.dir.join("selected.txt"), filter)?;
-    // The decision is written before any test runs, so CI can publish it.
     let json = serde_json::to_string_pretty(&selection)? + "\n";
     if let Some(output) = &request.output {
         fs::write(output, &json)?;
     }
     eprintln!("{json}");
-    let refined = serde_json::to_vec(&Refined::of(selection, unselected))?;
-    fs::write(request.dir.join("refined.json"), refined)?;
+    let mut refined = Refined::of(selection, unselected);
+    refined.module = None;
+    fs::write(
+        request.dir.join("refined.json"),
+        serde_json::to_vec(&refined)?,
+    )?;
     Ok(0)
 }
 
-/// One Maven module's selection, right before its tests run. The module and the modules it
-/// depends on compiled already, and a change anywhere else cannot reach its tests.
-fn maven_classes(config: &Config, request: &ClassRequest, dir: &Path) -> Result<u8> {
-    let Ok(relative) = dir
-        .canonicalize()?
-        .strip_prefix(&request.workspace)
-        .map(Path::to_owned)
-    else {
+fn maven_classes(
+    config: &Config,
+    request: &ClassRequest,
+    dir: &Path,
+    suite: &str,
+    classpath: Option<&Path>,
+    repeated: bool,
+) -> Result<u8> {
+    if !matches!(suite, "unit" | "integration") {
+        return Err("Unknown Maven test suite".into());
+    }
+    let canonical = dir.canonicalize()?;
+    let Ok(relative) = canonical.strip_prefix(&request.workspace) else {
         return Ok(0);
     };
     let module = match relative.to_str() {
@@ -790,10 +1132,6 @@ fn maven_classes(config: &Config, request: &ClassRequest, dir: &Path) -> Result<
         Some(path) => path.replace('\\', "/"),
         None => return Ok(0),
     };
-    // Modules outside the selection skip their tests anyway.
-    if !request.modules.contains(&module) {
-        return Ok(0);
-    }
     let mut visible = BTreeSet::from([module.clone()]);
     loop {
         let before = visible.len();
@@ -805,7 +1143,13 @@ fn maven_classes(config: &Config, request: &ClassRequest, dir: &Path) -> Result<
         }
     }
     let mut selection = request.selection(config);
-    selection.modules = BTreeSet::from([module.clone()]);
+    if !request.modules.contains(&module) {
+        selection.mode = "NONE";
+        selection.modules.clear();
+        selection.reason = "Module outside the proposed selection".into();
+    } else {
+        selection.modules = BTreeSet::from([module.clone()]);
+    }
     selection
         .sources
         .retain(|path| config.module_of(path).is_some_and(|m| visible.contains(m)));
@@ -819,15 +1163,28 @@ fn maven_classes(config: &Config, request: &ClassRequest, dir: &Path) -> Result<
             ]
         })
         .collect();
-    let unselected = classes::load(&dirs)
-        .and_then(|classes| selection.refine(&classes, &request.workspace, true))
-        .unwrap_or_else(|error| {
-            selection.reason = format!("Class-level selection unavailable: {error}");
-            BTreeSet::new()
-        });
-    // The excludes name this module's test classes, whatever its dependencies hold.
+    let unselected = if selection.mode == "MODULES" {
+        classes::load(&dirs)
+            .and_then(|classes| {
+                refine_policy(
+                    &mut selection,
+                    config,
+                    &classes,
+                    &request.workspace,
+                    true,
+                    request.preserve_modules.as_ref(),
+                    &dirs,
+                )
+            })
+            .unwrap_or_else(|error| {
+                selection.reason = format!("Class-level selection unavailable: {error}");
+                BTreeSet::new()
+            })
+    } else {
+        BTreeSet::new()
+    };
     let tests = request.workspace.join(&module).join("target/test-classes");
-    let unselected: BTreeSet<String> = unselected
+    let mut unselected: BTreeSet<String> = unselected
         .into_iter()
         .filter(|name| {
             tests
@@ -835,17 +1192,50 @@ fn maven_classes(config: &Config, request: &ClassRequest, dir: &Path) -> Result<
                 .is_file()
         })
         .collect();
-    let every = selection.mode == "MODULES";
+    let suite_key = format!("{module}:{suite}");
+    let invalid = request.dir.join("invalid-inventory");
+    if repeated && (request.capture_receipt || request.receipt.is_some()) {
+        fs::create_dir_all(&invalid)?;
+        fs::write(
+            invalid.join(bytecode::hash(suite_key.as_bytes())),
+            &suite_key,
+        )?;
+    }
+    if let Some(classpath) = classpath.filter(|_| !repeated) {
+        if request.capture_receipt || request.receipt.is_some() {
+            let paths = fs::read_to_string(classpath)?
+                .lines()
+                .map(PathBuf::from)
+                .collect();
+            let mut exclusions =
+                receipt_inventory(request, &BTreeMap::from([(suite_key.clone(), paths)]))?;
+            if !invalid.join(bytecode::hash(suite_key.as_bytes())).exists() {
+                unselected.extend(
+                    exclusions
+                        .remove(&suite_key)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|test| {
+                            !receipt_must_run(config, test, std::slice::from_ref(&tests))
+                        }),
+                );
+            }
+        }
+    }
     let parts = request.dir.join("modules");
     fs::create_dir_all(&parts)?;
-    let name = setup::skip_property(&module).replace("impact.skip.", "");
-    let refined = serde_json::to_vec(&Refined::of(selection, unselected.clone()))?;
-    fs::write(parts.join(format!("{name}.json")), refined)?;
-    if !every {
-        // Surefire drops its default nested-class exclude once an excludes file is given.
-        let mut excludes = String::from("**/*$*\n");
+    let name = format!("{}-{suite}", bytecode::hash(module.as_bytes()));
+    let mut refined = Refined::of(selection, unselected.clone());
+    refined.module = Some(module);
+    fs::write(
+        parts.join(format!("{name}.json")),
+        serde_json::to_vec(&refined)?,
+    )?;
+    if !request.observe && !unselected.is_empty() {
+        let mut excludes = String::new();
         for name in &unselected {
             excludes += &format!("{}.*\n", name.replace('.', "/"));
+            excludes += &format!("{}$*.*\n", name.replace('.', "/"));
         }
         let path = parts.join(format!("{name}.excludes"));
         fs::write(&path, excludes)?;
@@ -882,7 +1272,8 @@ fn main_result() -> Result<u8> {
     if matches!(command.as_str(), "" | "--help" | "-h") {
         println!(
             "sieve <select|run> [--workspace PATH] [--base REV | --full]\n\
-                  [--records | --ci] [--output FILE] [--executable PATH] [--with|--without LEVERS] [-- BUILD_ARGS...]\n\n\
+                  [--records | --ci] [--output FILE] [--executable PATH] [--with|--without LEVERS]\n\
+                  [--observe] [--receipt FILE] [--remaining FILE] [--task GOAL_OR_TASK]... [-- BUILD_ARGS...]\n\n\
                   sieve <init|refresh> [--workspace PATH] [--tool maven|gradle|jest|vitest] [--executable PATH]\n\
                   sieve env [--workspace PATH] [--base REV]\n\
                   sieve catalog --workspace PATH --catalog FILE [--plant] [--levers] [...]\n\
@@ -892,6 +1283,9 @@ fn main_result() -> Result<u8> {
                   sieve --version\n\n\
                   Local mode requires `run --records` or impact.json with records: true\n\
                   (single-module Maven or Gradle, test JVM on Java 17+; the first run records every test).\n\
+                  --observe runs the native full task graph once and records the frozen proposal in --output.\n\
+                  --task preserves explicit native goals/tasks, including non-test work on NONE.\n\
+                  --receipt records successful executions; --remaining reuses them only at identical inputs.\n\
                   --ci keeps records that hold on other machines, for sharing through a CI cache.\n\
                   Static selection requires impact.json and the build adapters in README.md; no base or\n\
                   unavailable Git history selects ALL. run propagates build failures."
@@ -909,11 +1303,19 @@ fn main_result() -> Result<u8> {
     let mut executable = None;
     let mut levers = records::Levers::default();
     let mut ci = false;
+    let mut observe = false;
+    let mut receipt_output: Option<PathBuf> = None;
+    let mut remaining: Option<PathBuf> = None;
+    let mut tasks = Vec::new();
     let mut extra = Vec::new();
     while let Some(arg) = args.next() {
         if arg == "--" {
             extra.extend(args);
             break;
+        }
+        if arg == "--observe" {
+            observe = true;
+            continue;
         }
         if arg == "--full" {
             full = true;
@@ -936,6 +1338,17 @@ fn main_result() -> Result<u8> {
             "--workspace" => workspace = Some(PathBuf::from(value)),
             "--base" => base = Some(value),
             "--output" => output = Some(PathBuf::from(value)),
+            "--receipt" => receipt_output = Some(PathBuf::from(value)),
+            "--remaining" => remaining = Some(PathBuf::from(value)),
+            "--task" => {
+                if value.is_empty()
+                    || value.starts_with('-')
+                    || value.chars().any(char::is_whitespace)
+                {
+                    return Err("--task expects one native goal or task, not build flags".into());
+                }
+                tasks.push(value);
+            }
             "--executable" => executable = Some(value),
             "--with" => levers.on.extend(value.split(',').map(str::to_owned)),
             "--without" => levers.off.extend(value.split(',').map(str::to_owned)),
@@ -944,6 +1357,35 @@ fn main_result() -> Result<u8> {
     }
     if full && base.is_some() {
         return Err("Use either --base or --full".into());
+    }
+    let receipt_requested = receipt_output.is_some() || remaining.is_some();
+    if command != "run" && (observe || receipt_requested || !tasks.is_empty()) {
+        return Err("--observe, --receipt, --remaining and --task require run".into());
+    }
+    if observe && (output.is_none() || remaining.is_some()) {
+        return Err("--observe requires --output and cannot be combined with --remaining".into());
+    }
+    if remaining.is_some() && (base.is_some() || full) {
+        return Err("--remaining executes the whole task graph; omit --base and --full".into());
+    }
+    if remaining.is_some()
+        && extra.iter().any(|arg| {
+            arg == "--tests"
+                || arg.starts_with("--tests=")
+                || arg.starts_with("-Dtest=")
+                || arg.starts_with("-Dit.test=")
+        })
+    {
+        return Err(
+            "Explicitly requested tests must run; omit --remaining when using native test filters"
+                .into(),
+        );
+    }
+    output = output.map(std::path::absolute).transpose()?;
+    receipt_output = receipt_output.map(std::path::absolute).transpose()?;
+    remaining = remaining.map(std::path::absolute).transpose()?;
+    if output.is_some() && (output == receipt_output || output == remaining) {
+        return Err("Selection output and receipt paths must be different".into());
     }
     let started = std::time::Instant::now();
     if records && command != "run" {
@@ -960,6 +1402,9 @@ fn main_result() -> Result<u8> {
     levers.on.extend(config.with.iter().cloned());
     levers.validate()?;
     if js::is_js(&config.tool) {
+        if observe || receipt_requested || !tasks.is_empty() {
+            return Err("Observation, receipts and native tasks support Maven and Gradle".into());
+        }
         if records {
             return Err("--records and --ci support only Maven and Gradle".into());
         }
@@ -968,6 +1413,9 @@ fn main_result() -> Result<u8> {
         );
     }
     let local = records || config.records == Some(true);
+    if local && (observe || receipt_requested || !tasks.is_empty()) {
+        return Err("Observation, receipts and --task currently require static selection; local mode accepts native tasks after --".into());
+    }
     if local && command == "run" {
         if local_default {
             eprintln!("No impact.json: local mode with defaults, records in .sieve/");
@@ -988,18 +1436,19 @@ fn main_result() -> Result<u8> {
     let mut comparison = None;
     let mut selection = match base {
         Some(base) => match changed_paths(&workspace, &base) {
-            Ok((changed, prefix, merge_base)) => match fingerprint::build_inputs(&workspace) {
-                Ok(current) if config.build_fingerprint.as_ref() == Some(&current) => {
-                    let selection = config.select(changed, &prefix);
-                    comparison = Some((prefix, merge_base));
-                    selection
-                }
-                // Build files changed since the last refresh. Only a module selection follows
-                // the graph, so it is checked against the graph the build declares now.
-                Ok(_) if config.build_fingerprint.is_some() => {
-                    let mut selection = config.select(changed, &prefix);
-                    if selection.mode == "MODULES" {
-                        let fallback = match setup::stale(&config, &workspace, &executable, &extra) {
+            Ok((changed, prefix, merge_base)) => {
+                match fingerprint::build_inputs_with_logic(&workspace, &config.build_logic) {
+                    Ok(current) if config.build_fingerprint.as_ref() == Some(&current) => {
+                        let selection = config.select(changed, &prefix);
+                        comparison = Some((prefix, merge_base));
+                        selection
+                    }
+                    // Build files changed since the last refresh. Only a module selection follows
+                    // the graph, so it is checked against the graph the build declares now.
+                    Ok(_) if config.build_fingerprint.is_some() => {
+                        let mut selection = config.select(changed, &prefix);
+                        if selection.mode == "MODULES" {
+                            let fallback = match setup::stale(&config, &workspace, &executable, &extra) {
                             Ok(None) => {
                                 eprintln!("sieve: impact.json is out of date, but the build's module graph still matches it; run sieve refresh and commit impact.json");
                                 selection.reason += "; impact.json is out of date but matches the build's module graph (run sieve refresh)";
@@ -1008,32 +1457,95 @@ fn main_result() -> Result<u8> {
                             Ok(Some(change)) => Some(format!("The module graph changed since impact.json was written: {change}; run sieve refresh and review impact.json")),
                             Err(error) => Some(format!("Build inputs changed and the module graph cannot be checked ({error}); run sieve refresh and review impact.json")),
                         };
-                        if let Some(reason) = fallback {
-                            let changed = std::mem::take(&mut selection.changed);
-                            selection = config.all(reason);
-                            selection.changed = changed;
+                            if let Some(reason) = fallback {
+                                let changed = std::mem::take(&mut selection.changed);
+                                selection = config.all(reason);
+                                selection.changed = changed;
+                            }
                         }
+                        comparison = Some((prefix, merge_base));
+                        selection
                     }
-                    comparison = Some((prefix, merge_base));
-                    selection
+                    Ok(_) => {
+                        let mut selection = config.all(
+                            "No build fingerprint exists; run sieve refresh and review impact.json",
+                        );
+                        selection.changed = changed;
+                        selection
+                    }
+                    Err(error) => config.all(format!(
+                        "Cannot verify build inputs; full fallback: {error}"
+                    )),
                 }
-                Ok(_) => {
-                    let mut selection = config.all(
-                        "No build fingerprint exists; run sieve refresh and review impact.json",
-                    );
-                    selection.changed = changed;
-                    selection
-                }
-                Err(error) => config.all(format!(
-                    "Cannot verify build inputs; full fallback: {error}"
-                )),
-            },
+            }
             Err(error) => config.all(format!(
                 "Cannot establish changed inputs; full fallback: {error}"
             )),
         },
         None => config.all("Full run requested or no comparison base supplied"),
     };
+    if records::explicit_tests(&extra) {
+        let changed = std::mem::take(&mut selection.changed);
+        selection = config.all("Explicit native test filter; executing requested tests");
+        selection.changed = changed;
+    }
+    let preserve_modules = (!config.class_level).then(|| selection.modules.clone());
+    if !config.must_run.is_empty() && selection.mode != "ALL" {
+        selection.modules = config.modules.keys().cloned().collect();
+        selection.mode = "MODULES";
+        selection.reason += "; compiling test inventories to apply must_run policy";
+    }
+    let artifacts: Vec<PathBuf> = output
+        .iter()
+        .chain(receipt_output.iter())
+        .chain(remaining.iter())
+        .cloned()
+        .collect();
+    let mut invocation = if tasks.is_empty() {
+        vec![
+            "clean".into(),
+            if config.tool == "maven" {
+                "verify".into()
+            } else {
+                "check".into()
+            },
+        ]
+    } else {
+        tasks.clone()
+    };
+    invocation.extend(extra.iter().cloned());
+    let receipt_before = if receipt_requested {
+        match receipt::capture(&workspace, &executable, &invocation, &artifacts) {
+            Ok(inputs) => Some(inputs),
+            Err(error) => {
+                eprintln!("sieve: receipts unavailable; all remaining tests will run: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let accepted_receipt = remaining.as_ref().and_then(|path| {
+        receipt_before
+            .as_ref()
+            .and_then(|inputs| match receipt::read(path, inputs) {
+                Ok(receipt) => Some(receipt),
+                Err(error) => {
+                    eprintln!("sieve: receipt unavailable; full fallback: {error}");
+                    None
+                }
+            })
+    });
+    if let Some(path) = &receipt_output {
+        fs::write(path, "null\n")?;
+    }
+    if remaining.is_some() {
+        selection = config.all(if accepted_receipt.is_some() {
+            "Running the remaining tests using verified suite receipts"
+        } else {
+            "Receipt unavailable or inputs changed; full fallback"
+        });
+    }
     // Test hook: a selector that drops everything, which planted bugs must catch.
     if command == "run"
         && env::var_os("SIEVE_BROKEN_SELECTOR").is_some()
@@ -1060,18 +1572,28 @@ fn main_result() -> Result<u8> {
     } else {
         None
     };
-    let script_args: Vec<String> = match &init_script {
+    let mut script_args: Vec<String> = match &init_script {
         Some(script) => vec![
             "--init-script".into(),
             script.path().to_string_lossy().into_owned(),
         ],
         None => Vec::new(),
     };
-    remove_stale_reports(&config, &selection, &workspace)?;
+    if config.tool == "gradle" && observe {
+        script_args.push("-Pimpact.observe=true".into());
+    }
+    if observe || receipt_requested || !tasks.is_empty() {
+        clear_reports(&config, &workspace)?;
+    } else {
+        remove_stale_reports(&config, &selection, &workspace)?;
+    }
     let temp = tempfile::tempdir()?;
     let mut filter = None;
     let mut unselected = BTreeSet::new();
-    let class_level = config.class_level && selection.mode == "MODULES";
+    let class_level =
+        (config.class_level || !config.must_run.is_empty()) && selection.mode == "MODULES";
+    let hooking = class_level || receipt_requested;
+    let proposed_modules = selection.modules.clone();
     // The comparison base generates the sources of changed generated inputs in a worktree.
     let inputs: BTreeSet<String> = selection
         .sources
@@ -1086,14 +1608,17 @@ fn main_result() -> Result<u8> {
         || fs::read_to_string(workspace.join(".mvn/maven.config"))
             .is_ok_and(|c| c.contains("maven.ext.class.path"));
     let extension = match config.tool.as_str() {
-        "maven" if class_level && inputs.is_empty() && !own_extensions => {
+        "maven" if hooking && inputs.is_empty() && !own_extensions => {
             records::maven_extension().ok()
         }
         _ => None,
     };
     let mut request = None;
     let mut selecting = Vec::new();
-    if class_level && (config.tool == "gradle" || extension.is_some()) {
+    if receipt_requested && config.tool == "maven" && extension.is_none() {
+        return Err("Execution receipts require the embedded Maven extension and no conflicting maven.ext.class.path/generated-input comparison".into());
+    }
+    if hooking && (config.tool == "gradle" || extension.is_some()) {
         let dir = temp.path().to_path_buf();
         let path = dir.join("request.json");
         let asked = ClassRequest {
@@ -1104,6 +1629,11 @@ fn main_result() -> Result<u8> {
             reason: selection.reason.clone(),
             dir: dir.clone(),
             output: output.clone(),
+            observe,
+            preserve_modules: preserve_modules.clone(),
+            mode: selection.mode.into(),
+            capture_receipt: receipt_requested,
+            receipt: accepted_receipt,
         };
         fs::write(&path, serde_json::to_vec(&asked)?)?;
         let exe = env::current_exe()?.canonicalize()?;
@@ -1120,6 +1650,25 @@ fn main_result() -> Result<u8> {
                 format!("-Pimpact.sieve={}", exe.display()),
             ],
         };
+        if config.tool == "maven" && receipt_requested {
+            selecting.push("-Dsieve.receipt=true".into());
+        }
+        if config.tool == "gradle" {
+            if receipt_requested {
+                selecting.push(format!(
+                    "-Pimpact.remaining={}",
+                    dir.join("remaining.json").display()
+                ));
+            }
+            selecting.push(format!(
+                "-Pimpact.modules={}",
+                proposed_modules
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
         request = Some(asked);
     } else if class_level {
         eprintln!("{json}Compiling for class-level selection");
@@ -1159,8 +1708,18 @@ fn main_result() -> Result<u8> {
                 // Maven's class directories follow from the module layout; no listing.
                 class_dirs(&config, &workspace, Path::new(""))
             })
-            .and_then(|dirs| classes::load(&dirs))
-            .and_then(|classes| selection.refine(&classes, &workspace, true))
+            .and_then(|dirs| {
+                let classes = classes::load(&dirs)?;
+                refine_policy(
+                    &mut selection,
+                    &config,
+                    &classes,
+                    &workspace,
+                    true,
+                    preserve_modules.as_ref(),
+                    &dirs,
+                )
+            })
             .unwrap_or_else(|error| {
                 selection.reason = format!("Class-level selection unavailable: {error}");
                 BTreeSet::new()
@@ -1176,15 +1735,19 @@ fn main_result() -> Result<u8> {
         json = write(&selection)?;
     }
     eprintln!("{json}");
-    let status = Command::new(executable)
+    let execution = config.all("Full execution for shadow observation");
+    let execute = if observe { &execution } else { &selection };
+    let build_filter = if observe { None } else { filter.as_deref() };
+    let status = Command::new(&executable)
         .current_dir(&workspace)
-        .args(build_args(&config, &selection, filter.as_deref()))
+        .args(task_args(&config, execute, build_filter, &tasks))
         .args(selecting)
         .args(script_args)
-        .args(extra)
+        .args(&extra)
         .status()?;
     // A build that got as far as selecting reports what it selected.
-    if let Some(request) = request {
+    let mut module_proposals: BTreeMap<String, observation::Proposal> = BTreeMap::new();
+    if let Some(request) = &request {
         let files: Vec<PathBuf> = if config.tool == "gradle" {
             vec![request.dir.join("refined.json")]
         } else {
@@ -1196,11 +1759,100 @@ fn main_result() -> Result<u8> {
                 .filter(|path| path.extension().is_some_and(|e| e == "json"))
                 .collect()
         };
-        let parts = files
+        let parts: Vec<Refined> = files
             .iter()
             .filter_map(|file| serde_json::from_slice::<Refined>(&fs::read(file).ok()?).ok())
             .collect();
+        for part in &parts {
+            if let Some(module) = &part.module {
+                let proposal = observation::Proposal {
+                    mode: part.mode.clone(),
+                    modules: BTreeSet::from([module.clone()]),
+                    tests: part.tests.clone(),
+                    reason: part.reason.clone(),
+                };
+                module_proposals
+                    .entry(module.clone())
+                    .and_modify(|existing| {
+                        existing.tests.extend(proposal.tests.iter().cloned());
+                        if matches!(proposal.mode.as_str(), "ALL" | "MODULES") {
+                            existing.mode = proposal.mode.clone();
+                        } else if existing.mode == "NONE" && proposal.mode == "SUBSET" {
+                            existing.mode = "SUBSET".into();
+                        }
+                    })
+                    .or_insert(proposal);
+            }
+        }
         merge_refined(parts, &mut selection, &mut unselected);
+    }
+    if observe {
+        let observed = observation::finish(
+            observation::Proposal::of(&selection),
+            module_proposals,
+            &workspace,
+            &config.tool,
+            status.success(),
+            &config.build_logic,
+        );
+        eprintln!(
+            "sieve: {} ({} missed failing classes)",
+            observed.evidence,
+            observed.missed_failed_classes.len()
+        );
+        selection.observation = Some(observed);
+    }
+    if let Some(path) = &receipt_output {
+        if let Some(before) = &receipt_before {
+            let result = (|| -> Result<()> {
+                let after = receipt::capture(&workspace, &executable, &invocation, &artifacts)?;
+                let mut inventory = receipt::Inventory::new();
+                if let Some(request) = &request {
+                    for entry in fs::read_dir(request.dir.join("inventory"))
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                    {
+                        let part: receipt::Inventory =
+                            serde_json::from_slice(&fs::read(entry.path())?)?;
+                        inventory.extend(part);
+                    }
+                    for entry in fs::read_dir(request.dir.join("invalid-inventory"))
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                    {
+                        inventory.remove(&fs::read_to_string(entry.path())?);
+                    }
+                    // A passing result cannot cover inputs rewritten while its tests ran.
+                    for entry in fs::read_dir(request.dir.join("inventory-inputs"))
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                    {
+                        let suites: BTreeMap<String, Vec<PathBuf>> =
+                            serde_json::from_slice(&fs::read(entry.path())?)?;
+                        let current = receipt::inventory(&suites).unwrap_or_default();
+                        for suite in suites.keys() {
+                            if current.get(suite) != inventory.get(suite) {
+                                inventory.remove(suite);
+                            }
+                        }
+                    }
+                }
+                receipt::write(
+                    path,
+                    before,
+                    &after,
+                    &reports::read_reports(&workspace, &config.tool)?,
+                    status.success(),
+                    inventory,
+                )
+            })();
+            if let Err(error) = result {
+                eprintln!("sieve: no reusable receipt: {error}");
+            }
+        }
     }
     let modules: BTreeSet<String> = config.modules.keys().cloned().collect();
     // The summary is informational: a problem with it never fails the run. Durations persist
@@ -1227,7 +1879,15 @@ fn main_result() -> Result<u8> {
         }
         Err(error) => eprintln!("sieve: no summary: {error}"),
     }
-    Ok(if status.success() { 0 } else { 1 })
+    write(&selection)?;
+    let observed_failure = selection.observation.as_ref().is_some_and(|observation| {
+        !observation.failed_classes.is_empty() || observation.report_error.is_some()
+    });
+    Ok(if status.success() && !observed_failure {
+        0
+    } else {
+        1
+    })
 }
 
 fn main() -> ExitCode {
@@ -1243,6 +1903,93 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_nested_must_run_policy_always_keeps_its_outer_class() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {".": []},
+            "must_run": ["example.ContractTest$Nested*", "example.Smoke?Test"]
+        }))
+        .unwrap();
+        assert!(config.must_run("example.ContractTest"));
+        assert!(config.must_run("example.ContractTest$NestedCase"));
+        assert!(config.must_run("example.Smoke1Test"));
+        assert!(!config.must_run("example.OtherTest"));
+    }
+
+    #[test]
+    fn receipt_policy_keeps_outer_classes_with_wildcard_nested_matches() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {".": []}, "must_run": ["*Inner*"]
+        }))
+        .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("example");
+        fs::create_dir(&package).unwrap();
+        fs::write(package.join("OuterTest$InnerCase.class"), []).unwrap();
+        let dirs = vec![temp.path().to_owned()];
+        assert!(receipt_must_run(&config, "example.OuterTest", &dirs));
+        assert!(!receipt_must_run(&config, "example.OtherTest", &dirs));
+        fs::remove_dir_all(&package).unwrap();
+        fs::write(package, []).unwrap();
+        assert!(receipt_must_run(&config, "example.OuterTest", &dirs));
+    }
+
+    #[test]
+    fn must_run_keeps_selected_modules_without_class_level_opt_in() {
+        let temp = tempfile::tempdir().unwrap();
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"app": [], "checks": []},
+            "must_run": ["example.Contract*Test"]
+        }))
+        .unwrap();
+        let mut graph = Vec::new();
+        let mut dirs = Vec::new();
+        for (module, names) in [
+            ("app", vec!["example/AppTest", "example/OtherTest"]),
+            (
+                "checks",
+                vec!["example/ContractApiTest", "example/UnrelatedTest"],
+            ),
+        ] {
+            let dir = temp.path().join(module).join("target/test-classes");
+            fs::create_dir_all(dir.join("example")).unwrap();
+            for name in names {
+                fs::write(dir.join(format!("{name}.class")), "").unwrap();
+                graph.push(classes::Class {
+                    name: name.into(),
+                    test: true,
+                    ..Default::default()
+                });
+            }
+            dirs.push((dir, true));
+        }
+        let mut selection = config.all("discover policy classes");
+        selection.mode = "MODULES";
+        let unselected = refine_policy(
+            &mut selection,
+            &config,
+            &graph,
+            temp.path(),
+            true,
+            Some(&BTreeSet::from(["app".into()])),
+            &dirs,
+        )
+        .unwrap();
+        assert_eq!(
+            selection.tests,
+            BTreeSet::from([
+                "example.AppTest".into(),
+                "example.OtherTest".into(),
+                "example.ContractApiTest".into()
+            ])
+        );
+        assert_eq!(unselected, BTreeSet::from(["example.UnrelatedTest".into()]));
+        assert_eq!(
+            selection.reasons["example.ContractApiTest"],
+            "Required by must_run policy"
+        );
+    }
 
     #[test]
     fn graph_closure_handles_chains_diamonds_roots_and_duplicates() {
@@ -1399,6 +2146,7 @@ mod tests {
         .unwrap();
         let names = |list: &[&str]| list.iter().map(|t| t.to_string()).collect::<BTreeSet<_>>();
         let part = |mode: &str, tests: &[&str], unselected: &[&str]| Refined {
+            module: None,
             mode: mode.into(),
             tests: names(tests),
             reasons: tests

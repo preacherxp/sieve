@@ -2,7 +2,6 @@ package sieve.agent;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,8 +44,15 @@ final class State {
     private static final class Run {
         final Bucket own = new Bucket();
         final Set<Bucket> contexts = Collections.newSetFromMap(new IdentityHashMap<>());
+        Cohort cohort;
         boolean failed;
         boolean spring;
+    }
+
+    /** Overlapping classes share evidence, including work on application worker threads. */
+    private static final class Cohort {
+        final Set<Bucket> buckets = Collections.newSetFromMap(new IdentityHashMap<>());
+        boolean shared;
     }
 
     private static final Map<String, Run> RUNS = new LinkedHashMap<>();
@@ -55,8 +61,10 @@ final class State {
     private static final java.util.concurrent.atomic.AtomicInteger INSTRUMENTED = new java.util.concurrent.atomic.AtomicInteger();
     private static final Set<String> DROPPED = new TreeSet<>();
     private static final Set<String> FLUSHED = new LinkedHashSet<>();
-    private static String active;
+    private static final Map<String, Integer> ACTIVE = new LinkedHashMap<>();
+    private static final Map<Bucket, Cohort> OWNERS = new IdentityHashMap<>();
     private static boolean parallel;
+    private static String selectionNote = "";
     private static Set<String> skip;
     private static List<String> classpath;
 
@@ -173,10 +181,6 @@ final class State {
         INSTRUMENTED.incrementAndGet();
     }
 
-    static synchronized void parallel() {
-        parallel = true;
-    }
-
     /** {@code a.B$C} and {@code a.B} both belong to the record of {@code a.B}. */
     static String top(String className) {
         int nested = className.indexOf('$');
@@ -195,23 +199,6 @@ final class State {
             }
         }
         return false;
-    }
-
-    private static boolean parallelConfigured() {
-        String property = System.getProperty("junit.jupiter.execution.parallel.enabled");
-        if (property != null) {
-            return Boolean.parseBoolean(property.trim());
-        }
-        try (InputStream in = Thread.currentThread().getContextClassLoader().getResourceAsStream("junit-platform.properties")) {
-            if (in == null) {
-                return false;
-            }
-            Properties properties = new Properties();
-            properties.load(in);
-            return Boolean.parseBoolean(properties.getProperty("junit.jupiter.execution.parallel.enabled", "false").trim());
-        } catch (IOException | RuntimeException error) {
-            return true;
-        }
     }
 
     private static Path scratch(String prefix) throws IOException {
@@ -257,7 +244,9 @@ final class State {
         }
         skip = Set.of();
         inputs();
-        if (!enabled() || !mode.equals("select") || explicit() || parallelConfigured()) {
+        if (!enabled() || !mode.equals("select") || explicit()) {
+            selectionNote = explicit() ? "Explicit native test filter; record selection disabled"
+                    : "Full test execution requested; record selection disabled";
             return skip;
         }
         try {
@@ -278,9 +267,12 @@ final class State {
                     }
                 }
                 skip = names;
+            } else {
+                selectionNote = "Record selection failed; see .sieve/agent.log";
             }
             Files.deleteIfExists(out);
         } catch (IOException error) {
+            selectionNote = "Record selection unavailable: " + error;
             System.err.println("sieve: selection unavailable, running every test: " + error);
         }
         return skip;
@@ -292,16 +284,36 @@ final class State {
 
     static synchronized void classStarted(String name) {
         inputs();
-        if (active != null && !active.equals(name)) {
-            parallel = true;
+        if (ACTIVE.containsKey(name)) {
+            ACTIVE.put(name, ACTIVE.get(name) + 1);
+            return;
         }
-        active = name;
+        Cohort cohort = ACTIVE.isEmpty() ? new Cohort() : RUNS.get(ACTIVE.keySet().iterator().next()).cohort;
+        if (!ACTIVE.isEmpty()) {
+            parallel = true;
+            cohort.shared = true;
+        }
         Run run = RUNS.computeIfAbsent(name, key -> new Run());
+        // One class can execute again under another engine or launcher plan in the same JVM.
+        if (run.cohort != null && run.cohort.shared) {
+            run.contexts.addAll(run.cohort.buckets);
+        }
+        FLUSHED.remove(name);
+        run.cohort = cohort;
+        cohort.buckets.add(run.own);
+        cohort.buckets.addAll(run.contexts);
+        OWNERS.put(run.own, cohort);
+        ACTIVE.put(name, 1);
         Probe.current = STARTING.isEmpty() ? run.own : STARTING.peek();
     }
 
     static synchronized void classFinished(String name) {
-        if (name.equals(active)) {
+        int depth = ACTIVE.getOrDefault(name, 0);
+        if (depth > 1) {
+            ACTIVE.put(name, depth - 1);
+            return;
+        }
+        if (ACTIVE.remove(name) != null && ACTIVE.isEmpty()) {
             // A startup that never finished, such as one on an old Boot without `ready`, ends
             // with the class that started it.
             for (Bucket bucket : STARTING) {
@@ -310,7 +322,6 @@ final class State {
                 }
             }
             STARTING.clear();
-            active = null;
             // Work that outlives a class, such as messages its tests sent and did not await,
             // stays with it: tests are assumed not to depend on what earlier ones left behind.
             Probe.current = RUNS.get(name).own;
@@ -338,12 +349,22 @@ final class State {
         if (!STARTING.isEmpty()) {
             return STARTING.peek();
         }
-        Run run = active == null ? null : RUNS.get(active);
+        Run run = ACTIVE.isEmpty() ? null : RUNS.get(ACTIVE.keySet().iterator().next());
         return run == null ? Probe.UNATTRIBUTED : run.own;
     }
 
-    static synchronized void bootStarting() {
+    private static Bucket startupBucket() {
         Bucket bucket = new Bucket();
+        if (!ACTIVE.isEmpty()) {
+            Cohort cohort = RUNS.get(ACTIVE.keySet().iterator().next()).cohort;
+            cohort.buckets.add(bucket);
+            OWNERS.put(bucket, cohort);
+        }
+        return bucket;
+    }
+
+    static synchronized void bootStarting() {
+        Bucket bucket = startupBucket();
         BOOT.add(bucket);
         STARTING.push(bucket);
         Probe.current = bucket;
@@ -362,9 +383,12 @@ final class State {
     }
 
     private static void adopt(Bucket bucket) {
-        Run run = active == null ? null : RUNS.get(active);
-        if (run != null) {
-            run.contexts.add(bucket);
+        if (!ACTIVE.isEmpty()) {
+            for (String name : ACTIVE.keySet()) {
+                Run run = RUNS.get(name);
+                run.contexts.add(bucket);
+                run.cohort.buckets.add(bucket);
+            }
         } else {
             UNCLAIMED.add(bucket);
         }
@@ -377,7 +401,7 @@ final class State {
     static synchronized void contextStarting(Object context) {
         Bucket bucket = STARTING.peek();
         if (bucket == null || !BOOT.contains(bucket) || CLAIMABLE.contains(bucket)) {
-            bucket = new Bucket();
+            bucket = startupBucket();
             STARTING.push(bucket);
         }
         CLAIMABLE.add(bucket);
@@ -405,12 +429,16 @@ final class State {
         Bucket bucket = CONTEXTS.get(context);
         if (bucket != null) {
             run.contexts.add(bucket);
+            if (run.cohort != null) {
+                run.cohort.buckets.add(bucket);
+            }
         }
     }
 
     /** Writes the classes finished since the last flush and has {@code sieve} record them. */
     static synchronized void flush() {
-        if (!enabled()) {
+        // Concurrent test plans may finish independently; their overlap evidence is not final yet.
+        if (!enabled() || !ACTIVE.isEmpty()) {
             return;
         }
         try {
@@ -432,6 +460,9 @@ final class State {
             names = METHODS.toArray(String[]::new);
         }
         List<String> errors = new ArrayList<>(ERRORS);
+        if (Probe.failed) {
+            errors.add("a probe failed while observing test execution");
+        }
         if (INSTRUMENTED.get() == 0 && !RUNS.isEmpty()) {
             // Tests ran, yet no project class was probed: the output directories did not match.
             errors.add("no project class was instrumented");
@@ -441,7 +472,10 @@ final class State {
         out.append(",\"session\":");
         string(out, session);
         out.append(",\"started\":").append(STARTED);
-        out.append(",\"parallel\":").append(parallel || Probe.failed || parallelConfigured());
+        out.append(",\"parallel\":").append(parallel);
+        out.append(",\"parallel_safe\":true");
+        out.append(",\"selection_note\":");
+        string(out, selectionNote);
         out.append(",\"errors\":");
         strings(out, errors);
         out.append(",\"dropped\":");
@@ -451,14 +485,27 @@ final class State {
         out.append(",\"tests\":[");
         boolean first = true;
         for (Map.Entry<String, Run> entry : RUNS.entrySet()) {
-            if (FLUSHED.contains(entry.getKey()) || entry.getKey().equals(active)) {
+            if (FLUSHED.contains(entry.getKey()) || ACTIVE.containsKey(entry.getKey())) {
                 continue;
             }
             Run run = entry.getValue();
-            List<Bucket> buckets = new ArrayList<>(run.contexts);
+            Set<Bucket> buckets = Collections.newSetFromMap(new IdentityHashMap<>());
+            buckets.addAll(run.contexts);
             buckets.addAll(UNCLAIMED);
             buckets.add(run.own);
             buckets.add(Probe.UNATTRIBUTED);
+            // A cached context initialized during overlap retains that cohort's full evidence.
+            List<Bucket> pending = new ArrayList<>(buckets);
+            for (int at = 0; at < pending.size(); at++) {
+                Cohort cohort = OWNERS.get(pending.get(at));
+                if (cohort != null && cohort.shared) {
+                    for (Bucket bucket : cohort.buckets) {
+                        if (buckets.add(bucket)) {
+                            pending.add(bucket);
+                        }
+                    }
+                }
+            }
             Set<String> methods = new TreeSet<>();
             Set<String> files = new TreeSet<>();
             for (Bucket bucket : buckets) {

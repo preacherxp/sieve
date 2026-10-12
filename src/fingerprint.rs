@@ -10,10 +10,15 @@ use std::{
 // ponytail: conventional workspace build inputs only; custom external models still
 // require graph review. Do not claim detection of undeclared runtime dependencies.
 pub fn build_inputs(workspace: &Path) -> Result<String> {
+    build_inputs_with_logic(workspace, &[])
+}
+
+pub fn build_inputs_with_logic(workspace: &Path, build_logic: &[String]) -> Result<String> {
     fn collect(
         root: &Path,
         dir: &Path,
         all: bool,
+        build_logic: &[String],
         inputs: &mut BTreeMap<String, Vec<u8>>,
     ) -> Result<()> {
         for entry in fs::read_dir(dir)? {
@@ -34,17 +39,25 @@ pub fn build_inputs(workspace: &Path) -> Result<String> {
             {
                 continue;
             }
-            let build_dir = matches!(
-                name.as_ref(),
-                ".mvn" | "gradle" | "buildSrc" | "build-logic"
-            );
+            let build_dir = build_logic.iter().any(|dir| path == root.join(dir))
+                || matches!(
+                    name.as_ref(),
+                    ".mvn" | "gradle" | "buildSrc" | "build-logic"
+                );
             if build_dir && kind.is_symlink() {
                 return Err(
                     format!("Unsupported linked build directory: {}", path.display()).into(),
                 );
             }
-            if kind.is_dir() && (all || name != "src" || project_dir) {
-                collect(root, &path, all || build_dir, inputs)?;
+            if kind.is_dir()
+                && (all
+                    || name != "src"
+                    || project_dir
+                    || build_logic
+                        .iter()
+                        .any(|dir| root.join(dir).starts_with(&path)))
+            {
+                collect(root, &path, all || build_dir, build_logic, inputs)?;
             } else if all
                 || name.ends_with(".gradle")
                 || name.ends_with(".gradle.kts")
@@ -77,7 +90,7 @@ pub fn build_inputs(workspace: &Path) -> Result<String> {
         Ok(())
     }
     let mut inputs = BTreeMap::new();
-    collect(workspace, workspace, false, &mut inputs)?;
+    collect(workspace, workspace, false, build_logic, &mut inputs)?;
     let mut hash = Command::new("git")
         .args(["hash-object", "--stdin"])
         .stdin(Stdio::piped())
@@ -113,6 +126,29 @@ mod tests {
             )?;
             assert_ne!(before, build_inputs(temp.path())?);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn discovered_plugin_sources_and_resources_affect_the_fingerprint() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        let logic = vec!["tools/conventions".into()];
+        let source = root.join("tools/conventions/src/main/java/Convention.java");
+        fs::create_dir_all(source.parent().unwrap())?;
+        fs::write(&source, "class Convention {}")?;
+        let before = build_inputs_with_logic(root, &logic)?;
+        fs::write(&source, "class Convention { int changed; }")?;
+        assert_ne!(before, build_inputs_with_logic(root, &logic)?);
+        let before = build_inputs_with_logic(root, &logic)?;
+        let resource = root.join("tools/conventions/src/main/resources/policy.md");
+        fs::create_dir_all(resource.parent().unwrap())?;
+        fs::write(resource, "new plugin input")?;
+        assert_ne!(before, build_inputs_with_logic(root, &logic)?);
+        let before = build_inputs_with_logic(root, &logic)?;
+        fs::create_dir_all(root.join("tools/conventions/build"))?;
+        fs::write(root.join("tools/conventions/build/output"), "ignored")?;
+        assert_eq!(before, build_inputs_with_logic(root, &logic)?);
         Ok(())
     }
 }

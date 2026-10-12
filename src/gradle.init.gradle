@@ -2,10 +2,26 @@
 // Execution-time closures capture only strings, booleans and file collections, never
 // Project objects, so builds using the configuration cache keep working.
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import org.gradle.api.artifacts.FileCollectionDependency
 import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.tasks.testing.Test
 import org.gradle.util.GradleVersion
+
+// Observation executes requested tests, including plugin tests, instead of restoring XML.
+gradle.beforeProject { p ->
+    if (p.providers.gradleProperty('impact.observe').orNull == 'true') {
+        p.tasks.withType(Test).configureEach { task ->
+            task.outputs.upToDateWhen { false }
+            task.outputs.cacheIf { false }
+        }
+    }
+}
+
+// Included builds and buildSrc keep their own verification tasks and test filters.
+if (gradle.parent != null) {
+    return
+}
 
 if (GradleVersion.current() < GradleVersion.version('7.6.3')) {
     throw new GradleException('Sieve requires Gradle 7.6.3 or newer. Update the wrapper before running setup or tests.')
@@ -17,10 +33,11 @@ def moduleId = { p -> p == p.rootProject ? '.' : p.path.substring(1).replace(':'
 
 gradle.beforeProject { p ->
     def modules = p.providers.gradleProperty('impact.modules').orNull
-    def enabled = modules == null || moduleId(p) in modules.split(',')
-    // Class-level selection in the same build: `impactSelect` writes `all`, or `filter` and the
-    // test classes to run, after the selected modules compiled.
+    def observe = p.providers.gradleProperty('impact.observe').orNull == 'true'
+    def enabled = observe || modules == null || moduleId(p) in modules.split(',')
+    // Excluding unselected classes intersects the task's existing native filters.
     def selected = p.providers.gradleProperty('impact.selected').orNull
+    def remaining = p.providers.gradleProperty('impact.remaining').orNull
     // Local mode: the test-record agent joins the test JVMs only, never Gradle's own daemons.
     def agent = p.providers.gradleProperty('impact.agent').orNull
     p.tasks.withType(Test).configureEach { task ->
@@ -29,25 +46,40 @@ gradle.beforeProject { p ->
         }
         if (!enabled) {
             task.enabled = false
-        } else if (selected != null) {
+        }
+        if (selected != null) {
             def selection = new File(selected)
             task.dependsOn(':impactSelect')
             // An input, so that a cached test result never stands for another selection.
             task.inputs.file(selection).withPropertyName('impactSelection')
-            // An empty include filter would run every test, so an empty selection skips the task.
-            task.onlyIf {
+            // No selected classes means skip this task without changing its native includes.
+            if (!observe) task.onlyIf {
                 def lines = selection.readLines()
-                lines[0] == 'all' || lines.size() > 1
+                lines[0] != 'none'
             }
             task.doFirst { Test test ->
                 def lines = selection.readLines()
-                if (lines[0] != 'all') {
+                if (!observe && lines[0] == 'exclude') {
                     lines.drop(1).each { cls ->
-                        test.filter.includeTestsMatching(cls)
-                        test.filter.includeTestsMatching(cls + '$*')
+                        test.filter.excludeTestsMatching(cls)
+                        test.filter.excludeTestsMatching(cls + '$*')
                     }
                     test.filter.failOnNoMatchingTests = false
                 }
+            }
+        }
+        if (remaining != null) {
+            def exclusions = new File(remaining)
+            def suite = task.name == 'test' ? 'unit' : task.name == 'integrationTest' ? 'integration' : task.name
+            def key = moduleId(p) + ':' + suite
+            task.inputs.file(exclusions).withPropertyName('impactRemaining')
+            task.doFirst { Test test ->
+                def completed = new JsonSlurper().parse(exclusions)
+                (completed[key] ?: []).each { cls ->
+                    test.filter.excludeTestsMatching(cls)
+                    test.filter.excludeTestsMatching(cls + '$*')
+                }
+                test.filter.failOnNoMatchingTests = false
             }
         }
     }
@@ -66,6 +98,9 @@ gradle.projectsEvaluated {
     if (listing != null) {
         def classes = root.files()
         def tests = root.files()
+        def suites = [:]
+        def suiteSettings = [:]
+        def captureReceipts = root.findProperty('impact.remaining') != null
         def jvm = false
         root.allprojects.each { p ->
             def sourceSets = p.extensions.findByName('sourceSets')
@@ -87,7 +122,33 @@ gradle.projectsEvaluated {
                     }
                     testTasks.each { t -> dependsOn(t.testClassesDirs, t.classpath) }
                 }
-                testTasks.each { if (it.testClassesDirs != null) tests.from(it.testClassesDirs) }
+                testTasks.each {
+                    if (it.testClassesDirs != null) {
+                        tests.from(it.testClassesDirs)
+                        if (captureReceipts) {
+                            def suite = it.name == 'test' ? 'unit' : it.name == 'integrationTest' ? 'integration' : it.name
+                            def key = moduleId(p) + ':' + suite
+                            def settings = [jvmArgs: it.allJvmArgs.collect { it.toString() },
+                                includes: it.filter.includePatterns.toList().sort(), excludes: it.filter.excludePatterns.toList().sort(),
+                                properties: new TreeMap(it.systemProperties.collectEntries { name, value -> [(name.toString()): value?.toString()] }),
+                                environment: new TreeMap(it.environment.collectEntries { name, value -> [(name.toString()): value?.toString()] })]
+                            def digest = java.security.MessageDigest.getInstance('SHA-256')
+                                .digest(JsonOutput.toJson(settings).getBytes('UTF-8')).encodeHex().toString()
+                            def metadata = root.layout.buildDirectory.file("sieve-suite-inputs/${suiteSettings.size()}.sha256").get().asFile
+                            suiteSettings[metadata] = digest
+                            def agents = it.allJvmArgs.findAll { it.startsWith('-javaagent:') }
+                                .collect { p.file(it.substring('-javaagent:'.length()).split('=', 2)[0]) }
+                            if (!it.allJvmArgs.any { it.startsWith('@') } && agents.every { it.isFile() && it.canRead() }) {
+                                // Keep native classpath order: the first duplicate class wins at runtime.
+                                suites[key] = root.files(it.classpath, it.testClassesDirs, metadata, agents,
+                                    it.javaLauncher.map { launcher -> [launcher.executablePath.asFile,
+                                        new File(launcher.metadata.installationPath.asFile, 'release')] })
+                            } else {
+                                p.logger.warn("Sieve cannot verify JVM argument inputs for ${key}; execution receipts are unavailable for this suite.")
+                            }
+                        }
+                    }
+                }
             }
         }
         if (!jvm) {
@@ -95,10 +156,15 @@ gradle.projectsEvaluated {
         }
         root.tasks.register('impactClasses') {
             doLast {
+                suiteSettings.each { file, digest ->
+                    file.parentFile.mkdirs()
+                    file.text = digest
+                }
                 def paths = { files -> files.collect { it.absolutePath }.unique().sort() }
                 new File(listing).text = JsonOutput.toJson([
                     classes: paths(classes.files + tests.files),
-                    tests: paths(tests.files)])
+                    tests: paths(tests.files),
+                    suites: suites.collectEntries { key, files -> [(key): files.files.collect { it.absolutePath }.unique()] }])
             }
         }
         def selected = root.findProperty('impact.selected')?.toString()
@@ -123,8 +189,31 @@ gradle.projectsEvaluated {
     if (root.findProperty('impact.output') != null) {
         root.tasks.register('impactInit') {
             doLast {
-                if (root.gradle.includedBuilds) {
-                    throw new GradleException('Composite builds require an explicit impact configuration.')
+                def included = root.gradle.includedBuilds.collect { it.projectDir.canonicalPath }.sort()
+                if (root.findProperty('impact.buildLogic') == 'true') {
+                    def plugins = false
+                    root.allprojects.each { p ->
+                        def declaresPlugins = p.plugins.hasPlugin('java-gradle-plugin') &&
+                            !p.extensions.getByName('gradlePlugin').plugins.empty
+                        def sourceSets = p.extensions.findByName('sourceSets')
+                        def aggregator = sourceSets == null && p.tasks.withType(Test).empty
+                        if ((!declaresPlugins && !aggregator) || p.plugins.hasPlugin('application') ||
+                            p.plugins.hasPlugin('com.android.application') || p.plugins.hasPlugin('com.android.library') ||
+                            p.plugins.hasPlugin('org.jetbrains.kotlin.multiplatform')) {
+                            throw new GradleException("Composite builds support only included plugin builds: ${p.path} must declare Gradle plugins, or be an empty aggregator.")
+                        }
+                        def buildRoot = root.projectDir.canonicalFile.toPath()
+                        if (!p.projectDir.canonicalFile.toPath().startsWith(buildRoot) ||
+                            sourceSets?.any { s -> s.allSource.srcDirs.any { !it.canonicalFile.toPath().startsWith(buildRoot) } }) {
+                            throw new GradleException('Included plugin projects and sources must stay inside their build directory.')
+                        }
+                        plugins |= declaresPlugins
+                    }
+                    if (!plugins) {
+                        throw new GradleException('Composite builds support only included builds that declare Gradle plugins.')
+                    }
+                    new File(root.property('impact.output').toString()).text = JsonOutput.toJson([included_builds: included])
+                    return
                 }
                 def modules = [:]
                 // Projects whose test code other projects may use: through a named configuration,
@@ -192,7 +281,7 @@ gradle.projectsEvaluated {
                     throw new GradleException('No Java or Kotlin/JVM projects found.')
                 }
                 new File(root.property('impact.output').toString()).text = JsonOutput.prettyPrint(
-                    JsonOutput.toJson([tool: 'gradle', modules: modules, shared_tests: shared.sort()])) + '\n'
+                    JsonOutput.toJson([tool: 'gradle', modules: modules, shared_tests: shared.sort(), included_builds: included])) + '\n'
             }
         }
     }

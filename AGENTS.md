@@ -63,10 +63,11 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 - Use `sieve run --workspace PATH` with either `--base REV` or `--full`.
   Prefer the project's existing wrapper; use `--executable` only when needed.
 - Forward applicable build flags after `--`. Check command equivalence: Sieve
-  currently runs Maven `clean verify` or Gradle `clean check`, limited for a partial
-  selection to `-pl <modules> -am` or `:<module>:check` tasks; it does not preserve
-  arbitrary existing tasks automatically. Aggregating steps (coverage reports, packaging
-  of unselected modules) see only the built modules. `NONE` still runs `clean`.
+  defaults to Maven `clean verify` or Gradle `clean check`, scoped for a partial selection.
+  Use repeated `--task` options to retain the existing native goals/task graph without
+  implicit cleaning or module scoping. With explicit tasks, `NONE` skips tests while
+  keeping compilation, packaging and report dependencies. Conventional XML is cleared
+  first; partial coverage must not be represented as full coverage.
 - Use `sieve replay --workspace PATH --commits N --run` on the consumer repository
   to measure selection modes, time saved, and missed failures before relying on it.
 - Place execution before steps that consume build outputs, and account for

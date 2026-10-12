@@ -78,9 +78,14 @@ or below nested aggregators, and Gradle projects whose directories match their p
 such as `services/orders`; Maven's skip property joins the segments with dots
 (`impact.skip.services.orders`), and Gradle tasks follow the project path
 (`:services:orders:check`). Aggregators build nothing themselves and are not modules; a
-change to their POM is a build input. Gradle projects in other directories, composite
-builds, Android, and Kotlin Multiplatform are not supported by automatic setup. The tool
-reports unsupported layouts instead of guessing.
+change to their POM is a build input. Gradle plugin-only included builds inside the
+workspace are supported: each project must declare plugins through `java-gradle-plugin`,
+or be an empty aggregator. Setup checks the actual included graphs, including nested
+includes, and records their directories in `build_logic`. Every change under those
+roots selects ALL before ignore rules apply; refresh fingerprints their sources and
+resources too. Included builds retain their native tests and task dependencies.
+Application composites, external includes, relocated project/source directories, Android,
+and Kotlin Multiplatform remain unsupported by automatic setup.
 Run setup with the same Maven profiles and build environment used by CI. Keep
 `impact.json` complete when adding dependencies, including runtime/resource edges.
 Run `sieve refresh --workspace PATH` after build changes,
@@ -117,6 +122,28 @@ Gradle 7.6/8/9, and Kotlin 1.9/2.2/2.3 combinations. Build tool and Kotlin plugi
 versions must be compatible with the chosen JDK; see the upstream compatibility
 tables linked below. Java 8/11 checks use a small Java-only project because the
 main sample's Spring 6 dependency requires Java 17.
+
+Engine checks in `tests/compatibility_modes.rs` verify native discovery, record selection
+after an irrelevant production edit, a relevant planted failure in records and class mode,
+and the same failure in an independent native full run. All five cases passed locally on
+Temurin 22.0.2 and Maven 3.9.16; the compatibility workflow runs them on JDK 21.
+
+| Engine tested | Surefire | Class selection | Runtime records |
+| --- | --- | --- | --- |
+| JUnit 6.0.3, nested classes and dynamic tests | 3.6.0 | Verified | Active; irrelevant edit skips both classes |
+| Spock 2.4 with Groovy 4 | 3.6.0 | Verified | Active; irrelevant edit skips both classes |
+| Kotest 6.0.4 with Kotlin 2.2.21 | 3.6.0 | Verified | Active; irrelevant edit skips both classes |
+| TestNG 7.11.0 through JUnit Platform | 3.6.0 | Verified | Active; irrelevant edit skips both classes |
+| TestNG 7.11.0 through its legacy provider | 3.5.2 | Verified | Inactive; native tests always run and the diagnostic explains why |
+
+These are focused Maven checks, not a claim covering every engine extension or build-tool
+combination. Surefire 3.6 executes TestNG through JUnit Platform
+([upstream documentation](https://maven.apache.org/surefire/maven-surefire-plugin/examples/testng.html)).
+When native reports contain test classes for which Sieve received no execution-listener
+events, Sieve reports those classes as executed and disables its no-build shortcut. This
+also covers unsupported test JVMs and providers without silently treating them as recorded.
+Run the checks with `cargo test --locked --test compatibility_modes -- --ignored --test-threads=1`;
+use `IMPACT_MAVEN` for a Maven executable outside `PATH`.
 
 ## How selection works
 
@@ -194,11 +221,84 @@ build cleans only its reactor, Sieve also deletes the Surefire/Failsafe report f
 of the other modules. NONE runs only `clean`, without compilation or tests. No baseline metadata or selection cache is
 needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
-Before replacing an existing CI command, compare its tasks with Sieve's Maven
-`clean verify` or Gradle `clean check`. Partial selection scopes these to
-`-pl <modules> -am` or `:<module>:check`; arbitrary existing tasks are not preserved
-automatically. Coverage aggregation and packaging see only built modules. Keep required
-custom tasks and report consumers in place, and verify they work with those outputs.
+### Explicit native tasks
+
+Repeated `--task` options replace the default goals/tasks. They retain the complete
+native task graph; Sieve filters tests without adding `clean`, `-pl`, or module check
+tasks. Maven's generated skip properties and Gradle's `Test` adapter still apply.
+NONE skips tests while compiling, packaging, non-test checks and report dependencies
+continue according to the requested graph. Ordinary flags remain after `--`.
+
+```bash
+sieve run --base origin/main --task verify -- -Pci
+sieve run --base origin/main --task check --task integrationTest --task jacocoTestReport
+```
+
+Sieve clears conventional native test XML before these runs, so report consumers see
+this invocation's tests. Coverage remains the native report task's responsibility:
+use `--task clean` or fresh coverage destinations when old execution data could survive.
+A partial run is not reconstructed full-suite coverage; retain the selection JSON with
+its reports. Custom XML directories and non-`Test` Gradle runners need their own adapter.
+
+### Must-run tests
+
+`"must_run": ["com.example.Contract*Test", "com.example.SmokeTest"]` adds matching
+classes to ordinary JVM selections, even an unchanged run. Patterns use dotted JVM
+class names, with `*` matching any sequence and `?` one character. Nested matches run
+the enclosing class. Native includes, excludes, suite assignment and explicit test
+requests still bound execution; the policy does not override those user choices.
+
+Static mode may compile additional modules to discover policy classes. With
+`class_level: false`, it still keeps every test in the modules originally selected.
+With records, configuring a policy disables the no-build shortcut so discovery can
+find matching classes on every invocation. `refresh` preserves the policy. It is useful
+for checks of remote state; that state is not automatically tracked.
+
+### Shadow observation
+
+```bash
+sieve run --base origin/main --observe --output /tmp/shadow.json
+```
+
+Observation supports static module/class selection. It computes the proposed classes
+before each native suite executes, then runs all tests allowed by the native invocation
+once. Explicit `--task` goals, profiles and native filters still define that invocation.
+The output retains the proposal and includes actual executed/failed class identities,
+`missed_failed_classes`, `failure_retention`, and `would_detect_test_failure`. Maven
+proposals are scoped by module so an unrelated module's fallback cannot hide a miss.
+Test/build failures propagate, even when native test failures were configured to be ignored.
+
+A passing run reports **no failure-retention evidence** and a null retention ratio.
+A build failure without test XML is inconclusive. Observation cannot reveal failures
+caused only by subset ordering or shared state, and it does not measure selected-run
+wall time. Continue paired replay/full checks for those questions. A pinned independent
+upstream regression is available in `fixtures/upstream`.
+
+### Execution receipts
+
+```bash
+sieve run --base origin/main --receipt /tmp/passed.json --task verify
+sieve run --remaining /tmp/passed.json --task verify
+```
+
+The first stage records actual successfully completed classes from native XML. The
+second runs the complete requested graph, excluding those classes only when the
+receipt's checkout, revision, source contents, invocation, environment, toolchain,
+Sieve binary and current suite inputs still match. Suite inputs include compiled
+classes/resources, resolved test classpaths, the actual test JVM, and effective runtime
+settings. Changed/new test inventory invalidates that suite. Failed, skipped, aborted,
+incomplete or unreported classes never count as completed. A failed build invalidates
+the output receipt. Missing or mismatched receipts run the full native invocation.
+
+Both stages must use the same tasks and flags. `--remaining` accepts neither a comparison
+base nor native explicit test filters. A must-run class always runs again. Receipts are
+local, trusted files bound to one absolute checkout; they are not portable CI records.
+They do not track remote services or other undeclared external state. Repeated Maven
+executions of the same suite and unverifiable extra classpath dependencies receive no
+reusable credit. Maven receipts require the embedded extension and cannot combine with
+a conflicting extension override or generated-source comparison. The feature supports
+static Maven/Gradle mode; splitting runs can change ordering, so retain independent full
+checks while evaluating it.
 
 ### Class-level selection
 
@@ -473,9 +573,11 @@ Without a passing record, a test class runs. After a passing wrapper run under t
 invocation, `--base` can use class-level analysis to drop unrecorded tests that reach
 no change since that base, which is assumed green. New or changed invocations run them.
 Tests that failed run until they pass. Explicitly requested tests (`-Dtest`,
-`-Dit.test`, Gradle's `--tests`) always run. A JVM that runs test classes in parallel keeps no records and
-drops nothing; so does a run in which a probe failed, no project class was instrumented,
-or class files changed while the tests ran. A class that failed in the build reports, or
+`-Dit.test`, Gradle's `--tests`) always run. Concurrent classes connected through
+overlapping execution share method, file and Spring-context evidence. A relevant change
+therefore reruns the whole connected group; separate groups can still be skipped. Cached
+contexts carry shared startup evidence to later users. Test execution is not serialized.
+A failed probe, uninstrumented project or changed class files retains conservative fallback. A class that failed in the build reports, or
 ran without the agent reporting it in a failed build, counts as failed, and a build whose
 test failures were ignored does not count as passing. `--output` gives a reason for
 every test class, and lists dropped ones under `skipped`; build reports omit them.
@@ -495,11 +597,19 @@ adoption, measurement, and the test-setup changes that pay off most.
 Records assume that every path a test can take has shown up in one of its passing runs
 since the test class last changed, and that tests do not depend on what earlier tests
 left behind. Not tracked: undeclared environment variables, external services,
-floating Docker image tags, and jars that are not on the test class path (other agents). JVMs
+floating Docker image tags, and dynamically attached/native agents. Startup `-javaagent`
+jar contents are fingerprinted, so replacing a jar at the same path invalidates records
+and the no-build shortcut. JVMs
 older than Java 17 (back to Java 8) load the agent but keep it inactive, so every test
 runs; so do class files newer than the vendored ASM can read. Surefire
 with `useSystemClassLoader=false` is not supported. Multi-module projects and consumer
 CI use module- or class-level selection. Plain Gradle runs without Sieve get no records.
+
+Inactive diagnostics distinguish explicit native test requests, missing discovery
+decisions, and classes that appear in native XML without execution-listener events.
+Unobserved executions disable the no-build shortcut; they are never treated as trusted
+records. Inspect `.sieve/agent.log` and native build output for provider/JVM startup
+errors. Supported record collection needs Java 17+ and JUnit Platform lifecycle hooks.
 
 The agent is Java (`agent/`), compiled by `build.rs` for Java 17 against small API stubs,
 with a vendored and relocated copy of ASM (`agent/asm`, BSD-3-Clause), and embedded in the

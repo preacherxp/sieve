@@ -11,8 +11,8 @@ guide takes a service from zero to measured. The mechanics are described in the
 - One Maven or Gradle module (`modules: {".": []}`), JUnit Platform tests, and a test JVM
   on Java 17 or newer. On an older test JVM the agent stays inactive and every test runs.
 - Surefire and Failsafe on their default class loader (`useSystemClassLoader` not set to
-  `false`), and no `junit.jupiter.execution.parallel.enabled=true`. In-JVM parallel runs
-  keep no records.
+  `false`). Concurrent classes are supported: overlapping classes share evidence and
+  rerun together when that evidence changes; nonoverlapping groups retain precision.
 - A `sieve` with the agent: the release binary from `install.sh` (see the README), or
   `cargo install --git https://github.com/preacherxp/sieve --locked` on a machine whose
   `JAVA_HOME` (or `SIEVE_JAVA_HOME`) points to JDK 17+.

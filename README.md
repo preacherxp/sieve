@@ -45,10 +45,20 @@ sieve run --base origin/main --output /tmp/selection.json -- -Pci
 sieve run --full                        # always everything
 ```
 
-Static execution uses the existing wrapper with Maven `clean verify` or Gradle
-`clean check`, scoped to selected modules. Check custom tasks, coverage aggregation,
-and packaging before replacing a CI command: only built modules produce outputs.
+Static execution defaults to Maven `clean verify` or Gradle `clean check`, scoped to
+selected modules. Use repeated `--task` options to retain your existing native goals
+and task dependencies, including packaging and report tasks when no tests are selected.
 Applicable build flags go after `--`.
+
+```bash
+sieve run --base origin/main --task check --task integrationTest --task jacocoTestReport
+sieve run --base origin/main --observe --output /tmp/shadow.json
+```
+
+`--observe` runs the full native task graph once and reports failures outside the
+proposed selection. Add `"must_run": ["com.example.Contract*Test"]` to `impact.json`
+for checks that should always join a selection. [Execution receipts](docs/reference.md#execution-receipts)
+let a later run skip verified successful tests at identical inputs.
 
 ## Evaluate on your history
 
@@ -191,7 +201,10 @@ Static analysis cannot see classes named in resources outside `src/`, reflection
 non-constant strings, or scanners it does not know. Records assume tests are independent
 and that passing runs covered their paths; undeclared environment, external services, and
 floating container tags are not tracked. Modules, nested or not, must sit in directories
-that match their place in the build; no composite builds, Android, or Multiplatform.
+that match their place in the build. Workspace-local Gradle plugin-only included builds
+are supported; application composites, Android, and Multiplatform remain unsupported.
+Concurrent test classes share runtime evidence across overlapping executions; records
+still require a single module. No speed improvement is implied by this eligibility change.
 
 ## More
 

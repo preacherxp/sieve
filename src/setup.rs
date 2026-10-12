@@ -527,7 +527,12 @@ fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<C
     }))?)
 }
 
-fn gradle_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
+fn gradle_model(
+    workspace: &Path,
+    executable: &str,
+    extra: &[String],
+    build_logic: bool,
+) -> Result<serde_json::Value> {
     let script = gradle_script()?;
     let output = tempfile::NamedTempFile::new()?;
     let status = Command::new(executable)
@@ -541,6 +546,7 @@ fn gradle_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<
         ])
         .arg(script.path())
         .arg(format!("-Pimpact.output={}", output.path().display()))
+        .arg(format!("-Pimpact.buildLogic={build_logic}"))
         .arg("impactInit")
         .args(extra)
         .stdout(std::io::stderr())
@@ -549,6 +555,47 @@ fn gradle_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<
         return Err("Gradle module discovery failed".into());
     }
     Ok(serde_json::from_slice(&fs::read(output.path())?)?)
+}
+
+fn gradle_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
+    fn included(model: &mut serde_json::Value) -> Result<Vec<PathBuf>> {
+        Ok(serde_json::from_value(
+            model
+                .as_object_mut()
+                .ok_or("Invalid Gradle discovery result")?
+                .remove("included_builds")
+                .unwrap_or_else(|| serde_json::json!([])),
+        )?)
+    }
+    let executable = if Path::new(executable).is_relative() && executable.contains('/') {
+        workspace.join(executable).to_string_lossy().into_owned()
+    } else {
+        executable.to_owned()
+    };
+    let mut model = gradle_model(workspace, &executable, extra, false)?;
+    let mut pending = included(&mut model)?;
+    let mut config: Config = serde_json::from_value(model)?;
+    let root = workspace.canonicalize()?;
+    let mut visited = BTreeSet::new();
+    while let Some(directory) = pending.pop() {
+        let directory = directory.canonicalize()?;
+        let relative = directory.strip_prefix(&root).map_err(|_| {
+            format!(
+                "Included plugin builds must be inside the workspace: {}",
+                directory.display()
+            )
+        })?;
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() || !crate::valid_module(&relative) {
+            return Err(format!("Unsupported included build directory: {relative:?}").into());
+        }
+        if visited.insert(relative) {
+            let mut model = gradle_model(&directory, &executable, extra, true)?;
+            pending.extend(included(&mut model)?);
+        }
+    }
+    config.build_logic = visited.into_iter().collect();
+    Ok(config)
 }
 
 /// The module graph the build declares now.
@@ -627,6 +674,9 @@ pub fn stale(
     )?;
     if found.modules.keys().ne(config.modules.keys()) {
         return Ok(Some("modules were added or removed".into()));
+    }
+    if found.build_logic != config.build_logic {
+        return Ok(Some("included plugin builds were added or removed".into()));
     }
     for (module, dependencies) in &found.modules {
         if let Some(dependency) = dependencies
@@ -743,6 +793,7 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         }
         config.ignore = previous.ignore;
         config.class_level = previous.class_level;
+        config.must_run = previous.must_run;
         config.generated = previous.generated;
         config.records = previous.records;
         config.record_env = previous.record_env;
@@ -774,7 +825,10 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
     for (path, text) in edits {
         fs::write(path, text)?;
     }
-    config.build_fingerprint = Some(crate::fingerprint::build_inputs(&workspace)?);
+    config.build_fingerprint = Some(crate::fingerprint::build_inputs_with_logic(
+        &workspace,
+        &config.build_logic,
+    )?);
     fs::write(config_path, serde_json::to_string_pretty(&config)? + "\n")?;
     let local = config.records == Some(true);
     let mode = if local {

@@ -15,6 +15,12 @@ pub(crate) struct Reports {
     pub(crate) errors: BTreeSet<String>,
     pub(crate) skipped: BTreeSet<String>,
     pub(crate) cases: usize,
+    /// Classes from well-formed reports whose declared totals match every testcase.
+    /// Receipts require this stronger evidence; ordinary summaries accept older reports.
+    #[serde(skip)]
+    pub(crate) completed: BTreeSet<String>,
+    #[serde(skip)]
+    incomplete: BTreeSet<String>,
     #[serde(skip)]
     seen: BTreeSet<(String, String)>,
 }
@@ -27,6 +33,9 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
     let mut depth = 0usize;
     let (mut failed, mut skipped, mut error) = (false, false, false);
     let mut root_seen = false;
+    let mut expected = None;
+    let mut totals = [0usize; 4];
+    let mut identities = BTreeSet::new();
     loop {
         let event = reader.read_event_into(&mut buffer)?;
         match &event {
@@ -36,6 +45,21 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
                         return Err("Expected a single testsuite/testsuites XML root".into());
                     }
                     root_seen = true;
+                    if tag.name().as_ref() == b"testsuite" {
+                        let mut declared = Vec::new();
+                        for key in [b"tests".as_slice(), b"failures", b"errors", b"skipped"] {
+                            let value = tag.try_get_attribute(key)?.and_then(|value| {
+                                std::str::from_utf8(&value.value)
+                                    .ok()?
+                                    .parse::<usize>()
+                                    .ok()
+                            });
+                            if let Some(value) = value {
+                                declared.push(value);
+                            }
+                        }
+                        expected = <[usize; 4]>::try_from(declared).ok();
+                    }
                 }
                 depth += 1;
             }
@@ -76,6 +100,11 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
             },
             Event::End(tag) if tag.name().as_ref() == b"testcase" => {
                 let id = case.take().ok_or("Unexpected testcase end")?;
+                identities.insert(id.clone());
+                totals[0] += 1;
+                totals[1] += usize::from(failed && !error);
+                totals[2] += usize::from(error);
+                totals[3] += usize::from(skipped);
                 if error {
                     reports.errors.insert(id.clone());
                 }
@@ -99,6 +128,14 @@ fn parse_report(path: &Path, prefix: &str, reports: &mut Reports) -> Result<()> 
         }
         buffer.clear();
     }
+    if expected == Some(totals) && totals[0] > 0 {
+        reports.completed.extend(identities);
+    } else {
+        reports.incomplete.extend(identities);
+    }
+    reports
+        .completed
+        .retain(|id| !reports.incomplete.contains(id));
     Ok(())
 }
 
@@ -111,6 +148,23 @@ pub(crate) fn read_reports(workspace: &Path, tool: &str) -> Result<Reports> {
         parse_report(&path, &prefix, &mut reports)?;
     }
     Ok(reports)
+}
+
+/// Clear precisely the reports that execution will read, including included plugin builds.
+pub(crate) fn clear_native_reports(workspace: &Path, tool: &str) -> Result<()> {
+    let root = workspace.canonicalize()?;
+    let files = report_files(workspace, tool)?;
+    for (_, path) in &files {
+        if !path.canonicalize()?.starts_with(&root) {
+            return Err(
+                format!("Native report is outside the workspace: {}", path.display()).into(),
+            );
+        }
+    }
+    for (_, path) in files {
+        fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// What a test class cost in the reports of the last build: executed test cases and seconds.
@@ -249,4 +303,39 @@ fn report_files(workspace: &Path, tool: &str) -> Result<Vec<(String, PathBuf)>> 
     }
     files.sort();
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearing_reports_covers_nested_builds_without_removing_other_outputs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let directory = temp
+            .path()
+            .join("tools/conventions/build/test-results/test");
+        fs::create_dir_all(&directory)?;
+        fs::write(directory.join("TEST-Plugin.xml"), "stale")?;
+        fs::write(directory.join("other-output"), "keep")?;
+        clear_native_reports(temp.path(), "gradle")?;
+        assert!(!directory.join("TEST-Plugin.xml").exists());
+        assert!(directory.join("other-output").is_file());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn clearing_reports_refuses_linked_outputs_outside_the_workspace() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let directory = outside.path().join("test-results/test");
+        fs::create_dir_all(&directory)?;
+        let report = directory.join("TEST-Outside.xml");
+        fs::write(&report, "do not delete")?;
+        std::os::unix::fs::symlink(outside.path(), temp.path().join("build"))?;
+        assert!(clear_native_reports(temp.path(), "gradle").is_err());
+        assert_eq!(fs::read_to_string(report)?, "do not delete");
+        Ok(())
+    }
 }

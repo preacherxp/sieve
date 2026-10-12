@@ -5,6 +5,81 @@ use std::{fs, process::Command};
 use support::*;
 
 #[test]
+fn gradle_setup_discovers_nested_plugin_builds_and_rejects_external_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    write(&root, "build.gradle", "plugins { id 'java' }");
+    let plugin = root.join("tools/conventions");
+    let nested = root.join("tools/settings-plugins");
+    write(
+        &plugin,
+        "build.gradle",
+        "plugins { id 'java-gradle-plugin' }",
+    );
+    write(
+        &nested,
+        "build.gradle",
+        "plugins { id 'java-gradle-plugin' }",
+    );
+    write(
+        &root,
+        "model",
+        json!({"tool":"gradle", "modules":{".":[]}, "included_builds":[plugin]}).to_string(),
+    );
+    write(
+        &plugin,
+        "model",
+        json!({"included_builds":[nested]}).to_string(),
+    );
+    write(&nested, "model", json!({"included_builds":[]}).to_string());
+    let build = temp.path().join("build-tool");
+    executable(
+        &build,
+        r#"#!/bin/sh
+for arg do
+  case "$arg" in -Pimpact.output=*) cp model "${arg#*=}" ;; esac
+done
+"#,
+    );
+    let result = cli(&[
+        "init",
+        "--workspace",
+        root.to_str().unwrap(),
+        "--executable",
+        build.to_str().unwrap(),
+    ]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let config: Value =
+        serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+    assert_eq!(
+        config["build_logic"],
+        json!(["tools/conventions", "tools/settings-plugins"])
+    );
+    fs::remove_file(root.join("impact.json")).unwrap();
+    let outside = temp.path().join("external-plugins");
+    fs::create_dir(&outside).unwrap();
+    write(
+        &root,
+        "model",
+        json!({"tool":"gradle", "modules":{".":[]}, "included_builds":[outside]}).to_string(),
+    );
+    let result = cli(&[
+        "init",
+        "--workspace",
+        root.to_str().unwrap(),
+        "--executable",
+        build.to_str().unwrap(),
+    ]);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("inside the workspace"));
+    assert!(!root.join("impact.json").exists());
+}
+
+#[test]
 fn single_module_setup_keeps_selection_opt_in_and_refresh_preserves_preferences() {
     for tool in ["maven", "gradle"] {
         let temp = tempfile::tempdir().unwrap();
@@ -78,6 +153,7 @@ done
         config["class_level"] = json!(true);
         config["records"] = json!(false);
         config["record_env"] = json!(["SERVICE_MODE"]);
+        config["must_run"] = json!(["example.Contract*Test"]);
         write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
         let output = setup("refresh");
         assert!(output.contains("Mode: class-level; modules: 1"), "{output}");
@@ -90,6 +166,11 @@ done
         assert_eq!(config["class_level"], true, "{tool}");
         assert_eq!(config["records"], false, "{tool}");
         assert_eq!(config["record_env"], json!(["SERVICE_MODE"]), "{tool}");
+        assert_eq!(
+            config["must_run"],
+            json!(["example.Contract*Test"]),
+            "{tool}"
+        );
         config["records"] = json!(true);
         write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
         let output = setup("refresh");
