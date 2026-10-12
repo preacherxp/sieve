@@ -1,6 +1,6 @@
 mod support;
 use serde_json::Value;
-use std::{fs, process::Output};
+use std::{fs, path::Path, process::Command, process::Output};
 use support::*;
 
 fn selected_then_remaining(
@@ -298,6 +298,93 @@ public class Dollar$FailureTest {
 
 #[test]
 #[ignore = "requires Java 17 and Gradle; run with IMPACT_GRADLE set when Gradle is not on PATH"]
+fn native_gradle_receipt_inventory_tracks_default_and_explicit_test_jvms() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        "settings.gradle",
+        "rootProject.name = 'receipt-jvms'\n",
+    );
+    write(
+        root,
+        "build.gradle",
+        r#"plugins { id 'java' }
+def launcher = javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(JavaVersion.current().majorVersion)
+}
+tasks.register('legacyExecutable', Test) {
+    executable = launcher.get().executablePath.asFile.absolutePath
+}
+tasks.register('explicitLauncher', Test) {
+    javaLauncher = launcher
+}
+// Ask Gradle's public fork-options API which binary each Test actually uses.
+def probe = tasks.create('nativeJvmProbe', JavaExec)
+def expected = [:]
+tasks.withType(Test).each { task ->
+    task.copyTo(probe)
+    def suite = task.name == 'test' ? 'unit' : task.name
+    expected['.:' + suite] = probe.executable
+}
+file('expected-jvms.json').text = groovy.json.JsonOutput.toJson(expected)
+"#,
+    );
+    write(root, "remaining.json", "{}\n");
+    let executable = std::env::var("IMPACT_GRADLE").unwrap_or_else(|_| "gradle".into());
+    let classes = root.join("classes.json");
+    for attempt in 0..2 {
+        let output = Command::new(&executable)
+            .current_dir(root)
+            .args([
+                "--no-daemon",
+                "--console=plain",
+                "--offline",
+                "--configuration-cache",
+                "--init-script",
+            ])
+            .arg(Path::new(ROOT).join("src/gradle.init.gradle"))
+            .arg(format!("-Pimpact.classes={}", classes.display()))
+            .arg(format!(
+                "-Pimpact.remaining={}",
+                root.join("remaining.json").display()
+            ))
+            .arg("impactClasses")
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&output.stdout).into_owned();
+        checked(output);
+        if attempt == 1 {
+            assert!(log.contains("Reusing configuration cache."), "{log}");
+        }
+        let expected: Value =
+            serde_json::from_slice(&fs::read(root.join("expected-jvms.json")).unwrap()).unwrap();
+        let listing: Value = serde_json::from_slice(&fs::read(&classes).unwrap()).unwrap();
+        assert_eq!(expected.as_object().unwrap().len(), 3, "{expected}");
+        for (suite, java) in expected.as_object().unwrap() {
+            let java = Path::new(java.as_str().unwrap()).canonicalize().unwrap();
+            let release = java.parent().unwrap().parent().unwrap().join("release");
+            assert!(release.is_file(), "{}", release.display());
+            let inputs = listing["suites"][suite]
+                .as_array()
+                .unwrap_or_else(|| panic!("Missing JVM inventory for {suite}: {listing}"));
+            for required in [&java, &release] {
+                assert!(
+                    inputs.iter().any(|input| {
+                        Path::new(input.as_str().unwrap())
+                            .canonicalize()
+                            .is_ok_and(|path| path == *required)
+                    }),
+                    "{suite} omitted {}: {listing}",
+                    required.display()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires Java 17 and Gradle; run with IMPACT_GRADLE set when Gradle is not on PATH"]
 fn native_gradle_receipt_skips_completed_suite_and_retains_new_tests() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("project");
@@ -310,7 +397,11 @@ fn native_gradle_receipt_skips_completed_suite_and_retains_new_tests() {
         r#"plugins { id 'java' }
 repositories { mavenCentral() }
 dependencies { testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'; testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.11.4' }
-test { useJUnitPlatform() }
+test {
+    useJUnitPlatform()
+    // Gradle 7 on macOS forwards a launcher PID marker; keep the fixture's actual environment stable.
+    environment = environment.findAll { key, value -> !(key ==~ /JAVA_MAIN_CLASS_\d+/) }
+}
 "#,
     );
     write(&root, "src/test/java/example/PassingTest.java", "package example; public class PassingTest { @org.junit.jupiter.api.Test void passes() {} }\n");

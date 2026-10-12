@@ -138,13 +138,25 @@ gradle.projectsEvaluated {
                             suiteSettings[metadata] = digest
                             def agents = it.allJvmArgs.findAll { it.startsWith('-javaagent:') }
                                 .collect { p.file(it.substring('-javaagent:'.length()).split('=', 2)[0]) }
-                            if (!it.allJvmArgs.any { it.startsWith('@') } && agents.every { it.isFile() && it.canRead() }) {
+                            def launcher = it.javaLauncher.orNull
+                            def javaBinary = System.getProperty('os.name').startsWith('Windows') ? 'bin/java.exe' : 'bin/java'
+                            def javaHome = launcher?.metadata?.installationPath?.asFile
+                            if (javaHome == null) {
+                                // Gradle 7 leaves javaLauncher unset for the default JVM and legacy executable setting.
+                                javaHome = it.executable == null ? new File(System.getProperty('java.home')) :
+                                    new File(it.executable).absoluteFile.parentFile.parentFile
+                                javaHome = javaHome.canonicalFile
+                                if (javaHome.name.equalsIgnoreCase('jre') && new File(javaHome.parentFile, javaBinary).isFile()) {
+                                    javaHome = javaHome.parentFile
+                                }
+                            }
+                            def jvmInputs = [launcher?.executablePath?.asFile ?: new File(javaHome, javaBinary),
+                                new File(javaHome, 'release')]
+                            if (!it.allJvmArgs.any { it.startsWith('@') } && (agents + jvmInputs).every { it.isFile() && it.canRead() }) {
                                 // Keep native classpath order: the first duplicate class wins at runtime.
-                                suites[key] = root.files(it.classpath, it.testClassesDirs, metadata, agents,
-                                    it.javaLauncher.map { launcher -> [launcher.executablePath.asFile,
-                                        new File(launcher.metadata.installationPath.asFile, 'release')] })
+                                suites[key] = root.files(it.classpath, it.testClassesDirs, metadata, agents, jvmInputs)
                             } else {
-                                p.logger.warn("Sieve cannot verify JVM argument inputs for ${key}; execution receipts are unavailable for this suite.")
+                                p.logger.warn("Sieve cannot verify JVM inputs for ${key}; execution receipts are unavailable for this suite.")
                             }
                         }
                     }
