@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 500" width="880" height="500" role="img" aria-labelledby="t d">
   <title id="t">Local mode, one run</title>
-  <desc id="d">sieve run --records first checks whether anything changed since the last green run and stops with NONE if not. Otherwise it starts Maven verify or Gradle with the agent loaded through JDK_JAVA_OPTIONS or the init script. During JUnit discovery the agent asks sieve decide which test classes to drop, probes the methods, files, and Spring contexts each test uses, and writes them with sieve record to .sieve/records. The build returns its exit status, XML reports, and a summary.</desc>
+  <desc id="d">sieve run --records first checks whether anything changed since the last green run and, unless must_run is configured, stops with NONE if not. Otherwise it starts Maven verify or Gradle with the agent loaded through JDK_JAVA_OPTIONS or the init script. During JUnit discovery the agent asks sieve decide which test classes to drop, probes the methods, files, and Spring contexts each test uses, and writes them with sieve record to .sieve/records. The build returns its exit status, XML reports, and a summary.</desc>
   <style>
     text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -46,7 +46,7 @@
 
   <!-- 1: shortcut -->
   <path class="edge" marker-end="url(#a)" d="M150 104H178a8 8 0 0 1 8 8V124a8 8 0 0 1 -8 8H154"/>
-  <text class="s halo" x="198" y="122">unchanged since the last green run? <tspan class="mono" font-weight="600">NONE</tspan></text>
+  <text class="s halo" x="198" y="122">unchanged since the last green run, no <tspan class="mono">must_run</tspan>? <tspan class="mono" font-weight="600">NONE</tspan></text>
 
   <!-- 2: start the build -->
   <text class="m halo mono" x="295" y="168" text-anchor="middle">verify</text>

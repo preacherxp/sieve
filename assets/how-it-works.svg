@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" width="880" height="420" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 452" width="880" height="452" role="img" aria-labelledby="t d">
   <title id="t">How Sieve selects tests</title>
-  <desc id="d">git diff from the merge base to HEAD, then each changed path is classified. An ignored path selects NONE, which runs clean only. A build input or other path selects ALL, the full suite. A path under a module's src selects the changed modules plus their reverse dependencies. Without class_level that is MODULES, verify -pl with -am. With class_level, Sieve compiles, reads bytecode, and walks reverse references to select a SUBSET of test classes.</desc>
+  <desc id="d">git diff from the merge base to HEAD, then each changed path is classified. An ignored path selects NONE, which runs no tests. A build input, an unknown path, or missing Git history selects ALL, the full suite. A path under a module's src selects the changed modules plus their reverse dependencies. Without class_level that is MODULES, verify -pl with -am. With class_level, Sieve compiles, reads bytecode, and walks reverse references to select a SUBSET of test classes; classes it cannot map fall back to MODULES. must_run patterns add their classes to any selection, and --observe runs everything once to report failures outside the selection.</desc>
   <style>
     text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -13,6 +13,7 @@
     .pass{fill:#f6c445;stroke:#d4970a;stroke-width:1.5}
     .held{fill:#e3e8ef;stroke:#7d8ca0;stroke-width:1.5}
     .edge{fill:none;stroke:#2c6cb0;stroke-width:1.5}
+    .ret{stroke-dasharray:6 4}
     .tip{fill:#2c6cb0}
     .halo{paint-order:stroke;stroke:#f6f8fa;stroke-width:5px;stroke-linejoin:round}
     text.onpass{fill:#163a66}
@@ -33,7 +34,7 @@
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="tip" d="M1 1 9 5 1 9z"/></marker>
   </defs>
-  <rect class="card" x=".5" y=".5" width="879" height="419" rx="12"/>
+  <rect class="card" x=".5" y=".5" width="879" height="451" rx="12"/>
 
   <!-- edges -->
   <g class="edge" marker-end="url(#a)">
@@ -45,11 +46,13 @@
     <path d="M360 272H148a8 8 0 0 0 -8 8V338"/>
     <path d="M440 296V338"/>
     <path d="M550 368H653"/>
+    <path class="ret" d="M330 368H227"/>
   </g>
   <g text-anchor="middle">
     <text class="l mono halo" x="290" y="106">ignore glob</text>
-    <text class="l halo" x="590" y="106">build input, other</text>
+    <text class="l halo" x="590" y="106">build input, unknown, no history</text>
     <text class="l halo" x="250" y="266">no</text>
+    <text class="l halo" x="278" y="360">can't map</text>
   </g>
   <text class="l mono halo" x="448" y="136">module/src/**</text>
   <text class="l halo" x="448" y="324">yes</text>
@@ -64,7 +67,7 @@
   <!-- row 2 -->
   <rect class="pass" x="55" y="150" width="170" height="56" rx="10"/>
   <text class="t mono onpass" x="140" y="174" text-anchor="middle">NONE</text>
-  <text class="s onpass" x="140" y="193" text-anchor="middle">clean only</text>
+  <text class="s onpass" x="140" y="193" text-anchor="middle">no tests run</text>
   <rect class="node" x="330" y="150" width="220" height="56" rx="10"/>
   <text class="t" x="440" y="174" text-anchor="middle">changed modules</text>
   <text class="s" x="440" y="193" text-anchor="middle">+ reverse dependencies</text>
@@ -86,4 +89,7 @@
   <rect class="pass" x="655" y="340" width="170" height="56" rx="10"/>
   <text class="t mono onpass" x="740" y="364" text-anchor="middle">SUBSET</text>
   <text class="s onpass" x="740" y="383" text-anchor="middle">test classes</text>
+
+  <!-- footer -->
+  <text class="l" x="440" y="428" text-anchor="middle"><tspan class="mono">must_run</tspan> classes join every selection · <tspan class="mono">--observe</tspan> runs all once and reports misses</text>
 </svg>

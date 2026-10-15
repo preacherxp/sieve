@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 266" width="880" height="266" role="img" aria-labelledby="t d">
   <title id="t">commons-text, 30 commits: full build vs Sieve</title>
-  <desc id="d">Seconds per commit group, Maven, class-level selection. 15 docs and CI commits selected NONE: full build 256, Sieve 13 (-95%). 7 source commits selected a SUBSET: 118 vs 73 (-38%). The 8 build-input commits (ALL) are not shown.</desc>
+  <desc id="d">Seconds per commit group, Maven, class-level selection. 15 docs and CI commits selected NONE: full build 256, Sieve 13 (-95%). 7 source commits selected a SUBSET: 118 vs 73 (-38%). The 8 build-input commits (ALL) are not shown. No full run failed in this window.</desc>
   <style>
     text{font-family:Inter,-apple-system,"Segoe UI","Helvetica Neue",Arial,sans-serif;fill:#163a66;font-variant-numeric:tabular-nums}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -32,6 +32,7 @@
   <text class="c" x="44" y="93">full build</text>
   <rect class="sieve" x="128" y="81" width="14" height="14" rx="3"/>
   <text class="c" x="148" y="93">Sieve</text>
+  <text class="s" x="214" y="93">No full run failed in this window.</text>
   <text class="s" x="856" y="110" text-anchor="end">saved</text>
 
   <!-- grid: 0..300 s over x 220..740 -->
