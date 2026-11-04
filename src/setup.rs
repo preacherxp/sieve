@@ -848,14 +848,27 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
     }
     // Build discovery and every planned POM edit must succeed before changing project files.
     config.validate(&workspace)?;
-    for (path, text) in edits {
-        fs::write(path, text)?;
+    // The fingerprint covers the edited POMs, so it follows the edits; a failure restores
+    // them, so a later `init` does not find a half-installed adapter.
+    let mut originals = Vec::new();
+    let written = (|| -> Result<()> {
+        for (path, text) in &edits {
+            originals.push((path.clone(), fs::read(path)?));
+            fs::write(path, text)?;
+        }
+        config.build_fingerprint = Some(crate::fingerprint::build_inputs_with_logic(
+            &workspace,
+            &config.build_logic,
+        )?);
+        fs::write(&config_path, serde_json::to_string_pretty(&config)? + "\n")?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        for (path, bytes) in originals {
+            let _ = fs::write(path, bytes);
+        }
+        return Err(error);
     }
-    config.build_fingerprint = Some(crate::fingerprint::build_inputs_with_logic(
-        &workspace,
-        &config.build_logic,
-    )?);
-    fs::write(config_path, serde_json::to_string_pretty(&config)? + "\n")?;
     let local = config.records == Some(true);
     let mode = if local {
         "local records (developer machines only)"
