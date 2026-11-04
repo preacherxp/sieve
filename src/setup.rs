@@ -196,17 +196,28 @@ fn set_xml(xml: &str, path: &[&str], value: &str) -> Result<String> {
     }
 }
 
+const TEST_PLUGINS: [&str; 2] = ["maven-surefire-plugin", "maven-failsafe-plugin"];
+
 fn check_execution_skips(xml: &str) -> Result<()> {
     // Effective models copy plugin settings into executions. Inspect declarations
-    // instead, so ordinary inherited plugin configuration remains supported.
-    if xml_values(xml)?.keys().any(|key| {
-        key.starts_with("project/build/plugins/plugin/executions/execution/configuration/")
-            && matches!(
-                key.rsplit('/').next(),
-                Some("skipTests" | "skipITs" | "skip")
-            )
-    }) {
-        return Err("Execution-specific test skipping requires manual review; move it to plugin configuration before setup".into());
+    // instead, so ordinary inherited plugin configuration remains supported. Only the test
+    // plugins' executions matter: other plugins' `skip` settings never skip tests.
+    for (start, end) in element_ranges(xml, &["project", "build", "plugins", "plugin"])? {
+        let values = xml_values(&xml[start..end])?;
+        let test_plugin = values
+            .get("plugin/artifactId")
+            .is_some_and(|ids| ids.iter().any(|id| TEST_PLUGINS.contains(&id.as_str())));
+        if test_plugin
+            && values.keys().any(|key| {
+                key.starts_with("plugin/executions/execution/configuration/")
+                    && matches!(
+                        key.rsplit('/').next(),
+                        Some("skipTests" | "skipITs" | "skip")
+                    )
+            })
+        {
+            return Err("Execution-specific test skipping requires manual review; move it to plugin configuration before setup".into());
+        }
     }
     Ok(())
 }
@@ -905,6 +916,9 @@ mod tests {
         .is_err());
         assert!(install_maven_adapter("<project><build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId><executions><execution><configuration><skipTests>false</skipTests></configuration></execution></executions></plugin></plugins></build></project>", ".", false).is_err());
         assert!(install_maven_adapter("<project>", ".", false).is_err());
+        // Other plugins' execution-specific `skip` settings never skip tests.
+        let exec = "<project><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><executions><execution><configuration><skip>true</skip></configuration></execution></executions></plugin></plugins></build></project>";
+        assert!(install_maven_adapter(exec, ".", false)?.contains("<skip>true</skip>"));
         Ok(())
     }
 
