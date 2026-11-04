@@ -46,10 +46,7 @@ fn configure(clone: &Path, workspace: &Path, config: &Config, message: &str) -> 
         for module in config.modules.keys() {
             let pom = workspace.join(module).join("pom.xml");
             let xml = fs::read_to_string(&pom).map_err(|e| format!("{}: {e}", pom.display()))?;
-            fs::write(
-                &pom,
-                crate::setup::install_maven_adapter(&xml, module, true)?,
-            )?;
+            fs::write(&pom, crate::setup::maintained_pom(workspace, module, &xml)?)?;
         }
     }
     let mut config: Config = serde_json::from_value(serde_json::to_value(config)?)?;

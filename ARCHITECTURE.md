@@ -57,7 +57,7 @@ sieve run --base REV
   │    ├─ compile_args       clean test-compile -pl … -am
   │    └─ generated::Base    merge-base worktree runs generate-test-sources,
   │                          diffed generated sources replace the declared inputs
-  └─ build_args              Maven: clean verify -pl … -am -Dimpact.skip.<m>=…
+  └─ build_args              Maven: clean verify -pl … -am -Dsieve.skip=… (-Dimpact.skip.<m>=…)
                                     [+ -Dmaven.ext.class.path=sieve-maven.jar, or excludesFile]
                              Gradle: clean :m:check -Pimpact.modules=… [-Pimpact.selected=…]
 ```
@@ -86,11 +86,14 @@ unreadable classes) return `Impact::Fallback`, which keeps the module selection.
 ### Build adapters
 
 - **Maven** (`src/setup.rs`): `init` reads the reactor's effective models in one Maven
-  start and adds per-module `impact.skip.<module>` properties wired to Surefire/Failsafe
-  `skipTests`, so `-am` dependencies compile without running their tests. `refresh`
-  rewrites the graph and fingerprint and preserves extra declared edges and shared test
-  modules. For class-level runs, the core extension in `agent/maven` (ADR 0006) points each
-  module's Surefire and Failsafe at the excludes that `sieve classes --module` writes.
+  start and edits no POM. The core extension in `agent/maven` (ADR 0006) sets
+  `skipTests` on the Surefire/Failsafe executions of the modules listed in `sieve.skip`,
+  so `-am` dependencies compile without running their tests; builds that load their own
+  `maven.ext.class.path`, or a Sieve without the agent, get per-module
+  `impact.skip.<module>` POM properties instead. `refresh` rewrites the graph and
+  fingerprint and preserves extra declared edges and shared test modules. For class-level
+  runs, the same extension points each module's Surefire and Failsafe at the excludes that
+  `sieve classes --module` writes.
 - **Gradle** (`src/gradle.init.gradle`): an init script passed with `--init-script`.
   Its `impactInit` task reports the project graph for `init`; it disables `Test` tasks outside
   `impact.modules`. For class-level runs it adds `impactCompile`, `impactClasses`, and

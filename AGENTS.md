@@ -38,7 +38,8 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
 - In Sieve's own CI, build the checked-out source instead of installing a remote
   version, so the workflow exercises the changes under review.
 - Run `sieve init` once during project setup using the CI build
-  environment. Review and commit `impact.json` and any generated Maven POM edits.
+  environment. Review and commit `impact.json` (and Maven POM edits, which `init` makes
+  only when the build loads its own `maven.ext.class.path`).
   Do not run `init` on every CI execution; it refuses existing configuration.
 - Preserve declared dependency edges, including runtime and resource dependencies.
   Update the configuration when the project graph changes.

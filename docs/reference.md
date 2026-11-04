@@ -55,14 +55,18 @@ sieve run --workspace . --base origin/main
 Use your comparison branch, such as `origin/master`, in place of `origin/main`.
 Setup detects Maven or Gradle, prefers an existing build wrapper, and discovers the
 declared module dependencies through Maven's effective models or Gradle's project model.
-It writes `impact.json`. Maven also receives per-module Surefire/Failsafe
-`skipTests` properties in its POMs; test compilation remains enabled so downstream
-test JARs still work. Existing default profiles remain active. Explicit execution
-skip overrides in local build sections are rejected during setup; external parent
-and profile overrides still require manual review. Gradle uses a bundled init script, so both `build.gradle` and
-`build.gradle.kts` work without build-file edits; the adapter is compatible with the
-configuration cache. Commit the generated configuration
-and POM changes. Setup refuses to overwrite an existing `impact.json`.
+It writes `impact.json` and edits no build file. On Maven, a scoped build
+(`-pl <selected> -am`) also builds the modules the selected ones depend on; Sieve's core
+extension, loaded with `-Dmaven.ext.class.path`, skips their Surefire and Failsafe tests,
+so test compilation remains enabled and downstream test JARs still work. A build that
+loads its own extensions through `maven.ext.class.path`, or a Sieve built without the
+agent (`--no-default-features`), gets per-module `skipTests` properties in its POMs
+instead, defaulting to `${skipTests}` so `-DskipTests` keeps working; setup then rejects
+execution-specific test skips and existing `skipTests` settings of the test plugins, and
+`refresh` keeps adapters installed earlier. Existing default profiles remain active.
+Gradle uses a bundled init script, so both `build.gradle` and `build.gradle.kts` work
+without build-file edits; the adapter is compatible with the configuration cache. Commit
+the generated configuration. Setup refuses to overwrite an existing `impact.json`.
 
 Optional overrides:
 
@@ -75,8 +79,8 @@ Automatic setup supports a single JVM package or modules at any depth whose dire
 match their place in the build: Maven modules listed by path (`<module>libs/core</module>`)
 or below nested aggregators, and Gradle projects whose directories match their paths
 (`:services:orders` in `services/orders`). A module is named by its directory,
-such as `services/orders`; Maven's skip property joins the segments with dots
-(`impact.skip.services.orders`), and Gradle tasks follow the project path
+such as `services/orders`; Maven's POM skip property, where one is needed, joins the
+segments with dots (`impact.skip.services.orders`), and Gradle tasks follow the project path
 (`:services:orders:check`). Aggregators build nothing themselves and are not modules; a
 change to their POM is a build input. Gradle plugin-only included builds inside the
 workspace are supported: each project must declare plugins through `java-gradle-plugin`,
@@ -992,7 +996,7 @@ a limited part of the tests. For each repository:
 
 1. Record the native test command, JDK, profiles, caches, required reports, and baseline
    PR feedback time. Time setup and note every manual configuration or build change.
-2. Run `init` once in the CI build environment; review the graph and POM changes. For
+2. Run `init` once in the CI build environment; review the graph. For
    single-module services, evaluate `class_level` explicitly. Keep records local with
    `--records`, and retain the existing required full-suite checks.
 3. Replay at least 20 representative commits with `--run`, saving reports outside the

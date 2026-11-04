@@ -47,10 +47,20 @@ public final class Select implements MojoExecutionListener {
             String goal = execution.getGoal();
             boolean tests = "maven-surefire-plugin".equals(plugin) && "test".equals(goal)
                     || "maven-failsafe-plugin".equals(plugin) && "integration-test".equals(goal);
+            boolean verify = "maven-failsafe-plugin".equals(plugin) && "verify".equals(goal);
+            String dir = event.getProject().getBasedir().getAbsolutePath();
+            // Modules `-am` builds only so that selected ones compile: their tests stay
+            // skipped without a POM adapter. When this fails, the module's tests run.
+            String skip = properties.getProperty("sieve.skip");
+            if (skip != null && (tests || verify) && skipped(skip, dir)) {
+                Field field = field(event.getMojo().getClass(), "skipTests");
+                field.setAccessible(true);
+                field.setBoolean(event.getMojo(), true);
+                return;
+            }
             if (request == null || sieve == null || !tests) {
                 return;
             }
-            String dir = event.getProject().getBasedir().getAbsolutePath();
             String suite = "maven-surefire-plugin".equals(plugin) ? "unit" : "integration";
             Object mojo = event.getMojo();
             boolean repeated = !decided.add(dir + ":" + suite);
@@ -59,7 +69,7 @@ public final class Select implements MojoExecutionListener {
             if (excludes.isEmpty()) {
                 return;
             }
-            Field field = field(mojo.getClass());
+            Field field = field(mojo.getClass(), "excludesFile");
             field.setAccessible(true);
             field.set(mojo, merged(mojo, new File(excludes)));
         } catch (Exception | LinkageError error) {
@@ -191,15 +201,26 @@ public final class Select implements MojoExecutionListener {
         throw new NoSuchFieldException(name);
     }
 
-    private static Field field(Class<?> type) throws NoSuchFieldException {
+    private static Field field(Class<?> type, String name) throws NoSuchFieldException {
         for (Class<?> c = type; c != null; c = c.getSuperclass()) {
             try {
-                return c.getDeclaredField("excludesFile");
+                return c.getDeclaredField(name);
             } catch (NoSuchFieldException ignored) {
                 // Declared further up.
             }
         }
-        throw new NoSuchFieldException("excludesFile");
+        throw new NoSuchFieldException(name);
+    }
+
+    /** Whether the file at {@code list}, one module directory per line, names {@code dir}. */
+    private static boolean skipped(String list, String dir) throws IOException {
+        String canonical = new File(dir).getCanonicalPath();
+        for (String line : Files.readAllLines(new File(list).toPath(), StandardCharsets.UTF_8)) {
+            if (!line.isEmpty() && new File(line).getCanonicalPath().equals(canonical)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Preserve the mojo's effective native exclusions, including its conditional defaults. */

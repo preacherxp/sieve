@@ -21,7 +21,7 @@ guide takes a service from zero to measured. The mechanics are described in the
 
 Local mode is opt-in. Use `sieve run --records` to try it without configuration on a
 single-module Maven project. For Gradle or shared configuration, run `sieve init` once
-and review its generated configuration and any Maven POM edits. Keep `"records": true`
+and review its generated configuration. Keep `"records": true`
 out of the committed configuration so normal CI commands retain static selection.
 Add local-mode inputs to the generated `impact.json` without replacing its module graph
 or fingerprint, for example:
@@ -44,7 +44,7 @@ embeds it, such as a Spring `application.yml`, so local runs skip jgitver by
 default (`--without jgitver` keeps it). A configured plain `sieve run` without `"records": true` uses static selection
 and runs the full suite when no base is supplied. Class selection remains a separate
 opt-in through `"class_level": true`.
-Commit the reviewed `impact.json` and any POM changes from `init`; `.sieve/` ignores
+Commit the reviewed `impact.json` from `init`; `.sieve/` ignores
 itself in Git, so records stay on the developer's machine.
 
 The code must compile: Maven compiles every test before any runs. Then work as usual:

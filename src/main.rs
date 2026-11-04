@@ -647,11 +647,12 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
     let subset = selection.mode == "SUBSET";
     if maven {
         // `-am` also builds unselected dependencies; their tests stay skipped.
+        let skips = maven_skips(config, selection);
         for module in config.modules.keys() {
             args.push(format!(
                 "-D{}={}",
                 setup::skip_property(module),
-                compile_only || !selection.modules.contains(module)
+                skips.contains(module)
             ));
         }
         // The compile step just built these main classes from the same sources; generated
@@ -670,6 +671,21 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
         args.push(format!("-Pimpact.modules={}", modules.join(",")));
     }
     args
+}
+
+/// The Maven modules whose tests a partial build skips: those outside the selection, which
+/// `-am` builds so that the selected ones compile, and every module of a `NONE` that still
+/// compiles. Read by the POM adapter's properties and by the extension's `sieve.skip` list.
+fn maven_skips(config: &Config, selection: &Selection) -> BTreeSet<String> {
+    if selection.mode == "ALL" {
+        return BTreeSet::new();
+    }
+    config
+        .modules
+        .keys()
+        .filter(|m| selection.mode == "NONE" || !selection.modules.contains(*m))
+        .cloned()
+        .collect()
 }
 
 /// Explicit tasks retain the consumer's complete build graph; only tests are filtered.
@@ -693,11 +709,12 @@ fn task_args(
     }
     let none = selection.mode == "NONE";
     if config.tool == "maven" {
+        let skips = maven_skips(config, selection);
         for module in config.modules.keys() {
             args.push(format!(
                 "-D{}={}",
                 setup::skip_property(module),
-                none || !selection.modules.contains(module)
+                skips.contains(module)
             ));
         }
         if let Some(excludes) = filter.filter(|_| selection.mode == "SUBSET") {
@@ -1643,15 +1660,14 @@ fn main_result() -> Result<u8> {
     // Test classes are selected inside the one build that runs them, between compiling and
     // testing: by Gradle's `impactSelect`, or by Sieve's Maven extension. A Maven build that
     // compares generated sources, or loads extensions of its own the same way, compiles first.
-    let own_extensions = extra.iter().any(|a| a.contains("maven.ext.class.path"))
-        || fs::read_to_string(workspace.join(".mvn/maven.config"))
-            .is_ok_and(|c| c.contains("maven.ext.class.path"));
-    let extension = match config.tool.as_str() {
-        "maven" if hooking && inputs.is_empty() && !own_extensions => {
-            records::maven_extension().ok()
-        }
-        _ => None,
-    };
+    let own_extensions = setup::own_maven_extensions(&workspace, &extra);
+    // The extension skips the tests of modules a partial build needs, and selects classes.
+    let extension_jar = (config.tool == "maven" && !own_extensions)
+        .then(|| records::maven_extension().ok())
+        .flatten();
+    let extension = extension_jar
+        .clone()
+        .filter(|_| hooking && inputs.is_empty());
     let mut request = None;
     let mut selecting = Vec::new();
     if receipt_requested && config.tool == "maven" && extension.is_none() {
@@ -1784,6 +1800,31 @@ fn main_result() -> Result<u8> {
         && execute.modules.is_empty()
         && tasks.is_empty()
         && !receipt_requested);
+    // Without a POM adapter, the extension keeps the tests of modules `-am` builds from running.
+    let skips = maven_skips(&config, execute);
+    if config.tool == "maven" && built && !skips.is_empty() {
+        match &extension_jar {
+            Some(jar) => {
+                let list = temp.path().join("skip.txt");
+                let dirs: String = skips
+                    .iter()
+                    .map(|m| format!("{}\n", workspace.join(m).display()))
+                    .collect();
+                fs::write(&list, dirs)?;
+                if !selecting
+                    .iter()
+                    .any(|a| a.starts_with("-Dmaven.ext.class.path="))
+                {
+                    selecting.push(format!("-Dmaven.ext.class.path={}", jar.display()));
+                }
+                selecting.push(format!("-Dsieve.skip={}", list.display()));
+            }
+            None if !setup::has_maven_adapter(&config, &workspace) => eprintln!(
+                "sieve: without the Maven extension or POM adapter, the modules -am builds run their tests too"
+            ),
+            None => {}
+        }
+    }
     let succeeded = if built {
         Command::new(&executable)
             .current_dir(&workspace)

@@ -659,10 +659,7 @@ fn configure(copy: &Path, config: &Config) -> Result<()> {
         for module in config.modules.keys() {
             let pom = copy.join(module).join("pom.xml");
             let xml = fs::read_to_string(&pom)?;
-            fs::write(
-                &pom,
-                crate::setup::install_maven_adapter(&xml, module, true)?,
-            )?;
+            fs::write(&pom, crate::setup::maintained_pom(copy, module, &xml)?)?;
         }
     }
     config.build_fingerprint = Some(crate::fingerprint::build_inputs(copy)?);

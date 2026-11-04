@@ -938,6 +938,80 @@ fn native_java_consumer_of_kotlin_provider() {
 }
 
 #[test]
+#[ignore = "requires Java 17 and Maven; run by fixture CI"]
+fn native_maven_extension_skips_upstream_tests_without_pom_edits() {
+    if !tools().iter().any(|(tool, _)| *tool == "maven") {
+        return;
+    }
+    let executable = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
+    let temp = fixture("maven");
+    let root = temp.path().join("project");
+    let workspace = root.to_str().unwrap();
+    // A project without the POM adapter: nothing wires a skip property to the test plugins.
+    let pom = root.join("pom.xml");
+    let adapted = fs::read_to_string(&pom).unwrap();
+    let plain = adapted.replace(
+        "<configuration><skipTests>${impact.skip}</skipTests></configuration>",
+        "",
+    );
+    assert_ne!(plain, adapted);
+    write(&root, "pom.xml", &plain);
+    commit(&root, "no adapter");
+    let poms = |root: &Path| {
+        [
+            "pom.xml",
+            "pricing/pom.xml",
+            "checkout/pom.xml",
+            "runtime/pom.xml",
+        ]
+        .map(|p| fs::read_to_string(root.join(p)).unwrap())
+    };
+    let before = poms(&root);
+    success(&[
+        "refresh",
+        "--workspace",
+        workspace,
+        "--executable",
+        &executable,
+    ]);
+    assert_eq!(poms(&root), before, "refresh must not add a POM adapter");
+    commit(&root, "refresh");
+    // A checkout change builds pricing through -am; only checkout's tests may run.
+    write(
+        &root,
+        "checkout/src/main/java/example/Note.java",
+        "package example; class Note {}",
+    );
+    let output = temp.path().join("selection.json");
+    checked(cli(&[
+        "run",
+        "--workspace",
+        workspace,
+        "--executable",
+        &executable,
+        "--base",
+        "HEAD",
+        "--output",
+        output.to_str().unwrap(),
+    ]));
+    let selection: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+    assert_eq!(selection["modules"], json!(["checkout"]), "{selection}");
+    let executed = reports(&root, "maven")["executed"].clone();
+    let executed = executed.as_array().unwrap();
+    assert!(!executed.is_empty());
+    assert!(
+        executed
+            .iter()
+            .all(|t| t.as_str().unwrap().starts_with("checkout:")),
+        "{executed:?}"
+    );
+    assert!(
+        root.join("pricing/target/classes").is_dir(),
+        "-am builds pricing"
+    );
+}
+
+#[test]
 #[ignore = "requires Java 17 and Maven/Gradle; run by fixture CI"]
 fn native_class_level_selection_runs_reaching_test_classes() {
     for (tool, executable) in tools() {

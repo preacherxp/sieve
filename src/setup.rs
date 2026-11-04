@@ -254,6 +254,38 @@ fn check_execution_skips(xml: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether the build loads extensions through `maven.ext.class.path` itself; a second value
+/// would replace its own, so Sieve's extension then stays out.
+pub(crate) fn own_maven_extensions(workspace: &Path, extra: &[String]) -> bool {
+    extra.iter().any(|a| a.contains("maven.ext.class.path"))
+        || fs::read_to_string(workspace.join(".mvn/maven.config"))
+            .is_ok_and(|c| c.contains("maven.ext.class.path"))
+}
+
+/// Whether the POMs need the skip adapter: the embedded Maven extension skips the tests of
+/// modules a partial build needs, unless this build has no extension or loads its own.
+pub(crate) fn maven_adapter_needed(workspace: &Path) -> bool {
+    !cfg!(feature = "agent") || own_maven_extensions(workspace, &[])
+}
+
+/// The POM as a maintained setup keeps it: with the adapter where it is needed or was
+/// installed before, unchanged otherwise.
+pub(crate) fn maintained_pom(workspace: &Path, module: &str, xml: &str) -> Result<String> {
+    if maven_adapter_needed(workspace) || xml.contains(&format!("<{}>", skip_property(module))) {
+        install_maven_adapter(xml, module, true)
+    } else {
+        Ok(xml.to_owned())
+    }
+}
+
+/// Whether an earlier `init` installed the skip adapter into the module POMs.
+pub(crate) fn has_maven_adapter(config: &crate::Config, workspace: &Path) -> bool {
+    config.modules.keys().any(|module| {
+        fs::read_to_string(workspace.join(module).join("pom.xml"))
+            .is_ok_and(|xml| xml.contains(&format!("<{}>", skip_property(module))))
+    })
+}
+
 /// The property that skips a Maven module's tests. XML element names cannot hold `/`, so a
 /// nested module's segments are joined with `.`.
 pub(crate) fn skip_property(module: &str) -> String {
@@ -832,7 +864,10 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         return Ok(0);
     }
     let executable = executable.unwrap_or_else(|| default_executable(&workspace, &tool));
-    if tool == "maven" {
+    // The embedded extension skips upstream modules' tests, so POMs stay as they are. Without
+    // it, every module gets the adapter; with it, `refresh` keeps adapters already installed.
+    let adapter = tool == "maven" && maven_adapter_needed(&workspace);
+    if adapter {
         check_execution_skips(&fs::read_to_string(workspace.join("pom.xml"))?)?;
     }
     let mut config = graph(&workspace, &tool, &executable, &extra)?;
@@ -841,7 +876,10 @@ pub fn init(args: Vec<String>, refresh: bool) -> Result<u8> {
         for module in config.modules.keys() {
             let pom = workspace.join(module).join("pom.xml");
             let xml = fs::read_to_string(&pom)?;
-            edits.push((pom, install_maven_adapter(&xml, module, refresh)?));
+            let installed = xml.contains(&format!("<{}>", skip_property(module)));
+            if adapter || (refresh && installed) {
+                edits.push((pom, install_maven_adapter(&xml, module, refresh)?));
+            }
         }
     }
     if let Some(previous) = previous {

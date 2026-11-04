@@ -27,11 +27,10 @@ cargo install --git https://github.com/preacherxp/sieve --locked
 sieve init                              # detects Maven/Gradle, writes impact.json
 ```
 
-`init` writes `impact.json` (module graph, ignore globs, options) and, for Maven, adds
-per-module `skipTests` properties to the POMs. Commit both. Run `sieve refresh` after
-build changes; until then, each module selection first checks the graph with the build,
-and selects everything if the graph changed. Gradle needs no build-file edits; a bundled
-init script does the work.
+`init` writes `impact.json` (module graph, ignore globs, options) and edits no build
+file: a bundled Maven extension and Gradle init script do the work. Commit it. Run
+`sieve refresh` after build changes; until then, each module selection first checks the
+graph with the build, and selects everything if the graph changed.
 
 Module selection is the default. On a single-module service, a source change still
 runs every test in that module. To evaluate selection within it, add

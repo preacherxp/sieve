@@ -615,14 +615,21 @@ fn maven_setup_follows_nested_aggregators_and_module_paths() {
         json!({"libs/core": [], "services/billing": [], "services/orders": ["libs/core"]})
     );
     let orders = fs::read_to_string(root.join("services/orders/pom.xml")).unwrap();
-    assert!(
-        orders.contains("<impact.skip.services.orders>${skipTests}</impact.skip.services.orders>"),
-        "{orders}"
-    );
-    assert!(
-        orders.contains("${impact.skip.services.orders}"),
-        "{orders}"
-    );
+    if cfg!(feature = "agent") {
+        // The embedded extension skips upstream modules' tests: no POM changes.
+        assert_eq!(orders, "<project><artifactId>orders</artifactId></project>");
+    } else {
+        assert!(
+            orders.contains(
+                "<impact.skip.services.orders>${skipTests}</impact.skip.services.orders>"
+            ),
+            "{orders}"
+        );
+        assert!(
+            orders.contains("${impact.skip.services.orders}"),
+            "{orders}"
+        );
+    }
     assert_eq!(
         fs::read_to_string(root.join("services/pom.xml")).unwrap(),
         "<project><artifactId>services</artifactId></project>"
