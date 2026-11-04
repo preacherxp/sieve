@@ -7,7 +7,6 @@ use std::{
 };
 
 const ACC_PRIVATE: u16 = 0x0002;
-const ACC_STATIC: u16 = 0x0008;
 const ACC_ABSTRACT: u16 = 0x0400;
 const ACC_ANNOTATION: u16 = 0x2000;
 
@@ -97,8 +96,8 @@ pub struct Class {
     pub calls: BTreeSet<String>,
     /// Source paths whose bytecode was inlined here (Kotlin SMAP).
     pub inlined: Vec<String>,
-    /// Non-private static constants, which `javac`/`kotlinc` copy into callers without
-    /// leaving a reference.
+    /// Non-private constant fields, static or final instance fields with a constant
+    /// initializer, which `javac`/`kotlinc` copy into callers without leaving a reference.
     pub constants: Vec<String>,
     pub annotation: bool,
     /// Abstract classes and interfaces, which JUnit never runs by themselves.
@@ -313,11 +312,9 @@ pub fn parse(bytes: &[u8]) -> Result<Class> {
                     }
                     _ => {}
                 }
-                if member == 0
-                    && attribute == "ConstantValue"
-                    && access & ACC_STATIC != 0
-                    && access & ACC_PRIVATE == 0
-                {
+                // A final instance field with a constant initializer is a constant variable
+                // too: javac copies `obj.FIELD` into other classes like a static constant.
+                if member == 0 && attribute == "ConstantValue" && access & ACC_PRIVATE == 0 {
                     class.constants.push(name.to_owned());
                 }
             }
@@ -2117,7 +2114,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_member_annotations_are_read() {
+    fn compiled_member_annotations_and_constants_are_read() {
         let graph = Graph::new(Vec::new());
         for (path, text) in [
             (
@@ -2132,6 +2129,11 @@ mod tests {
             (
                 "src/main/java/a/Bean.java",
                 "package a; public class Bean { @jakarta.inject.Inject String name; void on(@jakarta.enterprise.event.Observes String event) {} }",
+            ),
+            // javac copies a final instance field with a constant initializer, like a static.
+            (
+                "src/main/java/a/Box.java",
+                "package a; public class Box { public final int SIZE = 4; public static final int MAX = 9; private static final int HIDDEN = 1; }",
             ),
             (
                 "src/test/java/t/BeanTest.java",
@@ -2157,6 +2159,10 @@ mod tests {
             .iter()
             .zip(component)
             .any(|(c, k)| c.name == "a/Bean" && k));
+        let boxed = classes.iter().find(|c| c.name == "a/Box").unwrap();
+        let mut constants = boxed.constants.clone();
+        constants.sort();
+        assert_eq!(constants, ["MAX", "SIZE"]);
     }
 
     #[test]
