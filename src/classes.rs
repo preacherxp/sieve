@@ -107,6 +107,9 @@ pub struct Class {
     pub test: bool,
     /// Runtime-visible annotations on the class itself.
     pub annotations: Vec<Annotation>,
+    /// Types of the annotations on its fields, methods and parameters, such as `@Inject`,
+    /// `@Bean`, `@EventListener` or `@Observes`.
+    pub member_annotations: BTreeSet<String>,
 }
 
 /// An annotation's type and, for each element present, the classes it lists.
@@ -288,7 +291,28 @@ pub fn parse(bytes: &[u8]) -> Result<Class> {
             for _ in 0..r.u16()? {
                 let attribute = text(r.u16()?)?;
                 let len = r.u32()? as usize;
-                r.take(len)?;
+                let body = r.take(len)?;
+                let mut a = Reader { bytes: body, at: 0 };
+                match attribute {
+                    "RuntimeVisibleAnnotations" | "RuntimeInvisibleAnnotations" => {
+                        for _ in 0..a.u16()? {
+                            class
+                                .member_annotations
+                                .insert(annotation(&mut a, &text)?.name);
+                        }
+                    }
+                    "RuntimeVisibleParameterAnnotations"
+                    | "RuntimeInvisibleParameterAnnotations" => {
+                        for _ in 0..a.take(1)?[0] {
+                            for _ in 0..a.u16()? {
+                                class
+                                    .member_annotations
+                                    .insert(annotation(&mut a, &text)?.name);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 if member == 0
                     && attribute == "ConstantValue"
                     && access & ACC_STATIC != 0
@@ -729,11 +753,20 @@ fn flags(
             .iter()
             .any(|r| markers.iter().any(|m| r.starts_with(m)))
     };
-    // Custom stereotypes and test annotations carry their markers by meta-annotation.
-    let mut component: Vec<bool> = classes
-        .iter()
-        .map(|c| marked(c, COMPONENT_MARKERS))
-        .collect();
+    // A container discovers a component by its annotations, its members' (`@Inject`,
+    // `@Bean`, `@Observes`) or its supertypes (Spring Data repositories), never by the API it
+    // calls: a helper building a `PageRequest` is not one. Custom stereotypes carry their
+    // markers by meta-annotation.
+    let declared = |class: &Class| {
+        class
+            .annotations
+            .iter()
+            .map(|a| &a.name)
+            .chain(&class.member_annotations)
+            .chain(&class.supers)
+            .any(|name| COMPONENT_MARKERS.iter().any(|m| name.starts_with(m)))
+    };
+    let mut component: Vec<bool> = classes.iter().map(declared).collect();
     // Spring Boot 4 moved test slices to `org/springframework/boot/<technology>/test/`.
     let boot_test = |c: &Class| {
         c.refs.iter().any(|r| {
@@ -757,7 +790,8 @@ fn flags(
                     flags[j] && (classes[j].annotation || supertypes && supers[i].contains(&j))
                 })
             };
-            if !component[i] && via(&component, false) {
+            // Also through project supertypes: a repository built on a project base repository.
+            if !component[i] && via(&component, true) {
                 component[i] = true;
                 grew = true;
             }
@@ -1511,20 +1545,11 @@ mod tests {
     fn reached_components_reach_container_tests() {
         let spring = "org/springframework/boot/test/context/SpringBootTest";
         let mut classes = vec![
-            class(
+            stereotyped(
                 "a/App",
-                "a/App.java",
-                false,
-                &["org/springframework/boot/autoconfigure/SpringBootApplication"],
-                &[],
+                "org/springframework/boot/autoconfigure/SpringBootApplication",
             ),
-            class(
-                "a/Service",
-                "a/Service.java",
-                false,
-                &["org/springframework/stereotype/Service"],
-                &[],
-            ),
+            stereotyped("a/Service", "org/springframework/stereotype/Service"),
             class("a/Helper", "a/Helper.java", false, &[], &[]),
             class("a/Plain", "a/Plain.java", false, &[], &[]),
             class(
@@ -1534,13 +1559,7 @@ mod tests {
                 &["a/Helper", "a/Custom"],
                 &[],
             ),
-            class(
-                "a/Custom",
-                "a/Custom.java",
-                false,
-                &["org/springframework/stereotype/Component"],
-                &[],
-            ),
+            stereotyped("a/Custom", "org/springframework/stereotype/Component"),
             class("a/Uses", "a/Uses.java", false, &["a/Plain"], &[]),
             // A composed test annotation and an inherited context configuration.
             class(
@@ -1583,6 +1602,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn components_are_declared_not_inferred_from_the_api_they_call() {
+        let spring = "org/springframework/boot/test/context/SpringBootTest";
+        let mut injected = class("a/Listener", "a/Listener.java", false, &[], &[]);
+        injected
+            .member_annotations
+            .insert("jakarta/enterprise/event/Observes".into());
+        let graph = Graph::new(vec![
+            // Calls Spring Data and JPA, and is no component.
+            class(
+                "a/Paging",
+                "a/Paging.java",
+                false,
+                &[
+                    "org/springframework/data/domain/PageRequest",
+                    "jakarta/persistence/EntityManager",
+                ],
+                &[],
+            ),
+            injected,
+            // A repository built on a project base repository is scanned through it.
+            class(
+                "a/BaseRepository",
+                "a/BaseRepository.java",
+                false,
+                &[],
+                &["org/springframework/data/repository/CrudRepository"],
+            ),
+            class(
+                "a/OrderRepository",
+                "a/OrderRepository.java",
+                false,
+                &[],
+                &["a/BaseRepository"],
+            ),
+            class("a/AppIT", "a/AppIT.java", true, &[spring], &[]),
+            class(
+                "a/PagingTest",
+                "a/PagingTest.java",
+                true,
+                &["a/Paging"],
+                &[],
+            ),
+        ]);
+        assert_eq!(
+            graph.impact(&["src/main/java/a/Paging.java"]),
+            tests(&["a.PagingTest"], &["a.AppIT"])
+        );
+        for source in ["a/Listener.java", "a/OrderRepository.java"] {
+            assert_eq!(
+                graph.impact(&[&format!("src/main/java/{source}")]),
+                tests(&["a.AppIT"], &["a.PagingTest"]),
+                "{source}"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn loading_survives_symlink_cycles() {
@@ -1599,20 +1675,11 @@ mod tests {
         let spring = "org/springframework/boot/test/context/SpringBootTest";
         let graph = Graph::new(vec![
             // Components by a meta-annotation that lives in a library jar.
-            class(
+            stereotyped(
                 "a/MoneySerializer",
-                "a/MoneySerializer.java",
-                false,
-                &["org/springframework/boot/jackson/JsonComponent"],
-                &[],
+                "org/springframework/boot/jackson/JsonComponent",
             ),
-            class(
-                "a/AuditFilter",
-                "a/AuditFilter.java",
-                false,
-                &["jakarta/servlet/annotation/WebFilter"],
-                &[],
-            ),
+            stereotyped("a/AuditFilter", "jakarta/servlet/annotation/WebFilter"),
             class("a/AppIT", "a/AppIT.java", true, &[spring], &[]),
             class("a/PlainTest", "a/PlainTest.java", true, &[], &[]),
         ]);
@@ -1683,6 +1750,15 @@ mod tests {
             .map(String::from)
             .collect::<BTreeSet<_>>()
         );
+    }
+
+    /// A main class annotated with `annotation`, as the compiler records it.
+    fn stereotyped(name: &str, annotation: &str) -> Class {
+        annotated(
+            class(name, &format!("{name}.java"), false, &[], &[]),
+            annotation,
+            &[],
+        )
     }
 
     fn annotated(mut class: Class, name: &str, elements: &[(&str, &[&str])]) -> Class {
@@ -2041,6 +2117,49 @@ mod tests {
     }
 
     #[test]
+    fn compiled_member_annotations_are_read() {
+        let graph = Graph::new(Vec::new());
+        for (path, text) in [
+            (
+                "src/main/java/jakarta/inject/Inject.java",
+                "package jakarta.inject; @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) public @interface Inject {}",
+            ),
+            // Class retention: recorded as an invisible annotation.
+            (
+                "src/main/java/jakarta/enterprise/event/Observes.java",
+                "package jakarta.enterprise.event; public @interface Observes {}",
+            ),
+            (
+                "src/main/java/a/Bean.java",
+                "package a; public class Bean { @jakarta.inject.Inject String name; void on(@jakarta.enterprise.event.Observes String event) {} }",
+            ),
+            (
+                "src/test/java/t/BeanTest.java",
+                "package t; class BeanTest {}",
+            ),
+        ] {
+            graph.source(path, text);
+        }
+        let Some(classes) = compile(graph.temp.path()) else {
+            return;
+        };
+        let bean = classes.iter().find(|c| c.name == "a/Bean").unwrap();
+        assert_eq!(
+            bean.member_annotations,
+            BTreeSet::from([
+                "jakarta/enterprise/event/Observes".to_owned(),
+                "jakarta/inject/Inject".to_owned()
+            ])
+        );
+        assert!(bean.annotations.is_empty());
+        let (component, _) = kinds(&classes);
+        assert!(classes
+            .iter()
+            .zip(component)
+            .any(|(c, k)| c.name == "a/Bean" && k));
+    }
+
+    #[test]
     fn compiled_projects_reveal_indirect_references() {
         let graph = Graph::new(Vec::new());
         for (path, text) in [
@@ -2164,11 +2283,9 @@ mod tests {
         let mut classes = vec![
             class("a/Api", "a/Api.java", false, &[], &[]),
             class("a/Impl", "a/Impl.java", false, &[], &["a/Api"]),
-            class(
-                "a/Service",
-                "a/Service.java",
-                false,
-                &["La/Api;", "org/springframework/stereotype/Service"],
+            annotated(
+                class("a/Service", "a/Service.java", false, &["La/Api;"], &[]),
+                "org/springframework/stereotype/Service",
                 &[],
             ),
             class(
