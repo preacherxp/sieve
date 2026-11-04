@@ -779,6 +779,26 @@ fn flags(
 
 /// Per class: whether it is a DI component, and whether it is a test that starts a context.
 pub fn kinds(classes: &[Class]) -> (Vec<bool>, Vec<bool>) {
+    let (component, context, _) = all_kinds(classes);
+    (component, context)
+}
+
+/// Binary names of the top-level test classes that find classes by scanning, directly, through
+/// a nested class, a project supertype, or a project annotation.
+pub fn scanning_tests(classes: &[Class]) -> BTreeSet<String> {
+    let (_, _, scanning) = all_kinds(classes);
+    classes
+        .iter()
+        .zip(scanning)
+        .filter(|(class, scans)| class.test && *scans)
+        .map(|(class, _)| {
+            let name = class.name.replace('/', ".");
+            name.split('$').next().unwrap_or(&name).to_owned()
+        })
+        .collect()
+}
+
+fn all_kinds(classes: &[Class]) -> (Vec<bool>, Vec<bool>, Vec<bool>) {
     let mut index: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (i, class) in classes.iter().enumerate() {
         index.entry(&class.name).or_default().push(i);
@@ -802,8 +822,7 @@ pub fn kinds(classes: &[Class]) -> (Vec<bool>, Vec<bool>) {
                 .filter(|&j| j != i),
         );
     }
-    let (component, context, _) = flags(classes, &links, &supers);
-    (component, context)
+    flags(classes, &links, &supers)
 }
 
 #[derive(Debug, PartialEq)]
@@ -1604,6 +1623,66 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn scanning_tests_include_nested_classes_supertypes_and_annotations() {
+        let mut classes = vec![
+            class("a/ArchTest", "a/ArchTest.java", true, &[], &[]),
+            class(
+                "a/ArchTest$Rules",
+                "a/ArchTest.java",
+                true,
+                &["com/tngtech/archunit/junit/ArchTest"],
+                &[],
+            ),
+            class(
+                "a/BaseScan",
+                "a/BaseScan.java",
+                true,
+                &["io/github/classgraph/ClassGraph"],
+                &[],
+            ),
+            class("a/ScanTest", "a/ScanTest.java", true, &[], &["a/BaseScan"]),
+            class(
+                "a/Architecture",
+                "a/Architecture.java",
+                true,
+                &["com/tngtech/archunit/junit/AnalyzeClasses"],
+                &[],
+            ),
+            class(
+                "a/RulesTest",
+                "a/RulesTest.java",
+                true,
+                &["a/Architecture"],
+                &[],
+            ),
+            class("a/PlainTest", "a/PlainTest.java", true, &["a/Plain"], &[]),
+            // Main code using a scanner is not a test.
+            class(
+                "a/Plugins",
+                "a/Plugins.java",
+                false,
+                &["io/github/classgraph/ClassGraph"],
+                &[],
+            ),
+        ];
+        classes[4].annotation = true;
+        let scanning = scanning_tests(&classes);
+        assert_eq!(
+            scanning,
+            [
+                "a.ArchTest",
+                "a.Architecture",
+                "a.BaseScan",
+                "a.RulesTest",
+                "a.ScanTest"
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>()
+        );
     }
 
     fn annotated(mut class: Class, name: &str, elements: &[(&str, &[&str])]) -> Class {

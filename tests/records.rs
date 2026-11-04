@@ -1954,6 +1954,30 @@ fn republished_jars_rerun_their_users_without_a_build_file_change() {
     );
 }
 
+#[test]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
+fn scanning_tests_rerun_when_a_class_appears() {
+    let p = Project::new();
+    write(
+        &p.root(),
+        "src/test/java/example/ServiceCountTest.java",
+        "package example;\n\nimport org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;\nimport org.springframework.core.type.filter.AnnotationTypeFilter;\n\nclass ServiceCountTest {\n    @org.junit.jupiter.api.Test\n    void onlyOneService() {\n        var scanner = new ClassPathScanningCandidateComponentProvider(false);\n        scanner.addIncludeFilter(new AnnotationTypeFilter(org.springframework.stereotype.Service.class));\n        org.junit.jupiter.api.Assertions.assertEquals(1, scanner.findCandidateComponents(\"example\").size());\n    }\n}\n",
+    );
+    p.expect("first run", &with(ALL, &["ServiceCountTest"]));
+    // A new service no test runs: only the scanner can see it, and it must rerun and fail.
+    write(
+        &p.root(),
+        "src/main/java/example/AuditService.java",
+        "package example;\n\n@org.springframework.stereotype.Service\nclass AuditService {}\n",
+    );
+    let (code, selection, _) = p.run(&[]);
+    assert_ne!(code, 0, "{selection:#}");
+    assert_eq!(
+        selection["reasons"]["example.ServiceCountTest"],
+        "Finds classes by scanning; runs on every change"
+    );
+}
+
 /// Dependabot-style bumps in `projects/version-bump`, each as `(file, from, to)`: commons-lang3,
 /// Jackson (with its transitive core and annotations), test-scoped AssertJ, and the JUnit BOM.
 fn version_bumps_rerun_only_the_tests_that_ran_the_library(

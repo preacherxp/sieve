@@ -2103,6 +2103,7 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     let mut skip = BTreeSet::new();
     let mut reasons = BTreeMap::new();
     let broken = env::var_os("SIEVE_BROKEN_SELECTOR").is_some();
+    let scanning = crate::classes::scanning_tests(&decider.current.classes);
     for test in &tests {
         if forced.contains(test) {
             reasons.insert(test.clone(), "Always run: matched must_run policy".into());
@@ -2112,6 +2113,15 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
             // Test hook: a selector that drops everything, which planted bugs must catch.
             skip.insert(test.clone());
             reasons.insert(test.clone(), "SIEVE_BROKEN_SELECTOR".into());
+            continue;
+        }
+        // The probe sees code that ran and files read, not class files a scanner reads: a new
+        // class can break an architecture rule without anything in the record changing.
+        if scanning.contains(test) {
+            reasons.insert(
+                test.clone(),
+                "Finds classes by scanning; runs on every change".into(),
+            );
             continue;
         }
         let reason = match read_json::<Record>(&record_path(&dir, test)) {
