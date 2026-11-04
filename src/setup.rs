@@ -491,7 +491,11 @@ fn child_path(parent: &str, child: &str) -> Result<String> {
 /// The module graph from the effective models: one Maven start reports the whole reactor,
 /// matched to module directories by the artifact ID each module's POM declares. A module
 /// whose model cannot be matched that way is read on its own.
-fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
+/// Each module's effective model, by module directory, with its parsed values. Nested
+/// aggregators build nothing themselves; their modules take their place.
+type Models = BTreeMap<String, (String, BTreeMap<String, Vec<String>>)>;
+
+fn maven_models(workspace: &Path, executable: &str, extra: &[String]) -> Result<Models> {
     let output = effective_pom(workspace, ".", true, executable, extra)?;
     let reactor: Vec<&str> = element_ranges(&output, &["projects", "project"])?
         .into_iter()
@@ -563,6 +567,11 @@ fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<C
             return Err(format!("Maven module {module} is listed twice").into());
         }
     }
+    Ok(models)
+}
+
+fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
+    let models = maven_models(workspace, executable, extra)?;
     let mut coordinates = BTreeMap::new();
     for (module, (_, values)) in &models {
         if coordinates
