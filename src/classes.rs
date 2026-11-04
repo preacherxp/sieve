@@ -420,11 +420,20 @@ fn smap_files(smap: &str) -> Vec<String> {
 
 /// Reads every `.class` file below the directories; `true` marks test output.
 pub fn load(dirs: &[(PathBuf, bool)]) -> Result<Vec<Class>> {
-    fn walk(dir: &Path, test: bool, out: &mut Vec<Class>) -> Result<()> {
+    // Symlinked directories are followed once each, so a link cycle cannot recurse forever.
+    fn walk(
+        dir: &Path,
+        test: bool,
+        out: &mut Vec<Class>,
+        seen: &mut BTreeSet<PathBuf>,
+    ) -> Result<()> {
+        if !seen.insert(dir.canonicalize()?) {
+            return Ok(());
+        }
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             if path.is_dir() {
-                walk(&path, test, out)?;
+                walk(&path, test, out, seen)?;
             } else if path.extension().is_some_and(|e| e == "class") {
                 let mut class =
                     parse(&fs::read(&path)?).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -439,7 +448,7 @@ pub fn load(dirs: &[(PathBuf, bool)]) -> Result<Vec<Class>> {
     let mut classes = Vec::new();
     for (dir, test) in dirs {
         if dir.is_dir() {
-            walk(dir, *test, &mut classes)?;
+            walk(dir, *test, &mut classes, &mut BTreeSet::new())?;
         }
     }
     Ok(classes)
@@ -1553,6 +1562,17 @@ mod tests {
                 &["a.AppIT", "a.Base", "a.SystemIT", "a.WebIT"]
             )
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loading_survives_symlink_cycles() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("classes/a");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("classes"), dir.join("loop")).unwrap();
+        let classes = load(&[(temp.path().join("classes"), false)]).unwrap();
+        assert!(classes.is_empty());
     }
 
     #[test]
