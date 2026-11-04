@@ -78,7 +78,9 @@ jobs:
       fail-fast: false
       matrix:
         tool: [maven, gradle]
-        variant: [java, kotlin, integration, edge, class-level]
+        # `samples` holds the native sample mutations, the slowest native check, apart from
+        # `edge`'s other native checks so that both finish sooner.
+        variant: [java, kotlin, integration, edge, samples, class-level]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,7 +94,7 @@ jobs:
           path: target/release
       - run: chmod +x target/release/sieve
       - uses: actions/cache@v4
-        if: matrix.variant == 'edge'
+        if: matrix.variant == 'edge' || matrix.variant == 'samples'
         with:
           path: |
             ~/.cargo/registry
@@ -105,12 +107,21 @@ jobs:
           IMPACT_TOOL: ${{ matrix.tool }}
         run: |
           rustup toolchain install 1.92.0 --profile minimal
-          cargo +1.92.0 test --locked --test native native_ -- --ignored --test-threads=1
+          cargo +1.92.0 test --locked --test native native_ -- --ignored --test-threads=1 \
+            --skip native_sample_mutations_match_full_execution
+      - name: Verify native sample mutations
+        if: matrix.variant == 'samples'
+        env:
+          IMPACT_TOOL: ${{ matrix.tool }}
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 test --locked --test native -- --ignored --exact \
+            sample_projects::native_sample_mutations_match_full_execution
       - name: Reject unsupported Gradle layouts
         if: matrix.variant == 'edge' && matrix.tool == 'gradle'
         run: cargo +1.92.0 test --locked --test native unsupported_gradle_ -- --ignored
       - name: Verify selected variants
-        if: matrix.variant != 'class-level'
+        if: matrix.variant != 'class-level' && matrix.variant != 'samples'
         env:
           BUILD_TOOL: ${{ matrix.tool }}
           VARIANT: ${{ matrix.variant }}
