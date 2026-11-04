@@ -2,6 +2,17 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # A manual run rebuilds an existing tag and publishes only when asked.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build, such as v0.3.0
+        required: true
+        type: string
+      publish:
+        description: Publish the GitHub release (otherwise build and check only)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -18,6 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           persist-credentials: false
       - uses: actions/setup-java@v4
         with:
@@ -29,8 +41,9 @@ jobs:
       - name: Build
         env:
           TARGET: ${{ matrix.target }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          case "$TAG" in v*) ;; *) echo "::error::Release tags start with v: $TAG"; exit 1 ;; esac
           rustup toolchain install 1.92.0 --profile minimal --target "$TARGET"
           cargo +1.92.0 build --locked --release --target "$TARGET"
           version=$("target/$TARGET/release/sieve" --version)
@@ -49,6 +62,7 @@ jobs:
   release:
     name: Publish release
     needs: build
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -61,5 +75,6 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          TAG: ${{ inputs.tag || github.ref_name }}
+        # --verify-tag: a manual run never creates a tag.
+        run: gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag
