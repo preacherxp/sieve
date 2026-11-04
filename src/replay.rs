@@ -85,8 +85,13 @@ fn execute(
 ) -> Result<Timed> {
     // Installed JavaScript dependencies survive, like a warm CI cache.
     git(clone, &["clean", "-fdxq", "-e", "node_modules"])?;
+    let mut command = Command::new(env::current_exe()?);
+    // The test hook breaks the selector, never the full reference it is judged against.
+    if selection.contains(&"--full") {
+        command.env_remove("SIEVE_BROKEN_SELECTOR");
+    }
     timing::run(
-        Command::new(env::current_exe()?)
+        command
             .env("SIEVE_JS_RESULTS", "1")
             .arg("run")
             .arg("--workspace")
