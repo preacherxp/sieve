@@ -2103,6 +2103,9 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     let mut skip = BTreeSet::new();
     let mut reasons = BTreeMap::new();
     let broken = env::var_os("SIEVE_BROKEN_SELECTOR").is_some();
+    if broken {
+        eprintln!("sieve: SIEVE_BROKEN_SELECTOR is set: this validation hook drops every test");
+    }
     let scanning = crate::classes::scanning_tests(&decider.current.classes);
     for test in &tests {
         if forced.contains(test) {

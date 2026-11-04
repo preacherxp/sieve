@@ -1610,6 +1610,7 @@ fn main_result() -> Result<u8> {
         selection.mode = "NONE";
         selection.modules.clear();
         selection.reason = "SIEVE_BROKEN_SELECTOR drops every test".into();
+        eprintln!("sieve: SIEVE_BROKEN_SELECTOR is set: this validation hook runs no tests");
     }
     let write = |selection: &Selection| -> Result<String> {
         let json = serde_json::to_string_pretty(selection)? + "\n";
