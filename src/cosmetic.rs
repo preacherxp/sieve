@@ -2,7 +2,11 @@
 //! indentation or line breaks differ from the comparison base. Their bytecode is the same
 //! apart from line numbers, so class-level selection does not count them as changes.
 use crate::Result;
-use std::{collections::BTreeSet, path::Path, process::Command};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    process::Command,
+};
 
 /// The changed `sources` whose code equals the version at `base`. Anything this cannot decide,
 /// such as a file added since the base or an unreadable version, counts as changed.
@@ -24,6 +28,74 @@ pub fn unchanged(workspace: &Path, base: &str, sources: &BTreeSet<String>) -> BT
         })
         .cloned()
         .collect()
+}
+
+/// The changed Java `sources` whose `final` declarations equal the base's. A constant's value
+/// comes from its own declaration and the constants it names; with every `final` statement of
+/// the file unchanged, the classes compiled from it copy no new value into other classes,
+/// and the search for sources naming its constants can be skipped. A changed constant of
+/// another class still reaches it through that class's search.
+pub fn stable_constants(
+    workspace: &Path,
+    base: &str,
+    sources: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    sources
+        .iter()
+        .filter(|path| path.ends_with(".java"))
+        .filter(|path| {
+            let (Ok(after), Ok(before)) = (
+                std::fs::read_to_string(workspace.join(path)),
+                at_base(workspace, base, path),
+            ) else {
+                return false;
+            };
+            matches!((final_statements(&before), final_statements(&after)), (Some(a), Some(b)) if a == b)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The comment-free statements of a Java source that declare something `final`, counted.
+/// `None` when constants may be declared without the keyword: interface and annotation
+/// fields are implicitly final, and Lombok can add the modifier.
+fn final_statements(text: &str) -> Option<BTreeMap<String, usize>> {
+    if text.contains("lombok") {
+        return None;
+    }
+    let code = code(text, false)?;
+    let b = code.as_bytes();
+    let mut statements = BTreeMap::new();
+    let mut finish = |statement: &[u8]| -> Option<()> {
+        let statement = std::str::from_utf8(statement).ok()?.trim();
+        let words: BTreeSet<&str> = statement
+            .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .collect();
+        if words.contains("interface") {
+            return None;
+        }
+        if words.contains("final") {
+            *statements.entry(statement.to_owned()).or_insert(0) += 1;
+        }
+        Some(())
+    };
+    let (mut start, mut i) = (0, 0);
+    while i < b.len() {
+        // Literals stay whole: a `;` inside one does not end the statement.
+        i = if b[i..].starts_with(b"\"\"\"") {
+            find(b, i + 3, b"\"\"\"")? + 3
+        } else if matches!(b[i], b'"' | b'\'') {
+            literal(b, i)?
+        } else if matches!(b[i], b';' | b'{' | b'}') {
+            finish(&b[start..i])?;
+            start = i + 1;
+            i + 1
+        } else {
+            i + 1
+        };
+    }
+    finish(&b[start..])?;
+    Some(statements)
 }
 
 fn at_base(workspace: &Path, base: &str, path: &str) -> Result<String> {
@@ -192,6 +264,37 @@ mod tests {
         assert!(!same_code(template, template, true));
         let raw = "val s = \"\"\"a\"\"\"\"";
         assert!(!same_code(raw, raw, true));
+    }
+
+    #[test]
+    fn constants_are_stable_only_while_every_final_statement_is() {
+        let base = "class Limits {\n    private static final int BASE = 10;\n    public static final int MAX = BASE * 2;\n    static final String SEP = \"a;b\";\n    int twice(int x) { return x * 2; }\n}\n";
+        let stable = |after: &str| final_statements(base) == final_statements(after);
+        // A method body changes no constant.
+        assert!(stable(&base.replace("return x * 2;", "return x + x;")));
+        assert!(stable(
+            &base.replace("    int twice", "    // note\n    int twice")
+        ));
+        for changed in [
+            base.replace("MAX = BASE * 2", "MAX = BASE * 3"),
+            // A private constant feeds the public one.
+            base.replace("BASE = 10", "BASE = 11"),
+            // A `;` inside a literal does not split the declaration.
+            base.replace("\"a;b\"", "\"a;c\""),
+            base.replace(
+                "    int twice",
+                "    public static final int MIN = 0;\n    int twice",
+            ),
+        ] {
+            assert!(!stable(&changed), "{changed}");
+        }
+        // Interface and annotation fields are constants without `final`; Lombok adds it.
+        assert!(final_statements("interface Codes { int OK = 0; }").is_none());
+        assert!(final_statements("@interface Tag { int SIZE = 1; }").is_none());
+        assert!(final_statements(
+            "@lombok.experimental.FieldDefaults(makeFinal = true) class C { static int X = 1; }"
+        )
+        .is_none());
     }
 
     #[test]

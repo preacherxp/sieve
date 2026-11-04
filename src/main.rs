@@ -131,6 +131,10 @@ struct Selection {
     /// Changed paths inside module source directories, which class-level selection maps.
     #[serde(skip)]
     sources: BTreeSet<String>,
+    /// Changed Java sources whose `final` declarations equal the base's: no constant value
+    /// of theirs changed, so no search for sources that copied one.
+    #[serde(skip)]
+    stable_constants: BTreeSet<String>,
     /// Generated sources that differ from the comparison base's.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     generated: BTreeSet<String>,
@@ -383,6 +387,7 @@ impl Config {
             sources: BTreeSet::new(),
             generated: BTreeSet::new(),
             unchanged_code: BTreeSet::new(),
+            stable_constants: BTreeSet::new(),
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
@@ -461,6 +466,7 @@ impl Config {
             sources,
             generated: BTreeSet::new(),
             unchanged_code: BTreeSet::new(),
+            stable_constants: BTreeSet::new(),
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
@@ -480,7 +486,8 @@ impl Selection {
         maven: bool,
     ) -> Result<BTreeSet<String>> {
         Ok(
-            match classes::affected(classes, &self.sources, workspace)? {
+            match classes::affected_with(classes, &self.sources, &self.stable_constants, workspace)?
+            {
                 classes::Impact::Fallback(reason) => {
                     self.reason = format!("Class-level selection unavailable: {reason}");
                     BTreeSet::new()
@@ -848,6 +855,8 @@ struct ClassRequest {
     workspace: PathBuf,
     modules: BTreeSet<String>,
     sources: BTreeSet<String>,
+    #[serde(default)]
+    stable_constants: BTreeSet<String>,
     changed: BTreeSet<String>,
     reason: String,
     /// Scratch files. Gradle: the `classes.json` listing, `selected.txt` for the `Test` tasks
@@ -881,6 +890,7 @@ impl ClassRequest {
         };
         selection.modules = self.modules.clone();
         selection.sources = self.sources.clone();
+        selection.stable_constants = self.stable_constants.clone();
         selection.changed = self.changed.clone();
         selection
     }
@@ -1514,6 +1524,8 @@ fn main_result() -> Result<u8> {
             let unchanged = cosmetic::unchanged(&workspace, merge_base, &selection.sources);
             selection.sources.retain(|path| !unchanged.contains(path));
             selection.unchanged_code = unchanged;
+            selection.stable_constants =
+                cosmetic::stable_constants(&workspace, merge_base, &selection.sources);
         }
     }
     let preserve_modules = (!config.class_level).then(|| selection.modules.clone());
@@ -1652,6 +1664,7 @@ fn main_result() -> Result<u8> {
             workspace: workspace.clone(),
             modules: selection.modules.clone(),
             sources: selection.sources.clone(),
+            stable_constants: selection.stable_constants.clone(),
             changed: selection.changed.clone(),
             reason: selection.reason.clone(),
             dir: dir.clone(),

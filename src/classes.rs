@@ -943,12 +943,26 @@ fn explain(classes: &[Class], cause: &[Option<Cause>], mut i: usize) -> String {
 /// or its owner. A reached DI component affects every test that starts a full container,
 /// and the Spring Boot slice tests whose slice scans its kind of component.
 pub fn affected(classes: &[Class], changed: &BTreeSet<String>, workspace: &Path) -> Result<Impact> {
-    affected_by(classes, Changes::Sources(changed), workspace)
+    affected_with(classes, changed, &BTreeSet::new(), workspace)
+}
+
+/// `affected`, knowing that the changed sources in `stable` declare the same constant values
+/// as at the comparison base, so classes compiled from them copy no new value onward.
+pub fn affected_with(
+    classes: &[Class],
+    changed: &BTreeSet<String>,
+    stable: &BTreeSet<String>,
+    workspace: &Path,
+) -> Result<Impact> {
+    affected_by(classes, Changes::Sources { changed, stable }, workspace)
 }
 
 /// What changed: workspace-relative source paths, or internal class names.
 pub enum Changes<'a> {
-    Sources(&'a BTreeSet<String>),
+    Sources {
+        changed: &'a BTreeSet<String>,
+        stable: &'a BTreeSet<String>,
+    },
     Classes(&'a BTreeSet<String>),
 }
 
@@ -1129,7 +1143,7 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
     // Each item is a class, how it is affected, and whether its constants may have changed.
     let mut pending = Vec::new();
     match changes {
-        Changes::Sources(changed) => {
+        Changes::Sources { changed, stable } => {
             for path in changed {
                 let file = path.rsplit('/').next().unwrap_or(path);
                 if !workspace.join(path).is_file() {
@@ -1145,10 +1159,12 @@ pub fn affected_by(classes: &[Class], changes: Changes, workspace: &Path) -> Res
                 if owned.is_empty() {
                     return Ok(Impact::Fallback(format!("{path} has no compiled classes")));
                 }
+                // A source whose `final` declarations are as they were declares no new value.
+                let recomputed = !stable.contains(path);
                 pending.extend(
                     owned
                         .into_iter()
-                        .map(|i| (i, Reach::Full, true, Cause::Changed)),
+                        .map(|i| (i, Reach::Full, recomputed, Cause::Changed)),
                 );
             }
         }
@@ -1990,6 +2006,57 @@ mod tests {
         assert_eq!(
             graph.impact(&["src/main/java/a/Limits.java"]),
             tests(&["t.DerivedTest"], &["t.OtherTest"])
+        );
+    }
+
+    #[test]
+    fn stable_constant_sources_skip_the_search_unless_they_copy_a_changed_value() {
+        let mut classes = vec![
+            class("a/Limits", "a/Limits.java", false, &[], &[]),
+            class("a/Derived", "a/Derived.java", false, &[], &[]),
+            class("t/LimitsTest", "t/LimitsTest.java", true, &[], &[]),
+            class("t/DerivedTest", "t/DerivedTest.java", true, &[], &[]),
+        ];
+        classes[0].constants = vec!["MAX".into()];
+        classes[1].constants = vec!["DOUBLE".into()];
+        let graph = Graph::new(classes);
+        let limits = "src/main/java/a/Limits.java";
+        let derived = "src/main/java/a/Derived.java";
+        graph.source(limits, "class Limits { static final int MAX = 3; }");
+        graph.source(
+            derived,
+            "class Derived { static final int DOUBLE = Limits.MAX * 2; }",
+        );
+        graph.source("src/test/java/t/LimitsTest.java", "int x = Limits.MAX;");
+        graph.source(
+            "src/test/java/t/DerivedTest.java",
+            "int x = Derived.DOUBLE;",
+        );
+        let impact = |changed: &[&str], stable: &[&str]| {
+            let set = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect();
+            without_reasons(
+                affected_with(
+                    &graph.classes,
+                    &set(changed),
+                    &set(stable),
+                    graph.temp.path(),
+                )
+                .unwrap(),
+            )
+        };
+        // A body edit next to unchanged constants copies no new value anywhere.
+        assert_eq!(
+            impact(&[limits], &[limits]),
+            tests(&[], &["t.DerivedTest", "t.LimitsTest"])
+        );
+        assert_eq!(
+            impact(&[limits], &[]),
+            tests(&["t.DerivedTest", "t.LimitsTest"], &[])
+        );
+        // Derived's own declarations are unchanged, but it copies the changed MAX onward.
+        assert_eq!(
+            impact(&[limits, derived], &[derived]),
+            tests(&["t.DerivedTest", "t.LimitsTest"], &[])
         );
     }
 
