@@ -2217,7 +2217,7 @@ pub fn decide(args: Vec<String>) -> Result<u8> {
     Ok(0)
 }
 
-fn cache_dir() -> Result<PathBuf> {
+pub(crate) fn cache_dir() -> Result<PathBuf> {
     if let Some(dir) = env::var_os("SIEVE_CACHE_DIR") {
         return Ok(PathBuf::from(dir));
     }

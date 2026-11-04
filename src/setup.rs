@@ -30,13 +30,45 @@ pub fn default_executable(workspace: &Path, tool: &str) -> String {
 
 pub const GRADLE_SCRIPT: &[u8] = include_bytes!("gradle.init.gradle");
 
-pub fn gradle_script() -> Result<tempfile::NamedTempFile> {
+/// The init script, at a path that stays the same between runs while its content does: a new
+/// path each run would invalidate Gradle's configuration cache. A temporary file only when
+/// the user cache cannot be written.
+pub struct GradleScript {
+    path: PathBuf,
+    _temp: Option<tempfile::NamedTempFile>,
+}
+
+impl GradleScript {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+pub fn gradle_script() -> Result<GradleScript> {
+    let stable = (|| -> Result<PathBuf> {
+        let dir = crate::records::cache_dir()?.join("gradle");
+        fs::create_dir_all(&dir)?;
+        let hash = crate::bytecode::hash(GRADLE_SCRIPT);
+        let path = dir.join(format!("sieve-{}.init.gradle", &hash[..16]));
+        if fs::read(&path).ok().as_deref() != Some(GRADLE_SCRIPT) {
+            let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
+            temp.write_all(GRADLE_SCRIPT)?;
+            temp.persist(&path)?;
+        }
+        Ok(path)
+    })();
+    if let Ok(path) = stable {
+        return Ok(GradleScript { path, _temp: None });
+    }
     let mut file = tempfile::Builder::new()
         .prefix("impact-")
         .suffix(".gradle")
         .tempfile()?;
     file.write_all(GRADLE_SCRIPT)?;
-    Ok(file)
+    Ok(GradleScript {
+        path: file.path().to_path_buf(),
+        _temp: Some(file),
+    })
 }
 
 fn xml_values(xml: &str) -> Result<BTreeMap<String, Vec<String>>> {
