@@ -5,6 +5,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import org.gradle.api.artifacts.FileCollectionDependency
 import org.gradle.api.artifacts.ProjectDependency
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.testing.Test
 import org.gradle.util.GradleVersion
 
@@ -50,8 +51,10 @@ gradle.beforeProject { p ->
         if (selected != null) {
             def selection = new File(selected)
             task.dependsOn(':impactSelect')
-            // An input, so that a cached test result never stands for another selection.
+            // An input, so that a cached test result never stands for another selection. Only
+            // its content counts: the file sits in a new temporary directory every run.
             task.inputs.file(selection).withPropertyName('impactSelection')
+                .withPathSensitivity(PathSensitivity.NONE)
             // No selected classes means skip this task without changing its native includes.
             if (!observe) task.onlyIf {
                 def lines = selection.readLines()
@@ -73,6 +76,7 @@ gradle.beforeProject { p ->
             def suite = task.name == 'test' ? 'unit' : task.name == 'integrationTest' ? 'integration' : task.name
             def key = moduleId(p) + ':' + suite
             task.inputs.file(exclusions).withPropertyName('impactRemaining')
+                .withPathSensitivity(PathSensitivity.NONE)
             task.doFirst { Test test ->
                 def completed = new JsonSlurper().parse(exclusions)
                 (completed[key] ?: []).each { cls ->
