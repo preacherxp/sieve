@@ -439,13 +439,14 @@ fn smap_files(smap: &str) -> Vec<String> {
     files
 }
 
-/// Reads every `.class` file below the directories; `true` marks test output.
+/// Reads every `.class` file below the directories; `true` marks test output. Files are parsed
+/// on all cores, in the order the walk found them.
 pub fn load(dirs: &[(PathBuf, bool)]) -> Result<Vec<Class>> {
     // Symlinked directories are followed once each, so a link cycle cannot recurse forever.
     fn walk(
         dir: &Path,
         test: bool,
-        out: &mut Vec<Class>,
+        out: &mut Vec<(PathBuf, bool)>,
         seen: &mut BTreeSet<PathBuf>,
     ) -> Result<()> {
         if !seen.insert(dir.canonicalize()?) {
@@ -456,21 +457,42 @@ pub fn load(dirs: &[(PathBuf, bool)]) -> Result<Vec<Class>> {
             if path.is_dir() {
                 walk(&path, test, out, seen)?;
             } else if path.extension().is_some_and(|e| e == "class") {
-                let mut class =
-                    parse(&fs::read(&path)?).map_err(|e| format!("{}: {e}", path.display()))?;
-                class.test = test;
-                if class.name != "module-info" {
-                    out.push(class);
-                }
+                out.push((path, test));
             }
         }
         Ok(())
     }
-    let mut classes = Vec::new();
+    let mut files = Vec::new();
     for (dir, test) in dirs {
         if dir.is_dir() {
-            walk(dir, *test, &mut classes, &mut BTreeSet::new())?;
+            walk(dir, *test, &mut files, &mut BTreeSet::new())?;
         }
+    }
+    let read = |(path, test): &(PathBuf, bool)| -> std::result::Result<Option<Class>, String> {
+        let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut class = parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        class.test = *test;
+        Ok((class.name != "module-info").then_some(class))
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = files.len().div_ceil(threads).max(1);
+    let parts: Vec<std::result::Result<Vec<Option<Class>>, String>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = files
+            .chunks(chunk)
+            .map(|part| scope.spawn(move || part.iter().map(read).collect()))
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err("Class parser failed".into()))
+            })
+            .collect()
+    });
+    let mut classes = Vec::with_capacity(files.len());
+    for part in parts {
+        classes.extend(part?.into_iter().flatten());
     }
     Ok(classes)
 }
