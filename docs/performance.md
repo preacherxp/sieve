@@ -279,7 +279,7 @@ One benchmark and one machine, built by the same author as the tool.
 ## JavaScript and TypeScript: Jest and Vitest replays (2026-10-08)
 
 `sieve replay --run` over the last 30 first-parent commits of two single-package projects
-(ADR 0006), with the source roots `sieve init` proposed, on an Apple M4 Pro, macOS 26.6,
+(ADR 0007), with the source roots `sieve init` proposed, on an Apple M4 Pro, macOS 26.6,
 Node 22.15. Each commit ran the full suite and the selection from clean trees; dependency
 installs are excluded from the timings.
 

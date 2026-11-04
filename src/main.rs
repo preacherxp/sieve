@@ -66,7 +66,7 @@ struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     with: Vec<String>,
     /// Jest/Vitest: the directories whose script files Sieve maps to related test files
-    /// (ADR 0006). A change anywhere else selects every test.
+    /// (ADR 0007). A change anywhere else selects every test.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     sources: Vec<String>,
     /// Test class patterns added to every JVM selection, including unchanged runs.

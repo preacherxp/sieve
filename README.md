@@ -203,7 +203,7 @@ floating container tags are not tracked. Modules, nested or not, must sit in dir
 that match their place in the build. Workspace-local Gradle plugin-only included builds
 are supported; application composites, Android, and Multiplatform remain unsupported.
 Concurrent test classes share runtime evidence across overlapping executions; records
-still require a single module. No speed improvement is implied by this eligibility change.
+still require a single module.
 
 ## More
 

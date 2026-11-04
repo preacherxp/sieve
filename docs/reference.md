@@ -742,18 +742,22 @@ tests, observed execution paths, or undeclared external inputs.
 
 The repository runs these checks on pushes, pull requests, and manual runs:
 
-1. **Rust and selector checks:** formatting, Clippy, unit checks, and all scenario
+1. **Change classification:** a first job diffs the pushed or pull-request range; when
+   only root-level Markdown or `docs/`, `site/`, `assets/` or `issues/` changed, every
+   job below except the Rust checks is skipped. Fixture and sample READMEs count as code.
+2. **Rust and selector checks:** formatting, Clippy, unit checks, and all scenario
    selections for both build tools. In parallel, one job builds the release binary that
    every Java job downloads, instead of compiling Rust in each job. Cargo caches cover
    the jobs that still compile tests.
-2. **Selected tests:** Maven and Gradle jobs use the PR base or previous push SHA.
+3. **Selected tests:** Maven and Gradle jobs use the PR base or previous push SHA.
    Missing history or shared build/selector changes select ALL; the selected job
    records that decision and the full-test stage executes the suite once. Ten
    additional jobs verify selected execution for Java, Kotlin, integration, and
    edge-case fixture mutations on both build tools, and class-level selection across
    every mutation. The edge jobs also run the native graph, class-level, and Gradle
-   configuration-cache checks.
-3. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
+   configuration-cache checks; a samples job per tool runs the native sample mutations.
+   The local-mode record checks run in three shards (`scripts/ci-records-shard.sh`).
+4. **All tests:** separate Maven and Gradle jobs execute the full suite on the same
    revision, in parallel with the selected stage. Six Testcontainers tests also run on every
    CI event.
 
@@ -896,7 +900,7 @@ faster selected feedback does not establish faster final CI completion.
 ## JavaScript and TypeScript (Jest, Vitest)
 
 Single-package projects tested with Jest or Vitest select test files through the runner's
-own import graph ([ADR 0006](adr/0006-select-javascript-tests-through-the-runner.md)).
+own import graph ([ADR 0007](adr/0007-select-javascript-tests-through-the-runner.md)).
 Workspaces (monorepos) are not supported yet.
 
 ```bash
@@ -1019,9 +1023,10 @@ This is a conservative module selector, not a soundness proof for arbitrary JVM
 builds. Explicit dependency graphs must include runtime/resource dependencies;
 unsupported custom layouts need further adapter work. The deletion fixture also
 edits its consumer, so it is not an isolated proof of previous-graph traversal.
-Class-level analysis is static: see its section for what it cannot see. Parallel
-runtime attribution and selection-cache invalidation are outside the current
-implementation.
+Class-level analysis is static: see its section for what it cannot see. Local mode
+attributes concurrent test classes conservatively, by sharing evidence across
+overlapping executions; selection caches and per-thread attribution are outside the
+current implementation.
 
 Build integration follows the native [Maven Kotlin configuration](https://kotlinlang.org/docs/maven-configure-project.html),
 [Gradle Kotlin/JVM support](https://kotlinlang.org/docs/gradle-configure-project.html),

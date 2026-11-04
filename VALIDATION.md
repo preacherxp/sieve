@@ -1,5 +1,9 @@
 # Validation record for the original fixtures
 
+Each entry records what was validated at the time it was written. Statements that a
+workflow "has not run on GitHub Actions" are historical: the CI, compatibility and
+fixture workflows have since run on GitHub; check the Actions history for current runs.
+
 Validated locally on 2026-09-21 with Rust 1.92.0, Java 17.0.20.1,
 Maven 3.9.9, and Gradle 8.13. GitHub Actions pins Gradle 8.12.1.
 

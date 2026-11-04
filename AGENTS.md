@@ -14,8 +14,9 @@ repository's GitHub Actions CI. Keep changes focused on the requested integratio
   machines, not CI: it keeps per-test records in `.sieve/` and loads an embedded agent
   through `JDK_JAVA_OPTIONS` (Maven) or Sieve's init script (Gradle). Do not enable it in
   consumer CI workflows.
-- Language independence is a future direction, not an implemented capability.
-  Do not advertise support for other languages or invent adapter commands.
+- Jest and Vitest projects are also supported (ADR 0007, `docs/reference.md`); keep them
+  out of JVM CI integrations. Other languages are not supported: do not advertise them
+  or invent adapter commands.
 - Read `README.md`, `Cargo.toml`, and `src/gradle.init.gradle` for current setup
   requirements and supported layouts. Do not assume arbitrary monorepos work.
 - `.github/workflows/java-tests.yml` demonstrates this repository's fixture CI.

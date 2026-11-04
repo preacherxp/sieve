@@ -1,4 +1,4 @@
-//! Jest and Vitest selection (ADR 0006) against the independent oracle in
+//! Jest and Vitest selection (ADR 0007) against the independent oracle in
 //! `projects/js/scenarios.json`. One fixture carries both runner configurations, so both
 //! runners face identical sources and expectations.
 mod support;

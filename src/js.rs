@@ -1,4 +1,4 @@
-//! JavaScript and TypeScript projects on Jest or Vitest (ADR 0006): Sieve classifies the changed
+//! JavaScript and TypeScript projects on Jest or Vitest (ADR 0007): Sieve classifies the changed
 //! paths and asks the runner which test files relate to the changed script files.
 use crate::{changed_paths, Config, Result, Selection, REPOSITORY};
 use serde_json::Value;
