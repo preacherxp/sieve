@@ -66,6 +66,28 @@ public final class ParallelEvidence {
         State.classStarted("example.IndependentTest");
         Probe.hit(State.method("example/Independent#test()V"));
         State.classFinished("example.IndependentTest");
+
+        // A singleton created on a background thread finishes after the next class started.
+        State.classStarted("example.EarlyTest");
+        CyclicBarrier lazy = new CyclicBarrier(2);
+        Thread background = new Thread(() -> {
+            Bucket before = Probe.singletonStarting(first);
+            try {
+                lazy.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                lazy.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Exception error) {
+                throw new AssertionError(error);
+            }
+            Probe.singletonFinished(before);
+        });
+        background.start();
+        lazy.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        State.classFinished("example.EarlyTest");
+        State.classStarted("example.LateTest");
+        lazy.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        background.join();
+        Probe.hit(State.method("example/Late#test()V"));
+        State.classFinished("example.LateTest");
         var json = State.class.getDeclaredMethod("json");
         json.setAccessible(true);
         String firstPlan = (String) json.invoke(null);

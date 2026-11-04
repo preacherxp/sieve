@@ -75,7 +75,25 @@ fn overlapping_classes_and_cached_contexts_retain_async_evidence() {
     assert_eq!(raw["parallel_safe"], true);
     assert_eq!(raw["errors"], serde_json::json!([]));
     let tests = raw["tests"].as_array().unwrap();
-    assert_eq!(tests.len(), 4);
+    assert_eq!(tests.len(), 6);
+    // A background singleton finishing late must not hand the next class's calls back to
+    // the class that was running when it started.
+    let late = tests
+        .iter()
+        .find(|test| test["name"] == "example.LateTest")
+        .unwrap();
+    assert_eq!(late["methods"], serde_json::json!(["example/Late#test()V"]));
+    let early = tests
+        .iter()
+        .find(|test| test["name"] == "example.EarlyTest")
+        .unwrap();
+    assert!(
+        !early["methods"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("example/Late#test()V")),
+        "{early:#}"
+    );
     for name in ["FirstTest", "SecondTest", "CachedContextTest"] {
         let test = tests
             .iter()

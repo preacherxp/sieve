@@ -49,23 +49,44 @@ public final class Probe {
         }
     }
 
+    /** Per thread, the bucket each singleton creation in progress set, innermost first. */
+    private static final ThreadLocal<java.util.ArrayDeque<Object>> SET =
+            ThreadLocal.withInitial(java.util.ArrayDeque::new);
+
+    private static final Object NOTHING = new Object();
+
     public static Bucket singletonStarting(Object factory) {
         Bucket previous = current;
+        Object set = NOTHING;
         try {
             synchronized (SINGLETONS) {
                 Bucket bucket = SINGLETONS.get(factory);
                 if (bucket != null) {
                     current = bucket;
+                    set = bucket;
                 }
             }
         } catch (Throwable error) {
             failed = true;
+        } finally {
+            SET.get().push(set);
         }
         return previous;
     }
 
+    /**
+     * Restores the bucket only while the creation's own bucket is still current: a singleton
+     * created on a background thread may finish after the next test class started.
+     */
     public static void singletonFinished(Bucket previous) {
-        current = previous;
+        try {
+            Object set = SET.get().poll();
+            if (set != null && set != NOTHING && current == set) {
+                current = previous;
+            }
+        } catch (Throwable error) {
+            failed = true;
+        }
     }
 
     /** A Spring interceptor or argument resolver can return or reject a call before its body. */
