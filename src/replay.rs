@@ -4,11 +4,12 @@ use crate::{timing, timing::Timed, Config, Result};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, env, fs, path::Path, process::Command};
 
-const USAGE: &str = "sieve replay --workspace PATH [--commits N] [--run | --walk [--plant]]\n\
+const USAGE: &str = "sieve replay --workspace PATH [--commits N] [--run | --walk] [--plant]\n\
     [--executable PATH] [--output FILE] [-- BUILD_ARGS]\n\n\
     Uses the workspace's impact.json for each of the last N first-parent commits.\n\
     --run executes the full suite and the selection on every commit from clean trees and\n\
-    reports missed failures and inconclusive builds (exit 1).\n\
+    reports missed failures and inconclusive builds (exit 1); --plant also plants a bug in each\n\
+    commit's changed main code and runs both again, so a selection that misses it fails.\n\
     --walk (local mode, single-module Maven or Gradle) applies the commits in order to one working\n\
     tree, carrying test records and build output forward, and compares `sieve run` with a\n\
     native full build; --plant also plants a bug in each commit's changed code.\n\
@@ -334,8 +335,8 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             &workspace, &config, commits, plant, executable, output, extra,
         );
     }
-    if plant {
-        return Err("--plant needs --walk".into());
+    if plant && !run {
+        return Err("--plant needs --run or --walk".into());
     }
     let root = Path::new(&git(&workspace, &["rev-parse", "--show-toplevel"])?).canonicalize()?;
     let prefix = workspace.strip_prefix(&root)?.to_owned();
@@ -459,6 +460,34 @@ pub fn main(args: Vec<String>) -> Result<u8> {
             record["full"]["log"] = json!(full_log);
             record["selected"] = json!(selected);
             record["selected"]["log"] = json!(selected_log);
+            if plant {
+                // The planted bug sits in the commit's own changed code: a selection that
+                // follows the change must run a test it breaks whenever the full suite does.
+                record["planted"] = match changed_code(&root, &prefix, commit)? {
+                    Some(region) => {
+                        let attempt = std::cell::Cell::new(0);
+                        let mut planted_run = |args: &[&str], kind: &str| {
+                            attempt.set(attempt.get() + 1);
+                            let log =
+                                logs.join(format!("{short}-planted-{kind}-{}.log", attempt.get()));
+                            execute(&clone, &clone_workspace, &config, args, &extra, &log)
+                        };
+                        let mut planted_args = vec!["--base", base.as_str()];
+                        planted_args.extend(&executable_args);
+                        let mut reference_args = vec!["--full"];
+                        reference_args.extend(&executable_args);
+                        let cell = std::cell::RefCell::new(&mut planted_run);
+                        crate::catalog::plant(
+                            &clone_workspace,
+                            &region,
+                            &mut crate::catalog::Journal::default(),
+                            &mut |_| (cell.borrow_mut())(&planted_args, "selected"),
+                            &mut |_| (cell.borrow_mut())(&reference_args, "full"),
+                        )?
+                    }
+                    None => json!({"mutant": null, "reason": "no changed main source"}),
+                };
+            }
         }
         records.push(record);
     }
@@ -477,7 +506,8 @@ pub fn main(args: Vec<String>) -> Result<u8> {
     };
     let missed: usize = replayed
         .iter()
-        .filter_map(|r| r["missed"].as_array().map(Vec::len))
+        .flat_map(|r| [&r["missed"], &r["planted"]["missed"]])
+        .filter_map(|m| m.as_array().map(Vec::len))
         .sum();
     let mut summary = json!({
         "commits": records.len(), "replayed": replayed.len(),
@@ -489,6 +519,14 @@ pub fn main(args: Vec<String>) -> Result<u8> {
         summary["full_cases"] = json!(sum("full", "cases"));
         summary["selected_cases"] = json!(sum("selected", "cases"));
         summary["missed_failures"] = json!(missed);
+        if plant {
+            let planted: Vec<&Value> = replayed.iter().filter_map(|r| r.get("planted")).collect();
+            summary["planted"] = json!({
+                "exercised": planted.iter().filter(|p| p["mutant"].is_string()).count(),
+                "detected": planted.iter().filter(|p| p["detected"] == true).count(),
+                "missed": planted.iter().filter(|p| p["missed"].as_array().is_some_and(|m| !m.is_empty())).count(),
+            });
+        }
         summary["inconclusive_runs"] = json!(replayed
             .iter()
             .filter(|r| r["inconclusive"] == true)

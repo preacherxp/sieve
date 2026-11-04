@@ -967,6 +967,15 @@ excludes pairs with differing failures or missing/invalid timing data. It shows 
 evidence and counts of full-suite selection reasons; inspect JSON for each commit's
 details. An intentional `ALL` run is not necessarily a fallback.
 
+Real histories rarely contain failing commits, so `--run --plant` also plants a bug in each
+commit's first changed hunk of main Java or Kotlin code (a negated condition, a flipped
+comparison, swapped arithmetic, a default return value, or a dropped call; mutants that do
+not compile are skipped), runs the selection and the full suite again with it, and
+restores the file. `planted` in each record and `summary.planted` count planted bugs that
+were exercised, detected by the full suite, and missed by the selection; a miss also
+makes the command exit with 1. `SIEVE_BROKEN_SELECTOR=1` drops every selected test, never
+the full reference, so a planted run with it must report misses.
+
 A successful exit with no missed failures is not enough to adopt. Selected-only failures
 can still leave replay's exit code at zero; inspect that count, inconclusive comparisons,
 and whether any full run actually failed. Without failing full runs, the history provides

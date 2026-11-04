@@ -88,6 +88,71 @@ exit 1
 }
 
 #[test]
+#[ignore = "requires Java 17 and Maven; run by fixture CI"]
+fn static_replay_plants_bugs_and_a_broken_selector_misses_them() {
+    let temp = fixture("maven");
+    let root = temp.path().join("project");
+    let calculator = "pricing/src/main/java/example/PriceCalculator.java";
+    let text = fs::read_to_string(root.join(calculator)).unwrap();
+    // Behavior stays the same, so the commit's own full run passes.
+    let from = "return net + net * new TaxRules().percent() / 100;";
+    assert!(text.contains(from));
+    write(
+        &root,
+        calculator,
+        text.replace(from, "return net + (net * new TaxRules().percent()) / 100;"),
+    );
+    commit(&root, "pricing: group the tax term");
+    let maven = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
+    for broken in [false, true] {
+        let report = temp.path().join(format!("replay-{broken}.json"));
+        let mut command = std::process::Command::new(BIN);
+        command.args([
+            "replay",
+            "--workspace",
+            root.to_str().unwrap(),
+            "--commits",
+            "1",
+            "--run",
+            "--plant",
+            "--executable",
+            &maven,
+            "--output",
+            report.to_str().unwrap(),
+            "--",
+            "-q",
+            "-Dmaven.test.failure.ignore=true",
+        ]);
+        if broken {
+            command.env("SIEVE_BROKEN_SELECTOR", "1");
+        }
+        let output = command.output().unwrap();
+        let report: Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+        let planted = &report["records"][0]["planted"];
+        assert!(planted["mutant"].is_string(), "{planted:#}");
+        assert_eq!(planted["detected"], true, "{planted:#}");
+        assert_eq!(report["summary"]["planted"]["exercised"], 1);
+        if broken {
+            assert_eq!(output.status.code(), Some(1));
+            assert!(
+                !planted["missed"].as_array().unwrap().is_empty(),
+                "{planted:#}"
+            );
+            assert_eq!(report["summary"]["planted"]["missed"], 1);
+        } else {
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(planted["missed"], serde_json::json!([]), "{planted:#}");
+            assert_eq!(report["summary"]["planted"]["missed"], 0);
+        }
+    }
+}
+
+#[test]
 fn replay_preview_keeps_json_stdout_and_explains_absent_measurements() {
     let temp = fixture("maven");
     let root = temp.path().join("project");
