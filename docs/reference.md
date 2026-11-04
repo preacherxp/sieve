@@ -192,7 +192,10 @@ workspace (two `help:effective-pom` runs), and compare them:
 - Property values are already interpolated into the compared sections. A changed property
   still changes every module that inherits it, because plugins and filtered resources read
   properties at build time, unless it is named as a version (`*.version`, but not
-  `maven.*`, `project.*` or `java.*`) and the module filters no resources.
+  `maven.*`, `project.*` or `java.*`), the module filters no resources, and its new value
+  appears as a `<version>` in a dependency section that changed somewhere in the reactor.
+  A version bump that changed no dependency is read by something the models do not show,
+  so it counts like any other property.
 - Edits that change no effective model, such as comments or formatting, select `NONE`.
 
 A root `<spring.version>` bump that only one module's dependency uses therefore runs that

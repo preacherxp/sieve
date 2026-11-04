@@ -4,9 +4,11 @@
 //! plugins, build settings, profiles, repositories. A difference in everything else selects
 //! every module. Changed dependency sections change that module, as a source edit would, so
 //! it and its dependents run their tests. Property values are already interpolated into the
-//! other sections; a changed property still changes its module unless it is named as a
-//! version (`*.version`) and the module filters no resources, since plugins and filtered
-//! resources can read any other property at build time.
+//! other sections; a changed property still changes its module, since plugins and filtered
+//! resources can read any property at build time, unless it is named as a version
+//! (`*.version`), the module filters no resources, and the new value shows where the
+//! property went: a `<version>` in a dependency section that changed in some module. A
+//! version bump that changed no dependency is read by something these models do not show.
 use crate::{setup, Result};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -54,7 +56,7 @@ fn compare_models(
     if now.keys().ne(then.keys()) {
         return Ok(Change::All("Maven modules were added or removed".into()));
     }
-    let mut changed = BTreeSet::new();
+    let mut sections = BTreeMap::new();
     for (module, xml) in now {
         let now = setup::dependency_sections(xml)?;
         let then = setup::dependency_sections(&then[module])?;
@@ -63,15 +65,31 @@ fn compare_models(
                 "the build configuration of {module} changed beyond its dependencies"
             )));
         }
+        sections.insert(module, (now, then));
+    }
+    // Versions that changed dependency sections now name, anywhere in the reactor.
+    let landed: Vec<&str> = sections
+        .values()
+        .filter(|(now, then)| now.dependencies != then.dependencies)
+        .map(|(now, _)| now.dependencies.as_str())
+        .collect();
+    let explained = |value: Option<&String>| {
+        value.is_some_and(|value| {
+            let tag = format!("<version>{value}</version>");
+            landed.iter().any(|section| section.contains(&tag))
+        })
+    };
+    let mut changed = BTreeSet::new();
+    for (module, (now, then)) in &sections {
         let filters = now.rest.contains("<filtering>true</filtering>");
         let properties = now
             .properties
             .keys()
             .chain(then.properties.keys())
             .filter(|name| now.properties.get(*name) != then.properties.get(*name))
-            .any(|name| filters || !version_only(name));
+            .any(|name| filters || !version_only(name) || !explained(now.properties.get(name)));
         if now.dependencies != then.dependencies || properties {
-            changed.insert(module.clone());
+            changed.insert((*module).clone());
         }
     }
     Ok(Change::Modules(changed))
@@ -151,13 +169,25 @@ mod tests {
         };
         let changed =
             |modules: &[&str]| Change::Modules(modules.iter().map(|m| m.to_string()).collect());
-        // A dependency bump changes its module; a version property alone changes nothing,
-        // its uses being interpolated into the compared sections.
-        let bumped_property = model("1.0", "<lib.version>2</lib.version>", "");
+        // A root version property that lands in one module's dependency changes that module
+        // only: the other inherits it unused, and it is interpolated nowhere there.
+        let lib = |version: &str| format!("<lib.version>{version}</lib.version>");
+        let landed = models(&[
+            ("app", &model("1.1", &lib("1.1"), "")),
+            ("core", &model("1.0", &lib("1.1"), "")),
+        ]);
+        let unbumped = models(&[
+            ("app", &model("1.0", &lib("1.0"), "")),
+            ("core", &model("1.0", &lib("1.0"), "")),
+        ]);
         assert_eq!(
-            compare(&model("1.1", LIB, ""), &bumped_property),
+            compare_models(&landed, &unbumped).unwrap(),
             changed(&["app"])
         );
+        // A version bump that changed no dependency is read by something unseen.
+        let bumped_property = model("1.0", "<lib.version>2</lib.version>", "");
+        assert_eq!(compare(&base, &bumped_property), changed(&["core"]));
+        assert_eq!(compare(&model("1.1", LIB, ""), &base), changed(&["app"]));
         // Any other property may be read by a plugin or a filtered resource.
         let arg_line = model(
             "1.0",

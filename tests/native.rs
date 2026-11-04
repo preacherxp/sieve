@@ -1002,6 +1002,17 @@ fn native_pom_edits_select_the_modules_whose_dependencies_changed() {
     // A comment changes no effective model, and nothing builds.
     let comment = run(&pom.replace("<modules>", "<!-- reviewed --><modules>"));
     assert_eq!(comment["mode"], "NONE", "{comment:#}");
+    // A version property that reaches no dependency is read by something the models do not
+    // show, so every module that inherits it runs.
+    let unused = run(&pom.replace(
+        "<junit.version>",
+        "<node.version>22.15.0</node.version><junit.version>",
+    ));
+    assert_eq!(
+        unused["dependencies_changed"],
+        json!(["checkout", "pricing", "runtime"]),
+        "{unused:#}"
+    );
     // Plugins may read any other property: every module that inherits it runs.
     let property = run(&pom.replace(
         "<junit.version>",
