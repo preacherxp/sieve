@@ -6,11 +6,14 @@ on:
         description: selected or full
         required: true
         type: string
+  # Run on its own, the stage runs the full suite and builds the selector instead of
+  # downloading Test impact CI's; without a base there is nothing to select.
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   tests:
-    name: ${{ inputs.mode }} (${{ matrix.tool }})
+    name: ${{ inputs.mode || 'full' }} (${{ matrix.tool }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -26,14 +29,20 @@ jobs:
         with:
           tool: ${{ matrix.tool }}
       - uses: actions/download-artifact@v4
+        if: github.event_name != 'workflow_dispatch' || github.workflow != 'Java and Kotlin test stage'
         with:
           name: sieve
           path: target/release
+      - name: Build the selector
+        if: github.event_name == 'workflow_dispatch' && github.workflow == 'Java and Kotlin test stage'
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 build --locked --release
       - run: chmod +x target/release/sieve
       - name: Run test stage
         env:
           BUILD_TOOL: ${{ matrix.tool }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ inputs.mode || 'full' }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE: ${{ github.event.before }}
           EVENT_NAME: ${{ github.event_name }}
@@ -43,7 +52,7 @@ jobs:
         if: always()
         env:
           BUILD_TOOL: ${{ matrix.tool }}
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ inputs.mode || 'full' }}
         shell: bash
         run: |
           if [[ -f "validation-results/$BUILD_TOOL-selection.json" ]]; then
@@ -58,7 +67,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-impact-${{ inputs.mode }}-${{ matrix.tool }}
+          name: test-impact-${{ inputs.mode || 'full' }}-${{ matrix.tool }}
           path: |
             validation-results/
             projects/${{ matrix.tool }}/**/target/surefire-reports/
