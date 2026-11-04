@@ -616,7 +616,7 @@ fn maven_setup_follows_nested_aggregators_and_module_paths() {
     );
     let orders = fs::read_to_string(root.join("services/orders/pom.xml")).unwrap();
     assert!(
-        orders.contains("<impact.skip.services.orders>false</impact.skip.services.orders>"),
+        orders.contains("<impact.skip.services.orders>${skipTests}</impact.skip.services.orders>"),
         "{orders}"
     );
     assert!(

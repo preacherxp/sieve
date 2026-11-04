@@ -274,8 +274,15 @@ pub(crate) fn install_maven_adapter(xml: &str, module: &str, refresh: bool) -> R
     if !refresh && xml_values(&result)?.contains_key(&format!("project/properties/{property}")) {
         return Err("A Sieve adapter already exists; restore impact.json and use refresh".into());
     }
-    result = set_xml(&result, &["project", "properties", &property], "false")?;
-    for artifact in ["maven-surefire-plugin", "maven-failsafe-plugin"] {
+    // The POM's own `skipTests` wins over `-DskipTests`; default to that property, so plain
+    // `mvn install -DskipTests` keeps skipping tests. Unset, it leaves tests running.
+    result = set_xml(
+        &result,
+        &["project", "properties", &property],
+        "${skipTests}",
+    )?;
+    let configured = format!("${{{property}}}");
+    for artifact in TEST_PLUGINS {
         let mut found = false;
         for (start, end) in element_ranges(&result, &["project", "build", "plugins", "plugin"])?
             .into_iter()
@@ -290,10 +297,18 @@ pub(crate) fn install_maven_adapter(xml: &str, module: &str, refresh: bool) -> R
                     return Err("Duplicate Maven test plugin".into());
                 }
                 found = true;
+                // Replacing a project's own skip setting would silently change which tests
+                // its ordinary builds run.
+                if values
+                    .get("plugin/configuration/skipTests")
+                    .is_some_and(|v| v != &[configured.as_str()])
+                {
+                    return Err(format!("{artifact} already configures skipTests; review it before setup (Sieve sets it to {configured})").into());
+                }
                 let plugin = set_xml(
                     &result[start..end],
                     &["plugin", "configuration", "skipTests"],
-                    &format!("${{{property}}}"),
+                    &configured,
                 )?;
                 result.replace_range(start..end, &plugin);
             }
@@ -892,7 +907,10 @@ mod tests {
         ] {
             let result = install_maven_adapter(xml, "pricing", false)?;
             let values = xml_values(&result)?;
-            assert_eq!(values["project/properties/impact.skip.pricing"], ["false"]);
+            assert_eq!(
+                values["project/properties/impact.skip.pricing"],
+                ["${skipTests}"]
+            );
             assert_eq!(
                 values["project/build/plugins/plugin/configuration/skipTests"],
                 ["${impact.skip.pricing}", "${impact.skip.pricing}"]
@@ -919,6 +937,19 @@ mod tests {
         // Other plugins' execution-specific `skip` settings never skip tests.
         let exec = "<project><build><plugins><plugin><artifactId>exec-maven-plugin</artifactId><executions><execution><configuration><skip>true</skip></configuration></execution></executions></plugin></plugins></build></project>";
         assert!(install_maven_adapter(exec, ".", false)?.contains("<skip>true</skip>"));
+        // A project's own skip setting is never silently replaced.
+        for value in ["true", "${skipUnitTests}"] {
+            let own = format!("<project><build><plugins><plugin><artifactId>maven-surefire-plugin</artifactId><configuration><skipTests>{value}</skipTests></configuration></plugin></plugins></build></project>");
+            assert!(install_maven_adapter(&own, ".", false).is_err(), "{value}");
+        }
+        // Earlier installs, whose property was `false`, migrate on refresh.
+        let old = install_maven_adapter("<project/>", "core", false)?
+            .replace(">${skipTests}<", ">false<");
+        let migrated = xml_values(&install_maven_adapter(&old, "core", true)?)?;
+        assert_eq!(
+            migrated["project/properties/impact.skip.core"],
+            ["${skipTests}"]
+        );
         Ok(())
     }
 
