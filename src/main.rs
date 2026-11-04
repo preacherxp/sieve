@@ -346,8 +346,19 @@ impl Config {
         };
         match &self.ignore {
             Some(patterns) => patterns.iter().any(|p| matches(p)),
-            // The default patterns never hide module sources, such as a `docs` module's.
-            None => self.module_of(path).is_none() && DEFAULT_IGNORE.iter().any(|p| matches(p)),
+            // The default patterns never hide module sources, and inside a module's directory
+            // only documentation files: a `docs` module's build file is a build input.
+            None => {
+                let inside = self
+                    .modules
+                    .keys()
+                    .any(|m| m != "." && path.starts_with(&format!("{m}/")));
+                self.module_of(path).is_none()
+                    && DEFAULT_IGNORE
+                        .iter()
+                        .filter(|p| !inside || p.starts_with("**/*."))
+                        .any(|p| matches(p))
+            }
         }
     }
 
@@ -2296,6 +2307,18 @@ mod tests {
         );
         assert_eq!(mode(&config, "@repository/other/README.md", "app"), "ALL");
         assert_eq!(mode(&config, "core/notes.txt", ""), "ALL");
+        // A module named `docs` keeps its build files and other inputs; only its
+        // documentation files stay ignored.
+        let docs: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {".": ["docs", "app"], "app": ["docs"], "docs": [],
+                                         "docs/examples": []}
+        }))
+        .unwrap();
+        assert_eq!(mode(&docs, "docs/pom.xml", ""), "ALL");
+        assert_eq!(mode(&docs, "docs/openapi.yaml", ""), "ALL");
+        assert_eq!(mode(&docs, "docs/examples/build.gradle", ""), "ALL");
+        assert_eq!(mode(&docs, "docs/README.md", ""), "NONE");
+        assert_eq!(mode(&docs, "docs/src/main/java/A.java", ""), "MODULES");
         // Local mode hashes the same paths: module sources stay inputs.
         assert!(!config.ignored("core/src/test/resources/expected.md", ""));
         config.ignore = Some(vec!["**/*.md".into(), "/other/**".into()]);
