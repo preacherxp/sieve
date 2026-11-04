@@ -326,13 +326,20 @@ selector reads the class files of every module it considers:
   callers of its interfaces and superclasses, because they may run it through DI or
   `ServiceLoader`, but not the other implementations. A subtype that also calls through
   its supertype (a decorator) is a caller.
-- Compilers copy non-private `static final` constants into callers without a reference.
-  When a changed class declares one, every class whose source names the constant or its
-  class is affected, and so is every class whose source cannot be found. The search
-  repeats for the constants of those classes, which may be computed from the changed one.
-- Classes annotated for dependency-injection scanning (Spring stereotypes and
-  configuration, Spring Data, JPA, JAX-RS, Jakarta/`javax` inject and CDI, Micronaut,
-  Quarkus) are components. When an affected class is a component, every context test
+- Compilers copy non-private constants (`static final` fields, and `final` instance fields
+  with a constant initializer) into callers without a reference. When a changed class
+  declares one, every class whose source names the constant or its class is affected, and
+  so is every class whose source cannot be found. The search repeats for the constants of
+  those classes, which may be computed from the changed one. A changed Java source whose
+  `final` statements all equal the merge base's declares no new value and skips the
+  search; Kotlin sources, interfaces, annotation types and files using Lombok always search.
+- Classes that dependency-injection scanning discovers are components: classes whose own,
+  member or parameter annotations (Spring stereotypes and configuration, `@Bean`,
+  `@EventListener`, Spring Data, JPA, JAX-RS, Jakarta/`javax` inject and CDI such as
+  `@Inject` or `@Observes`, Micronaut, Quarkus, Boot's `@JsonComponent`, and the servlet
+  annotations `@ServletComponentScan` registers) or supertypes come from those
+  frameworks, and their project subtypes. Calling a framework API, such as building a
+  `PageRequest`, does not make a class a component. When an affected class is a component, every context test
   (one that starts an application context: Spring TestContext and Boot test annotations, `@MicronautTest`,
   `@QuarkusTest`, Arquillian, Weld JUnit, `@HelidonTest`, Spring Modulith
   `@ApplicationModuleTest`, including composed annotations and inherited
