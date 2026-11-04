@@ -982,7 +982,7 @@ fn native_class_level_selection_runs_reaching_test_classes() {
                 })
                 .collect()
         };
-        let cases: [(&str, &str, &str, &str, Vec<String>); 5] = [
+        let cases: [(&str, &str, &str, &str, Vec<String>); 6] = [
             // Direct and transitive callers, across both Maven test plugins.
             (
                 "src/main/java/example/Calculator.java",
@@ -1017,9 +1017,17 @@ fn native_class_level_selection_runs_reaching_test_classes() {
             (
                 "src/main/java/example/Limits.java",
                 "public static",
-                "/* edited */ public static",
+                "public static final int MIN = 0;\n    public static",
                 "SUBSET",
                 unit(&["LimitsTest"]),
+            ),
+            // A comment changes no class: the module compiles, and no test runs.
+            (
+                "src/main/java/example/Limits.java",
+                "public static",
+                "/* edited */ public static",
+                "NONE",
+                vec![],
             ),
         ];
         for (path, from, to, mode, executed) in cases {

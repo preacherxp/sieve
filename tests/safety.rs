@@ -421,3 +421,38 @@ fn committed_build_change_selects_only_after_the_graph_is_checked() {
         assert_eq!(decision(&root)["mode"], "ALL");
     }
 }
+
+#[test]
+fn class_level_ignores_sources_whose_code_is_unchanged() {
+    let temp = fixture("maven");
+    let root = temp.path().join("project");
+    let mut config: Value =
+        serde_json::from_slice(&fs::read(root.join("impact.json")).unwrap()).unwrap();
+    config["class_level"] = json!(true);
+    write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
+    commit(&root, "class level");
+    let source = "pricing/src/main/java/example/TaxRules.java";
+    let text = fs::read_to_string(root.join(source)).unwrap();
+    // Javadoc and reformatting: the module stays selected, but the source reaches no test.
+    write(
+        &root,
+        source,
+        text.replace(
+            "public class TaxRules {",
+            "/** The tax rate. */\npublic class TaxRules {\n   ",
+        ),
+    );
+    let selected = decision(&root);
+    assert_eq!(selected["mode"], "MODULES", "{selected}");
+    assert_eq!(selected["unchanged_code"], json!([source]), "{selected}");
+    // A code edit in the same file is a change again.
+    write(&root, source, text.replace("return 20;", "return 21;"));
+    let selected = decision(&root);
+    assert!(selected.get("unchanged_code").is_none(), "{selected}");
+    // Without class-level selection nothing is narrowed.
+    config["class_level"] = json!(false);
+    write(&root, "impact.json", serde_json::to_vec(&config).unwrap());
+    commit(&root, "module level");
+    write(&root, source, format!("// note\n{text}"));
+    assert!(decision(&root).get("unchanged_code").is_none());
+}

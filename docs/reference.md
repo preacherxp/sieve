@@ -363,6 +363,12 @@ selector reads the class files of every module it considers:
   emits `NONE` with the selected modules: the build compiles and verifies without
   executing tests.
 
+A changed Java or Kotlin source whose code equals the merge base's, because only comments,
+Javadoc, indentation or line breaks differ, changes no class: `run` and `select` list it
+under `unchanged_code` and leave it out. Spacing that joins or splits tokens, any literal,
+a Unicode escape, a Kotlin string template, or a file new since the base still counts as a
+change.
+
 Selection falls back to `MODULES` for a changed non-Java/Kotlin file under `src/`
 (resources included), a deleted source, `package-info.java`/`module-info.java`, a source
 with no compiled class, a class named in a resource that reaches the change, or unreadable

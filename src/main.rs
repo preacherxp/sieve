@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 mod bytecode;
 mod catalog;
 mod classes;
+mod cosmetic;
 mod fingerprint;
 mod fixtures;
 mod generated;
@@ -133,6 +134,10 @@ struct Selection {
     /// Generated sources that differ from the comparison base's.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     generated: BTreeSet<String>,
+    /// Class level: changed sources whose code is unchanged, as only comments and whitespace
+    /// differ from the comparison base; they reach no test.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    unchanged_code: BTreeSet<String>,
     /// Local mode: test classes dropped at discovery.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     skipped: BTreeSet<String>,
@@ -377,6 +382,7 @@ impl Config {
             changed: BTreeSet::new(),
             sources: BTreeSet::new(),
             generated: BTreeSet::new(),
+            unchanged_code: BTreeSet::new(),
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
@@ -454,6 +460,7 @@ impl Config {
             changed,
             sources,
             generated: BTreeSet::new(),
+            unchanged_code: BTreeSet::new(),
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
             speedups: BTreeMap::new(),
@@ -1499,6 +1506,14 @@ fn main_result() -> Result<u8> {
         let changed = std::mem::take(&mut selection.changed);
         selection = config.all("Explicit native test filter; executing requested tests");
         selection.changed = changed;
+    }
+    // Class level follows changed classes: a Javadoc or formatting edit changes none.
+    if config.class_level && selection.mode == "MODULES" {
+        if let Some((_, merge_base)) = &comparison {
+            let unchanged = cosmetic::unchanged(&workspace, merge_base, &selection.sources);
+            selection.sources.retain(|path| !unchanged.contains(path));
+            selection.unchanged_code = unchanged;
+        }
     }
     let preserve_modules = (!config.class_level).then(|| selection.modules.clone());
     if !config.must_run.is_empty() && selection.mode != "ALL" {
