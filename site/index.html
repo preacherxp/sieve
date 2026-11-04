@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sieve — shorter CI for Java and Kotlin</title>
-  <meta name="description" content="Sieve cuts Java and Kotlin CI time. It runs tests only in the modules a change can affect, and the modules that depend on them. Maven and Gradle. Anything unsafe still runs the full suite.">
+  <title>Sieve — run only the tests a change can reach</title>
+  <meta name="description" content="Sieve cuts CI time for Java, Kotlin and JavaScript projects. It runs only the tests a change can reach, through your own Maven, Gradle, Jest or Vitest build. Anything it cannot see still runs the full suite.">
   <meta name="theme-color" content="#2c6cb0">
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch {}</script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%232c6cb0' width='32' height='32' rx='4'/%3E%3Crect x='7' y='14' width='18' height='5' rx='1' fill='%23ffffff'/%3E%3C/svg%3E">
@@ -155,7 +155,7 @@
     .snippet code { font-size: 12px; line-height: 1.5; color: #1c3348; }
     .snippet button { position: absolute; top: 6px; right: 6px; }
     .fine { margin: 8px 0 0; color: var(--muted); font-size: 12px; max-width: 40rem; }
-    .fine code, .steps code, .limits code {
+    .fine code, .steps code, .limits code, .new code {
       color: #163a66;
       background: #eef3f8;
       border: 1px solid #c5d0dc;
@@ -293,6 +293,32 @@
       font-size: 10px; font-weight: bold; letter-spacing: 0.04em;
       text-shadow: 0 -1px 0 rgba(0, 0, 0, 0.25);
     }
+    .figures {
+      list-style: none; margin: 0; padding: 0;
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
+    }
+    .figures li { padding: 12px 14px 14px; }
+    .figures b {
+      display: block; margin-bottom: 4px;
+      font-size: 28px; line-height: 1.1; letter-spacing: -0.02em; color: #163a66;
+      font-variant-numeric: tabular-nums;
+    }
+    .figures p { margin: 0; color: #333; font-size: 12px; }
+    .stat { margin: 14px 0 0; font-size: 12px; color: var(--muted); }
+    .stat b { color: #163a66; }
+    .new { margin-top: 26px; }
+    .new ul {
+      list-style: none; margin: 0; padding: 0;
+      display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+    }
+    .new li { padding: 12px 14px 14px; }
+    .new strong { display: block; margin-bottom: 4px; color: #163a66; }
+    .new p { margin: 0; color: #333; font-size: 12px; }
+    .tag {
+      display: inline-block; margin-left: 8px; padding: 1px 6px; vertical-align: 3px;
+      background: linear-gradient(#ffe9a6, #f6c445); border: 1px solid #c79a1f; border-radius: 3px;
+      color: #4a3800; font-size: 10px; font-weight: bold; letter-spacing: 0.04em;
+    }
     .limits { margin-top: 26px; }
     .limits ul {
       list-style: none; margin: 0; padding: 0;
@@ -337,6 +363,9 @@
     }
     [data-theme="dark"] .lamp { background: linear-gradient(#fdfdfd, #d7dde4 50%, #b9c2cc); border-color: #6f7b88; color: #1b2430; text-shadow: 0 1px 0 #fff; }
     [data-theme="dark"] .lamp:hover { background: linear-gradient(#fff, #e4e9ee 50%, #c9d1da); }
+    [data-theme="dark"] :is(.figures b, .new strong, .stat b) { color: #9cc8ff; text-shadow: 0 1px 0 #000; }
+    [data-theme="dark"] :is(.figures p, .new p) { color: #c3ccd6; }
+    [data-theme="dark"] .tag { background: linear-gradient(#40371a, #2a2410); border-color: #6b5a1e; color: #f0d77a; }
     [data-theme="dark"] :is(h1, h2, .steps h3, .limits strong, .lede strong, #saved) { color: #9cc8ff; text-shadow: 0 1px 0 #000; }
     [data-theme="dark"] :is(.lede, .steps p, .limits p, .summary) { color: #c3ccd6; }
     [data-theme="dark"] .pill { background: linear-gradient(#40371a, #2a2410); border-color: #6b5a1e; color: #f0d77a; }
@@ -355,7 +384,7 @@
     [data-theme="dark"] :is(.choices, .tools, .switch) button[aria-checked="true"] {
       background: linear-gradient(#6ea4dc, #2c6cb0); border-color: #1e4f86; color: #fff;
     }
-    [data-theme="dark"] :is(.fine, .steps, .limits) code { color: #b9d6f5; background: #1b2430; border-color: #34414f; }
+    [data-theme="dark"] :is(.fine, .steps, .limits, .new) code { color: #b9d6f5; background: #1b2430; border-color: #34414f; }
     [data-theme="dark"] .shine { background: #151b22; border-color: #2a3440; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.06); }
     [data-theme="dark"] .panel-kicker { background: linear-gradient(#2c3642, #1a2129); border-color: #0e1318; color: #aebccb; }
     [data-theme="dark"] .eyebrow { color: #8fd14f; }
@@ -376,12 +405,14 @@
       mask: linear-gradient(90deg, #000 var(--blind), transparent 0) 0 0 / 48px 100%;
     }
     @media (max-width: 860px) {
-      .hero, .steps, .limits ul { grid-template-columns: minmax(0, 1fr); }
+      .hero, .steps, .limits ul, .new ul { grid-template-columns: minmax(0, 1fr); }
+      .figures { grid-template-columns: 1fr 1fr; }
       .hero { padding-top: 16px; }
       .nav-inner { flex-wrap: wrap; padding: 8px 0; }
     }
     @media (max-width: 640px) {
       h1 { font-size: 26px; }
+      .figures b { font-size: 22px; }
       .setup li { flex-wrap: wrap; }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -400,6 +431,8 @@
       <a class="mark" href="#top">Sieve</a>
       <nav aria-label="Page">
         <a href="#proof">What CI skips</a>
+        <a href="#numbers">Measured</a>
+        <a href="#new">New</a>
         <a href="#how">How</a>
         <a href="#install">Install</a>
         <a href="guide.html">Guide</a>
@@ -413,9 +446,10 @@
     <main id="top">
       <section class="hero">
         <div>
-          <p class="pill"><i></i> sieve · Maven · Gradle</p>
-          <h1>Reduce CI time on Java and Kotlin changes.</h1>
-          <p class="lede">Sieve runs only the tests a diff can reach: the changed modules and their dependents, the test classes whose bytecode leads to the change, or the classes whose last run touched it. The rest of the suite is not started. A build file, or a base Git cannot see, still runs <strong>everything</strong>.</p>
+          <p class="pill"><i></i> sieve · Maven · Gradle · Jest · Vitest</p>
+          <h1>Run the tests a change can reach. Skip the rest.</h1>
+          <p class="lede">Sieve reads the diff and runs only what it can reach: the changed modules and their dependents, the test classes whose bytecode leads to the change, or the tests whose last run touched it. Your own Maven, Gradle, Jest or Vitest build runs them. A build file, a lockfile, or a base Git cannot see still runs <strong>everything</strong>.</p>
+          <p class="stat"><b>−57%</b> build time over 30 commits of apache/commons-text. <b>−52%</b> on a 20 commit Spring Boot benchmark, with no real failure missed.</p>
           <div class="install" id="install">
             <div class="switch" role="radiogroup" aria-label="How to install">
               <button type="button" role="radio" data-install="ci" aria-checked="true">CI job</button>
@@ -497,13 +531,37 @@
         </aside>
       </section>
 
+      <section class="band" id="numbers" aria-labelledby="numbers-title">
+        <h2 id="numbers-title">Measured on real history.</h2>
+        <ul class="figures">
+          <li class="card"><b>−57%</b><p>Build time over the last 30 commits of apache/commons-text, class level: 511 s down to 222 s.</p></li>
+          <li class="card"><b>256 s → 13 s</b><p>Its 15 docs, release note and CI commits. They compile nothing and test nothing.</p></li>
+          <li class="card"><b>−52%</b><p>Local mode on 20 commits of a Spring Boot service with PostgreSQL and Kafka containers, Maven. Gradle: −54%.</p></li>
+          <li class="card"><b>0</b><p>Real failures missed in those walks. A planted bug was caught in 11 commits on each tool.</p></li>
+        </ul>
+        <p class="fine">One machine per measurement, and the benchmark service was written by the same author as the tool. <a href="https://github.com/preacherxp/sieve/blob/master/docs/performance.md">Full data, machines and caveats</a>.</p>
+
+        <div class="new" id="new">
+          <h2>New since 0.3.0 <span class="tag">ON MASTER</span></h2>
+          <ul>
+            <li class="card"><strong>init edits no POM.</strong><p>The embedded Maven extension skips the tests of the upstream modules <code>-am</code> builds. <code>impact.json</code> is the only file to commit.</p></li>
+            <li class="card"><strong>Docs commits start no build.</strong><p>A docs or CI only change used to start Maven or Gradle just to clean, 1 to 3 s each. Now nothing starts.</p></li>
+            <li class="card"><strong>Comment edits select nothing.</strong><p>Javadoc, comment and formatting changes change no class. On commons-text they had selected 39 and 64 of its 103 test classes.</p></li>
+            <li class="card"><strong>Gradle keeps its cache and daemon.</strong><p>An identical selection restores <code>:test</code> from the build cache, and the project's daemon setting decides. 22 fixture scenarios: 88 s down to 22 s.</p></li>
+            <li class="card"><strong>Class files parse on every core.</strong><p>47,000 classes from real jars load in 1.3 s instead of 6.3 s.</p></li>
+            <li class="card"><strong>Jest and Vitest.</strong><p><code>sieve init</code> finds the source roots and maps each script to the test files that import it. Config, lockfile and setup file edits still run every test.</p></li>
+          </ul>
+          <p class="fine">These are on master and ship in the next release. To use them now, install from source: <code>cargo install --git https://github.com/preacherxp/sieve --locked</code>. The installer and the CI job fetch the latest release, 0.3.0.</p>
+        </div>
+      </section>
+
       <section class="band" id="how" aria-labelledby="how-title">
         <h2 id="how-title">A shorter job, not a guessed one.</h2>
         <ol class="steps">
           <li class="card">
             <span class="index">01</span>
             <h3>Read the real graph.</h3>
-            <p><code>init</code> asks Maven or Gradle for the module graph and writes <code>impact.json</code>. It will not overwrite one. Checkout depending on pricing is an edge the selector can walk.</p>
+            <p><code>init</code> asks Maven or Gradle for the module graph, or finds your Jest or Vitest source roots, and writes <code>impact.json</code>. It will not overwrite one. Checkout depending on pricing is an edge the selector can walk.</p>
           </li>
           <li class="card">
             <span class="index">02</span>
@@ -513,15 +571,15 @@
           <li class="card">
             <span class="index">03</span>
             <h3>Let the build tool run them.</h3>
-            <p>Maven gets <code>clean verify</code> and skip flags. Gradle gets <code>clean check</code> and <code>-Pimpact.modules</code>. With <code>"class_level": true</code>, Sieve compiles first and passes only the test classes whose bytecode reaches the change. No base, or a build-file change, and the flags stay off so the full suite runs.</p>
+            <p>Maven gets <code>clean verify -pl</code> the selected modules <code>-am</code>, and skips the tests of the upstream ones. Gradle gets <code>clean :module:check</code>. With <code>"class_level": true</code>, the same build runs only the test classes whose bytecode reaches the change. No base, or a build file change, and the full suite runs.</p>
           </li>
         </ol>
         <div class="limits">
           <h2>Where it will not save time.</h2>
           <ul>
-            <li class="card"><p><strong>Finer grain costs a build.</strong> By default you skip modules: TaxRules.java also runs CurrencyLabelTest, because they share pricing. <code>class_level</code> narrows to test classes, Kotlin inline functions and constants included, but starts the build tool twice, so cheap suites get slower.</p></li>
-            <li class="card"><p><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</p></li>
-            <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>docs/</code>, and any <code>ignore</code> globs in <code>impact.json</code> do not compile or test. The job cleans and stops.</p></li>
+            <li class="card"><p><strong>Test classes are opt in.</strong> By default you skip modules: TaxRules.java also runs CurrencyLabelTest, because they share pricing. <code>class_level</code> narrows to test classes inside the same build, Kotlin inline functions and constants included. Anything it cannot map runs the whole module.</p></li>
+            <li class="card"><p><strong>Unsafe diffs run the full suite.</strong> <code>pom.xml</code>, Gradle build scripts, <code>package.json</code> and lockfiles, <code>impact.json</code>, or a base Git cannot resolve: nothing is skipped. A wrong skip is worse than a slow job.</p></li>
+            <li class="card"><p><strong>Docs are the free case.</strong> <code>README.md</code>, <code>docs/</code>, and any <code>ignore</code> globs in <code>impact.json</code> do not compile or test. On master, no build starts at all.</p></li>
             <li class="card"><p><strong>Setup expects a regular layout.</strong> One package, or modules at any depth whose directories match their place in the build. Other directories, composite builds, Android, and Kotlin Multiplatform are reported, not invented.</p></li>
             <li class="card"><p><strong>Records need one module.</strong> Local mode (<code>--records</code>) records what each test class ran and read, on single-module Maven or Gradle with a Java 17+ test JVM. A dependency bump then reruns only the tests that ran the bumped jar. <code>--ci</code> shares records through the CI cache.</p></li>
             <li class="card"><p><strong>Keep the full suite somewhere.</strong> Selection assumes tests are independent and that the inputs it sees are all there is. Run everything on the default branch, so a missed failure fails at merge, never silently.</p></li>
@@ -532,7 +590,8 @@
 
     <footer>
       <span>sieve</span>
-      <span>Java · Kotlin · Maven · Gradle</span>
+      <span>Java · Kotlin · JavaScript · Maven · Gradle · Jest · Vitest</span>
+      <a href="https://buymeacoffee.com/michal.hachula">Buy me a coffee</a>
       <a href="https://github.com/preacherxp/sieve">github.com/preacherxp/sieve</a>
     </footer>
   </div>
@@ -558,7 +617,7 @@
       docs: {
         modules: [],
         runs: 0,
-        summary: "A docs-only push does not compile and does not test. CI cleans and stops."
+        summary: "A docs-only push does not compile and does not test. No build starts."
       },
       build: {
         modules: ["checkout", "pricing", "runtime"],
@@ -579,21 +638,25 @@
 
     function flagsFor(example) {
       const mode = modeOf(example);
-      const args = tool === "maven"
-        ? ["-B", "-ntp", "clean"]
-        : ["--no-daemon", "--console=plain", "clean"];
-      if (mode !== "NONE") {
-        args.push(tool === "maven" ? "verify" : "check");
-        if (mode === "MODULES") {
-          const selected = new Set(example.modules);
-          if (tool === "maven") {
-            for (const module of ORDER) args.push("-Dimpact.skip." + module + "=" + (!selected.has(module)));
-          } else {
-            args.push("-Pimpact.modules=" + [...selected].sort().join(","));
-          }
+      // The commands sieve run starts, as built by build_args in src/main.rs.
+      if (mode === "NONE") return "No build started: nothing to compile or test.";
+      const maven = tool === "maven";
+      const args = maven ? ["-B", "-ntp", "clean"] : ["--console=plain", "clean"];
+      const goal = maven ? "verify" : "check";
+      if (mode === "ALL") {
+        args.push(goal);
+      } else {
+        const selected = [...example.modules].sort();
+        if (maven) {
+          // -am also builds the upstream modules; their tests are skipped.
+          args.push(goal, "-pl", selected.join(","), "-am");
+          for (const module of ORDER.slice().sort()) args.push("-Dimpact.skip." + module + "=" + !selected.includes(module));
+        } else {
+          for (const module of selected) args.push(":" + module + ":" + goal);
+          args.push("-Pimpact.modules=" + selected.join(","));
         }
       }
-      return (tool === "maven" ? "mvn " : "gradle ") + args.join(" ");
+      return (maven ? "mvn " : "gradle ") + args.join(" ");
     }
 
     function fade(el) {
