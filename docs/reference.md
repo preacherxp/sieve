@@ -178,6 +178,27 @@ A single-module package uses `".": []`. The conventional source layout is
    native build tool: Maven `verify -pl <selected> -am` (dependencies build with their
    tests skipped), Gradle `:<module>:check` per selected module.
 
+Any other changed path selects `ALL`, with one Maven exception. When the only such paths are
+`pom.xml` files of modules or of the aggregators above them, `run` and `select` read every
+module's effective model at the merge base, in a temporary Git worktree, and in the
+workspace (two `help:effective-pom` runs), and compare them:
+
+- A difference outside `<dependencies>`, `<dependencyManagement>` and `<properties>`, such
+  as a plugin version or setting, a profile, a repository, or an added or removed module,
+  keeps `ALL`, and so does a comparison that fails.
+- A module whose dependencies or dependency management differ, a BOM import included, is
+  changed, as a source edit would change it: it and its dependents run every test, also
+  with `class_level`. The selection lists such modules under `dependencies_changed`.
+- Property values are already interpolated into the compared sections. A changed property
+  still changes every module that inherits it, because plugins and filtered resources read
+  properties at build time, unless it is named as a version (`*.version`, but not
+  `maven.*`, `project.*` or `java.*`) and the module filters no resources.
+- Edits that change no effective model, such as comments or formatting, select `NONE`.
+
+A root `<spring.version>` bump that only one module's dependency uses therefore runs that
+module and its dependents. Gradle build scripts have no comparable model and still select
+`ALL`.
+
 `shared_tests` lists the modules whose `src/test` code other modules use: through a Maven
 `test-jar` (`<type>test-jar</type>` or `<classifier>tests</classifier>`), a Maven build use
 (plugin, processor, unpacked artifact, or directory), a Gradle dependency on a named

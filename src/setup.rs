@@ -570,6 +570,77 @@ fn maven_models(workspace: &Path, executable: &str, extra: &[String]) -> Result<
     Ok(models)
 }
 
+/// The effective model of every Maven module, by module directory, for comparing builds.
+/// `extra` keeps only the arguments that shape the model.
+pub(crate) fn effective_models(
+    workspace: &Path,
+    executable: &str,
+    extra: &[String],
+) -> Result<BTreeMap<String, String>> {
+    Ok(
+        maven_models(workspace, executable, &model_args("maven", extra))?
+            .into_iter()
+            .map(|(module, (xml, _))| (module, xml))
+            .collect(),
+    )
+}
+
+/// An effective model split for comparing builds, with comments removed (Maven's help plugin
+/// stamps its output with the date): `<dependencies>` and `<dependencyManagement>`, which
+/// decide the class path; `<properties>` by name; and everything else.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Sections {
+    pub rest: String,
+    pub dependencies: String,
+    pub properties: BTreeMap<String, String>,
+}
+
+pub(crate) fn dependency_sections(xml: &str) -> Result<Sections> {
+    let mut ranges = Vec::new();
+    for section in ["dependencies", "dependencyManagement", "properties"] {
+        ranges.extend(element_ranges(xml, &["project", section])?);
+    }
+    ranges.sort_unstable();
+    let (mut rest, mut dependencies, mut properties, mut at) =
+        (String::new(), String::new(), BTreeMap::new(), 0);
+    for (start, end) in ranges {
+        rest.push_str(&xml[at..start]);
+        let section = &xml[start..end];
+        if section.starts_with("<properties") {
+            for (key, values) in xml_values(section)? {
+                if let Some(name) = key.strip_prefix("properties/") {
+                    properties.insert(name.to_owned(), values.join("\n"));
+                }
+            }
+        } else {
+            dependencies.push_str(section);
+        }
+        at = end;
+    }
+    rest.push_str(&xml[at..]);
+    let uncommented = |text: &str| -> Result<String> {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("<!--") {
+            out.push_str(&rest[..start]);
+            let end = rest[start..].find("-->").ok_or("Unclosed XML comment")?;
+            rest = &rest[start + end + 3..];
+        }
+        out.push_str(rest);
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"))
+    };
+    Ok(Sections {
+        rest: uncommented(&rest)?,
+        dependencies: uncommented(&dependencies)?,
+        properties,
+    })
+}
+
 fn maven_graph(workspace: &Path, executable: &str, extra: &[String]) -> Result<Config> {
     let models = maven_models(workspace, executable, extra)?;
     let mut coordinates = BTreeMap::new();

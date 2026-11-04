@@ -567,7 +567,11 @@ org.junit.jupiter.api.Assertions.assertEquals(1, Provider.value());
     write(
         root,
         "service/pom.xml",
-        format!("{build}\n<!-- image configuration changed -->\n"),
+        // Build configuration beyond dependencies; a comment would change no model.
+        build.replace(
+            "</project>",
+            "<description>image configuration changed</description></project>",
+        ),
     );
     assert_eq!(select(root.to_str().unwrap(), "HEAD")["mode"], "ALL");
     write(root, "service/pom.xml", build);
@@ -935,6 +939,80 @@ fn native_java_consumer_of_kotlin_provider() {
         );
         assert_eq!(actual["errors"], json!([]));
     }
+}
+
+#[test]
+#[ignore = "requires Java 17 and Maven; run by fixture CI"]
+fn native_pom_edits_select_the_modules_whose_dependencies_changed() {
+    if !tools().iter().any(|(tool, _)| *tool == "maven") {
+        return;
+    }
+    let executable = std::env::var("IMPACT_MAVEN").unwrap_or_else(|_| "mvn".into());
+    let temp = fixture("maven");
+    let root = temp.path().join("project");
+    let workspace = root.to_str().unwrap();
+    let pom = fs::read_to_string(root.join("pom.xml")).unwrap();
+    let output = temp.path().join("selection.json");
+    let run = |edited: &str| -> Value {
+        write(&root, "pom.xml", edited);
+        checked(cli(&[
+            "run",
+            "--workspace",
+            workspace,
+            "--executable",
+            &executable,
+            "--base",
+            "HEAD",
+            "--output",
+            output.to_str().unwrap(),
+        ]));
+        serde_json::from_slice(&fs::read(&output).unwrap()).unwrap()
+    };
+    // Only runtime uses Spring: the root's version property reaches its dependency alone.
+    let spring = run(&pom.replace(
+        "<spring.version>6.1.16</spring.version>",
+        "<spring.version>6.1.17</spring.version>",
+    ));
+    assert_eq!(spring["mode"], "MODULES", "{spring:#}");
+    assert_eq!(spring["modules"], json!(["runtime"]), "{spring:#}");
+    assert_eq!(
+        spring["dependencies_changed"],
+        json!(["runtime"]),
+        "{spring:#}"
+    );
+    let executed = reports(&root, "maven")["executed"].clone();
+    assert!(
+        executed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t.as_str().unwrap().starts_with("runtime:")),
+        "{executed}"
+    );
+    // The Kotlin version is also the Kotlin plugin's: build configuration.
+    let kotlin = run(&pom.replace("<kotlin.version>2.2.21<", "<kotlin.version>2.2.20<"));
+    assert_eq!(kotlin["mode"], "ALL", "{kotlin:#}");
+    assert!(
+        kotlin["reason"]
+            .as_str()
+            .unwrap()
+            .contains("beyond its dependencies"),
+        "{kotlin:#}"
+    );
+    // A comment changes no effective model, and nothing builds.
+    let comment = run(&pom.replace("<modules>", "<!-- reviewed --><modules>"));
+    assert_eq!(comment["mode"], "NONE", "{comment:#}");
+    // Plugins may read any other property: every module that inherits it runs.
+    let property = run(&pom.replace(
+        "<junit.version>",
+        "<surefire.timeout>60</surefire.timeout><junit.version>",
+    ));
+    assert_eq!(property["mode"], "MODULES", "{property:#}");
+    assert_eq!(
+        property["dependencies_changed"],
+        json!(["checkout", "pricing", "runtime"]),
+        "{property:#}"
+    );
 }
 
 #[test]

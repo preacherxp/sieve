@@ -44,6 +44,9 @@ sieve run --base REV
   ├─ Config::select          ignore globs → skip; <module>/src/** → module; anything else → ALL;
   │                          then close over reverse dependency edges (src/test/** only from
   │                          shared_tests modules) → MODULES or NONE
+  ├─ [Maven, only module/aggregator POMs select ALL]
+  │    └─ pomdiff::compare   effective models at the merge base (worktree) and now: only
+  │                          dependencies/properties differ → those modules join MODULES
   ├─ [fingerprint mismatch && MODULES]
   │    └─ setup::stale       rediscover the graph; impact.json still covers it → keep MODULES
   │                          (reason asks for refresh), else ALL ("run sieve refresh")
@@ -203,6 +206,7 @@ catch it.
 | `js.rs`, `vitest.helper.mjs` | Jest/Vitest projects (ADR 0007): path rules, runner queries, runs, replay results |
 | `setup.rs` | `init`/`refresh`, build tool detection, Maven POM adapter, Gradle script extraction |
 | `fingerprint.rs` | Hash of conventional build inputs |
+| `pomdiff.rs` | Effective-model comparison that narrows Maven POM edits to the modules whose dependencies changed |
 | `classes.rs` | Class-file parser and class-level impact graph |
 | `generated.rs` | Generated-source comparison against the merge base |
 | `records.rs` | Local-mode `run`, `decide`, `record`, `env`, agent extraction, speed-ups |

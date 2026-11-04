@@ -74,7 +74,7 @@ in both modules; it does not mean only classes directly calling the changed code
 | `delete-class` | P0 | Checkout; deletion plus the compilable consumer edit produces the declared failure. This does not prove isolated deletion handling. |
 | `delete-test` | P0 | Delete ReceiptTest alone; checkout selects three remaining classes / four invocations. |
 | `docs-only` | P0 | `NONE`; native execution produces no test reports after cleanup. |
-| `dependency-change` | P0 | `ALL`, even though the manifest's minimum required tests are only in runtime. |
+| `dependency-change` | P0 | Maven: runtime, the only module whose effective dependencies change (`dependencies_changed`); Gradle: `ALL`. The manifest's required tests are runtime's. |
 | `kotlin-source` | P0 | Pricing + checkout; the Kotlin production change is detected. |
 | `java-record` | P1 | Pricing + checkout; the record factory's contract failure is observed. |
 | `kotlin-sealed` | P1 | Pricing + checkout; the sealed result formatter's failure is observed. |

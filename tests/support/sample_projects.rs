@@ -178,7 +178,7 @@ fn java_sample(maven: bool) -> Sample {
             Mutation {
                 path: "pom.xml",
                 before: "</project>",
-                after: Some("<!-- build input changed -->\n</project>"),
+                after: Some("<description>build input changed</description>\n</project>"),
                 mode: "ALL",
                 tests: all,
                 failures: &[],
@@ -561,7 +561,7 @@ fn kotlin_shipping() -> Sample {
         Mutation {
             path: "pom.xml",
             before: "</project>",
-            after: Some("<!-- build input changed -->\n</project>"),
+            after: Some("<description>build input changed</description>\n</project>"),
             mode: "ALL",
             tests: all,
             failures: &[],

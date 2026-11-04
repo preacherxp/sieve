@@ -8,6 +8,7 @@ mod fixtures;
 mod generated;
 mod js;
 mod observation;
+mod pomdiff;
 mod receipt;
 mod records;
 mod replay;
@@ -142,6 +143,10 @@ struct Selection {
     /// differ from the comparison base; they reach no test.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     unchanged_code: BTreeSet<String>,
+    /// Maven modules whose effective dependencies, dependency management or properties
+    /// differ from the comparison base's after POM edits; they keep every test.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    dependencies_changed: BTreeSet<String>,
     /// Local mode: test classes dropped at discovery.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     skipped: BTreeSet<String>,
@@ -387,6 +392,7 @@ impl Config {
             sources: BTreeSet::new(),
             generated: BTreeSet::new(),
             unchanged_code: BTreeSet::new(),
+            dependencies_changed: BTreeSet::new(),
             stable_constants: BTreeSet::new(),
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
@@ -397,12 +403,55 @@ impl Config {
         }
     }
 
+    /// Maven POM paths in `changed`, when they are the only changes that would select `ALL`:
+    /// each a module's or an aggregator's POM, whose effect the effective models show.
+    fn pom_inputs(&self, changed: &BTreeSet<String>, prefix: &str) -> Option<BTreeSet<String>> {
+        if self.tool != "maven" {
+            return None;
+        }
+        let mut poms = BTreeSet::new();
+        for path in changed {
+            if self.ignored(path, prefix) || self.module_of(path).is_some() {
+                continue;
+            }
+            let dir = match path.strip_suffix("pom.xml") {
+                Some("") => "",
+                Some(dir) if !path.starts_with(REPOSITORY) && dir.ends_with('/') => {
+                    &dir[..dir.len() - 1]
+                }
+                _ => return None,
+            };
+            let builds = dir.is_empty()
+                || self
+                    .modules
+                    .keys()
+                    .any(|m| m == dir || m.starts_with(&format!("{dir}/")));
+            if !builds {
+                return None;
+            }
+            poms.insert(path.clone());
+        }
+        (!poms.is_empty()).then_some(poms)
+    }
+
     fn select(&self, changed: BTreeSet<String>, prefix: &str) -> Selection {
-        let mut selected = BTreeSet::new();
+        self.select_with(changed, prefix, &BTreeSet::new(), &BTreeSet::new())
+    }
+
+    /// `select`, with the `compared` POM paths already accounted for by the `also` modules
+    /// whose effective dependencies they changed.
+    fn select_with(
+        &self,
+        changed: BTreeSet<String>,
+        prefix: &str,
+        compared: &BTreeSet<String>,
+        also: &BTreeSet<String>,
+    ) -> Selection {
+        let mut selected = also.clone();
         // Changed modules whose change can reach the modules depending on them.
-        let mut reaching = BTreeSet::new();
+        let mut reaching = also.clone();
         let mut sources = BTreeSet::new();
-        for path in &changed {
+        for path in changed.iter().filter(|p| !compared.contains(*p)) {
             if self
                 .build_logic
                 .iter()
@@ -466,6 +515,7 @@ impl Config {
             sources,
             generated: BTreeSet::new(),
             unchanged_code: BTreeSet::new(),
+            dependencies_changed: BTreeSet::new(),
             stable_constants: BTreeSet::new(),
             skipped: BTreeSet::new(),
             reasons: BTreeMap::new(),
@@ -525,6 +575,51 @@ impl Selection {
                 }
             },
         )
+    }
+}
+
+/// A Maven `ALL` that only POM edits caused, narrowed to the modules whose effective
+/// dependencies, dependency management or properties changed, and their dependents. Any
+/// other difference in the effective models, or a comparison that fails, keeps `ALL`.
+#[allow(clippy::too_many_arguments)]
+fn narrow_poms(
+    config: &Config,
+    selection: Selection,
+    poms: &BTreeSet<String>,
+    workspace: &Path,
+    prefix: &str,
+    merge_base: &str,
+    executable: &str,
+    extra: &[String],
+) -> Selection {
+    let mut selection = selection;
+    match pomdiff::compare(workspace, prefix, merge_base, executable, extra) {
+        Ok(pomdiff::Change::Modules(modules)) => {
+            let list = modules.iter().cloned().collect::<Vec<_>>().join(", ");
+            let mut narrowed =
+                config.select_with(selection.changed.clone(), prefix, poms, &modules);
+            narrowed.reason = match (modules.is_empty(), narrowed.mode) {
+                (true, "NONE") => "POM edits changed no effective Maven model".into(),
+                (true, _) => format!("{}; POM edits changed no effective model", narrowed.reason),
+                (false, _) => format!(
+                    "{}; POM edits changed only the dependencies or properties of {list}",
+                    narrowed.reason
+                ),
+            };
+            narrowed.dependencies_changed = modules;
+            narrowed
+        }
+        Ok(pomdiff::Change::All(why)) => {
+            selection.reason = format!("{}: {why}", selection.reason);
+            selection
+        }
+        Err(error) => {
+            selection.reason = format!(
+                "{}; effective Maven models could not be compared: {error}",
+                selection.reason
+            );
+            selection
+        }
     }
 }
 
@@ -1485,14 +1580,40 @@ fn main_result() -> Result<u8> {
             Ok((changed, prefix, merge_base)) => {
                 match fingerprint::build_inputs_with_logic(&workspace, &config.build_logic) {
                     Ok(current) if config.build_fingerprint.as_ref() == Some(&current) => {
-                        let selection = config.select(changed, &prefix);
+                        let poms = config.pom_inputs(&changed, &prefix);
+                        let mut selection = config.select(changed, &prefix);
+                        if let Some(poms) = poms {
+                            selection = narrow_poms(
+                                &config,
+                                selection,
+                                &poms,
+                                &workspace,
+                                &prefix,
+                                &merge_base,
+                                &executable,
+                                &extra,
+                            );
+                        }
                         comparison = Some((prefix, merge_base));
                         selection
                     }
                     // Build files changed since the last refresh. Only a module selection follows
                     // the graph, so it is checked against the graph the build declares now.
                     Ok(_) if config.build_fingerprint.is_some() => {
+                        let poms = config.pom_inputs(&changed, &prefix);
                         let mut selection = config.select(changed, &prefix);
+                        if let Some(poms) = poms {
+                            selection = narrow_poms(
+                                &config,
+                                selection,
+                                &poms,
+                                &workspace,
+                                &prefix,
+                                &merge_base,
+                                &executable,
+                                &extra,
+                            );
+                        }
                         if selection.mode == "MODULES" {
                             let fallback = match setup::stale(&config, &workspace, &executable, &extra) {
                             Ok(None) => {
@@ -1545,7 +1666,9 @@ fn main_result() -> Result<u8> {
                 cosmetic::stable_constants(&workspace, merge_base, &selection.sources);
         }
     }
-    let preserve_modules = (!config.class_level).then(|| selection.modules.clone());
+    // A dependency change can reach any class of its module: class level keeps them all.
+    let preserve_modules = (!config.class_level || !selection.dependencies_changed.is_empty())
+        .then(|| selection.modules.clone());
     if !config.must_run.is_empty() && selection.mode != "ALL" {
         selection.modules = config.modules.keys().cloned().collect();
         selection.mode = "MODULES";
@@ -2362,6 +2485,51 @@ mod tests {
         }
         let maven = serde_json::json!({"tool": "maven", "modules": {".": []}, "sources": ["src"]});
         assert!(config(maven).validate(temp.path()).is_err());
+    }
+
+    #[test]
+    fn only_module_and_aggregator_poms_are_compared_by_their_models() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "tool": "maven", "modules": {"libs/core": [], "services/orders": ["libs/core"]}
+        }))
+        .unwrap();
+        let set = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<BTreeSet<_>>();
+        let poms = |paths: &[&str]| config.pom_inputs(&set(paths), "");
+        assert_eq!(
+            poms(&[
+                "pom.xml",
+                "services/pom.xml",
+                "libs/core/pom.xml",
+                "README.md"
+            ]),
+            Some(set(&["libs/core/pom.xml", "pom.xml", "services/pom.xml"]))
+        );
+        // Sources join the comparison; anything else that selects ALL ends it.
+        assert_eq!(
+            poms(&["libs/core/pom.xml", "libs/core/src/main/java/A.java"]),
+            Some(set(&["libs/core/pom.xml"]))
+        );
+        for other in [
+            "tools/sample/pom.xml",
+            ".mvn/maven.config",
+            "@repository/parent/pom.xml",
+            "libs/core/build.properties",
+        ] {
+            assert_eq!(poms(&["pom.xml", other]), None, "{other}");
+        }
+        assert_eq!(poms(&["libs/core/src/main/java/A.java"]), None);
+        let mut gradle: Config =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        gradle.tool = "gradle".into();
+        assert_eq!(gradle.pom_inputs(&set(&["pom.xml"]), ""), None);
+        // Modules whose dependencies changed reach their dependents, like a source change.
+        let changed = set(&["pom.xml", "libs/core/pom.xml"]);
+        let narrowed = config.select_with(changed.clone(), "", &changed, &set(&["libs/core"]));
+        assert_eq!(narrowed.mode, "MODULES");
+        assert_eq!(narrowed.modules, set(&["libs/core", "services/orders"]));
+        assert_eq!(narrowed.changed, changed);
+        let none = config.select_with(changed.clone(), "", &changed, &BTreeSet::new());
+        assert_eq!(none.mode, "NONE");
     }
 
     #[test]

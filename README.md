@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://buymeacoffee.com/michal.hachula"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="41"></a></p>
 
-Sieve is a Rust CLI for Java and Kotlin/JVM projects built with Maven or Gradle, and for JavaScript and TypeScript projects tested with Jest or Vitest. It reads the Git diff, decides which modules, test classes or test files a change can reach, and runs them through the project's own build. Selection is conservative: build-script edits, unknown paths, or missing Git history always select the full suite.
+Sieve is a Rust CLI for Java and Kotlin/JVM projects built with Maven or Gradle, and for JavaScript and TypeScript projects tested with Jest or Vitest. It reads the Git diff, decides which modules, test classes or test files a change can reach, and runs them through the project's own build. Selection is conservative: build-script edits, unknown paths, or missing Git history select the full suite. A Maven POM edit that only bumps dependencies runs the modules whose effective dependencies changed.
 
 <p align="center"><img src="assets/hero.png" width="800" alt="Sieve's site: the headline Run the tests a change can reach. Skip the rest., the three install and run commands, and a sample suite where a change to Checkout leaves 9 of 14 tests unstarted, with the Maven command it runs"></p>
 
