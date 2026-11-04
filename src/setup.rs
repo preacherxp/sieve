@@ -597,7 +597,6 @@ fn gradle_model(
         .current_dir(workspace)
         // Discovery reads the project model at execution time.
         .args([
-            "--no-daemon",
             "--console=plain",
             "--no-configuration-cache",
             "--init-script",

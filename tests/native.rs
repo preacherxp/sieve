@@ -247,7 +247,7 @@ fn native_graph_runtime_resources_test_artifacts_and_failures() {
         let native_args = if tool == "maven" {
             vec!["-B", "-ntp", "clean", "verify"]
         } else {
-            vec!["--no-daemon", "--console=plain", "clean", "check"]
+            vec!["--console=plain", "clean", "check"]
         };
         checked(
             Command::new(&executable)

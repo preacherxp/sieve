@@ -407,7 +407,7 @@ fn verify(
         command.args(if base_tool(tool) == "maven" {
             vec!["-B", "-ntp", "clean", "verify", ignore]
         } else {
-            vec!["--no-daemon", "--console=plain", "clean", "check", ignore]
+            vec!["--console=plain", "clean", "check", ignore]
         });
         command
     };

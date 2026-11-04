@@ -220,7 +220,10 @@ after `--`. It starts with `clean` to prevent stale XML reports; because a scope
 build cleans only its reactor, Sieve also deletes the Surefire/Failsafe report folders
 of the other modules. NONE starts no build: Sieve deletes the native test reports itself,
 without compilation or tests; with `--task`, NONE still runs those tasks. No baseline metadata or selection cache is
-needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
+needed for this algorithm. Ordinary Maven/Gradle commands still run all tests. Gradle
+builds use the daemon as the project configures it (`org.gradle.daemon`); pass
+`--no-daemon` after `--` to opt out. The init script stays at one path per Sieve version
+in the user cache, so the configuration cache and build cache can reuse earlier results.
 
 ### Explicit native tasks
 

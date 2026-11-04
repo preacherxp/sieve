@@ -617,7 +617,8 @@ fn build_args(config: &Config, selection: &Selection, filter: Option<&Path>) -> 
     let mut args: Vec<String> = if maven {
         vec!["-B", "-ntp"]
     } else {
-        vec!["--no-daemon", "--console=plain"]
+        // The project decides whether builds use the daemon (`org.gradle.daemon`).
+        vec!["--console=plain"]
     }
     .into_iter()
     .map(str::to_owned)
@@ -2160,7 +2161,7 @@ mod tests {
         );
         config.tool = "gradle".into();
         assert_eq!(
-            build_args(&config, &core, None)[2..],
+            build_args(&config, &core, None)[1..],
             [
                 "clean",
                 ":libs:core:check",
@@ -2428,7 +2429,6 @@ mod tests {
         assert_eq!(
             build_args(&config, &tax, None),
             [
-                "--no-daemon",
                 "--console=plain",
                 "clean",
                 ":checkout:check",
@@ -2440,7 +2440,7 @@ mod tests {
         root.mode = "MODULES";
         root.modules = BTreeSet::from([".".into(), "pricing".into()]);
         assert_eq!(
-            build_args(&config, &root, None)[3..5],
+            build_args(&config, &root, None)[2..4],
             [":check", ":pricing:check"]
         );
         // A cycle terminates with both of its modules.
@@ -2560,7 +2560,6 @@ mod tests {
         assert_eq!(
             build_args(&config, &config.select(changed(), ""), None),
             [
-                "--no-daemon",
                 "--console=plain",
                 "clean",
                 ":app:check",
