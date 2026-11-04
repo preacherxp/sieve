@@ -21,6 +21,12 @@ const COMPONENT_MARKERS: &[&str] = &[
     "org/springframework/boot/SpringBootConfiguration",
     "org/springframework/boot/autoconfigure/",
     "org/springframework/boot/context/properties/",
+    // `@JsonComponent`, `@JsonMixin`, Boot 4's `@JacksonComponent`: components by
+    // meta-annotation in a library jar, which the project's classes do not show.
+    "org/springframework/boot/jackson/",
+    // `@WebServlet`, `@WebFilter`, `@WebListener`, registered by `@ServletComponentScan`.
+    "jakarta/servlet/annotation/",
+    "javax/servlet/annotation/",
     "org/springframework/data/",
     "jakarta/persistence/",
     "javax/persistence/",
@@ -1547,6 +1553,37 @@ mod tests {
                 &["a.AppIT", "a.Base", "a.SystemIT", "a.WebIT"]
             )
         );
+    }
+
+    #[test]
+    fn library_stereotypes_make_unreferenced_classes_components() {
+        let spring = "org/springframework/boot/test/context/SpringBootTest";
+        let graph = Graph::new(vec![
+            // Components by a meta-annotation that lives in a library jar.
+            class(
+                "a/MoneySerializer",
+                "a/MoneySerializer.java",
+                false,
+                &["org/springframework/boot/jackson/JsonComponent"],
+                &[],
+            ),
+            class(
+                "a/AuditFilter",
+                "a/AuditFilter.java",
+                false,
+                &["jakarta/servlet/annotation/WebFilter"],
+                &[],
+            ),
+            class("a/AppIT", "a/AppIT.java", true, &[spring], &[]),
+            class("a/PlainTest", "a/PlainTest.java", true, &[], &[]),
+        ]);
+        for source in ["a/MoneySerializer.java", "a/AuditFilter.java"] {
+            assert_eq!(
+                graph.impact(&[&format!("src/main/java/{source}")]),
+                tests(&["a.AppIT"], &["a.PlainTest"]),
+                "{source}"
+            );
+        }
     }
 
     fn annotated(mut class: Class, name: &str, elements: &[(&str, &[&str])]) -> Class {
