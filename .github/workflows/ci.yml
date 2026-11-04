@@ -9,6 +9,24 @@ concurrency:
   group: impact-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  # Documentation-only changes run the Rust checks alone; every other job needs code=true.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: bash scripts/ci-changes.sh | tee -a "$GITHUB_OUTPUT"
   rust:
     name: Rust and selector checks
     runs-on: ubuntu-latest
@@ -37,6 +55,8 @@ jobs:
       - run: cargo test --locked
   build:
     name: Build selector
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -160,11 +180,13 @@ jobs:
       mode: full
   compatibility:
     name: Version compatibility
-    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.code == 'true' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     uses: ./.github/workflows/compatibility.yml
   records:
     name: Test records ${{ matrix.shard }} (Maven and Gradle, JDK 25)
-    needs: [rust]
+    needs: [changes, rust]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -200,7 +222,8 @@ jobs:
           bash scripts/ci-records-shard.sh
   javascript:
     name: Jest and Vitest selection
-    needs: [rust]
+    needs: [changes, rust]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -231,6 +254,8 @@ jobs:
           cargo +1.92.0 test --locked --test js -- --ignored --test-threads=1
   container-tests:
     name: ${{ matrix.service }} container
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:

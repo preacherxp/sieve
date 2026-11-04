@@ -181,6 +181,55 @@ if [ "$command" = run ]; then exit "$BUILD_EXIT"; fi
     assert_eq!(invalid.status.code(), Some(2));
 }
 
+#[test]
+fn documentation_changes_skip_only_jobs_that_cannot_read_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_str().unwrap();
+    git(root, &["init", "-q"]);
+    write(temp.path(), "base.txt", "base");
+    let base = commit(temp.path(), "base");
+    let classify = |event: &str, base: &str| {
+        let output = Command::new("bash")
+            .arg(Path::new(ROOT).join("scripts/ci-changes.sh"))
+            .current_dir(temp.path())
+            .env("EVENT_NAME", event)
+            .env("PR_BASE", base)
+            .env("PUSH_BASE", base)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    for (path, code) in [
+        ("README.md", "code=false"),
+        ("docs/performance-results.json", "code=false"),
+        ("site/index.html", "code=false"),
+        ("docs/adr/0007-x.md", "code=false"),
+        // Fixture and sample READMEs are scenario inputs.
+        ("projects/maven/README.md", "code=true"),
+        ("samples/bookstore/README.md", "code=true"),
+        ("src/main.rs", "code=true"),
+        (".github/workflows/ci.yml", "code=true"),
+    ] {
+        git(root, &["reset", "-q", "--hard", base.trim()]);
+        write(temp.path(), path, "changed");
+        commit(temp.path(), path);
+        assert_eq!(classify("push", base.trim()), code, "{path}");
+        assert_eq!(classify("pull_request", base.trim()), code, "{path}");
+    }
+    // Without a usable base, everything runs.
+    for (event, base) in [
+        ("push", "0000000000000000000000000000000000000000"),
+        ("push", ""),
+        ("push", "unknown-revision"),
+        ("workflow_dispatch", base.trim()),
+        ("schedule", base.trim()),
+    ] {
+        assert_eq!(classify(event, base), "code=true", "{event} {base}");
+    }
+}
+
+#[test]
 fn record_shards_name_existing_tests() {
     let script = fs::read_to_string(Path::new(ROOT).join("scripts/ci-records-shard.sh")).unwrap();
     let tests = fs::read_to_string(Path::new(ROOT).join("tests/records.rs")).unwrap();
