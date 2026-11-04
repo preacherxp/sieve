@@ -181,6 +181,24 @@ if [ "$command" = run ]; then exit "$BUILD_EXIT"; fi
     assert_eq!(invalid.status.code(), Some(2));
 }
 
+fn record_shards_name_existing_tests() {
+    let script = fs::read_to_string(Path::new(ROOT).join("scripts/ci-records-shard.sh")).unwrap();
+    let tests = fs::read_to_string(Path::new(ROOT).join("tests/records.rs")).unwrap();
+    let named: Vec<&str> = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.chars().all(|c| c.is_ascii_lowercase() || c == '_') && line.len() > 20)
+        .collect();
+    assert!(named.len() >= 6, "{named:?}");
+    for name in named {
+        assert!(tests.contains(&format!("fn {name}()")), "{name}");
+    }
+    // The remainder shard is what makes the split complete.
+    assert!(script.contains("args+=(--skip \"$name\")"));
+    let workflow = fs::read_to_string(Path::new(ROOT).join(".github/workflows/ci.yml")).unwrap();
+    assert!(workflow.contains("shard: [walks, selection, rest]"));
+}
+
 #[test]
 fn ci_cost_counts_parallel_and_failed_jobs() {
     let temp = tempfile::tempdir().unwrap();

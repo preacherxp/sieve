@@ -163,10 +163,15 @@ jobs:
     if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
     uses: ./.github/workflows/compatibility.yml
   records:
-    name: Test records (Maven and Gradle, JDK 25)
+    name: Test records ${{ matrix.shard }} (Maven and Gradle, JDK 25)
     needs: [rust]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every test runs in exactly one shard; see scripts/ci-records-shard.sh.
+        shard: [walks, selection, rest]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -188,9 +193,11 @@ jobs:
             target
           key: cargo-debug-${{ runner.os }}-1.92.0-${{ hashFiles('Cargo.lock') }}
       - name: Record, select, and rerun tests in projects/records
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           rustup toolchain install 1.92.0 --profile minimal
-          cargo +1.92.0 test --locked --test records -- --include-ignored --test-threads=1
+          bash scripts/ci-records-shard.sh
   javascript:
     name: Jest and Vitest selection
     needs: [rust]
