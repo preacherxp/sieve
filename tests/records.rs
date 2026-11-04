@@ -1909,6 +1909,51 @@ fn dependency_bumps_rerun_the_tests_that_used_the_bumped_jar() {
     );
 }
 
+#[test]
+#[ignore = "requires a Java 21+ JDK and Maven with the fixture's dependencies"]
+fn republished_jars_rerun_their_users_without_a_build_file_change() {
+    let p = Project::new();
+    let libs = p.temp.path().join("libs");
+    let lib = build_jar(&libs, "lib", "1.0");
+    p.edit(
+        "pom.xml",
+        "  <dependencies>\n",
+        &format!(
+            "  <dependencies>\n    <dependency>\n      <groupId>example</groupId>\n      <artifactId>lib</artifactId>\n      <version>0</version>\n      <scope>system</scope>\n      <systemPath>{}</systemPath>\n    </dependency>\n",
+            lib.display()
+        ),
+    );
+    write(
+        &p.root(),
+        "src/test/java/example/LibTest.java",
+        "package example;\n\nclass LibTest {\n    @org.junit.jupiter.api.Test\n    void versioned() {\n        org.junit.jupiter.api.Assertions.assertEquals(\"1.0\", lib.Api.version());\n    }\n}\n",
+    );
+    p.expect("first run", &with(ALL, &["LibTest"]));
+    let (code, selection, starts) = p.run(&[]);
+    assert_eq!((code, starts), (0, 0), "unchanged: {selection:#}");
+    // A SNAPSHOT republished at the same path: no build file changes, the jar does.
+    let republished = build_jar(&libs, "lib", "2.0");
+    fs::copy(&republished, &lib).unwrap();
+    let (code, selection, starts) = p.run(&[]);
+    assert_eq!(
+        starts, 1,
+        "the no-build shortcut must notice the jar: {selection:#}"
+    );
+    assert_ne!(code, 0, "LibTest must run and fail: {selection:#}");
+    assert!(
+        names(&selection["tests"]).contains("LibTest"),
+        "{selection:#}"
+    );
+    assert_eq!(
+        selection["reasons"]["example.LibTest"],
+        "Changed dependency: lib"
+    );
+    assert_eq!(
+        selection["reasons"]["example.FormatterTest"],
+        "Unchanged test record"
+    );
+}
+
 /// Dependabot-style bumps in `projects/version-bump`, each as `(file, from, to)`: commons-lang3,
 /// Jackson (with its transitive core and annotations), test-scoped AssertJ, and the JUnit BOM.
 fn version_bumps_rerun_only_the_tests_that_ran_the_library(

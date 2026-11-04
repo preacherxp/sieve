@@ -630,6 +630,21 @@ impl Jars {
         }
         Ok(())
     }
+
+    /// Size and modification time of every jar seen so far: a jar republished at the same
+    /// path, such as a SNAPSHOT, ends the no-build fast path without any build-file edit.
+    fn state(&self) -> String {
+        let mut h = bytecode::Hasher::default();
+        for jar in self.cache.keys() {
+            let stamp = fs::metadata(jar).ok().and_then(|meta| {
+                let modified = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH);
+                Some(format!("{}:{}", meta.len(), modified.ok()?.as_nanos()))
+            });
+            h.field(jar.as_bytes())
+                .field(stamp.as_deref().unwrap_or("missing").as_bytes());
+        }
+        h.finish()
+    }
 }
 
 type Listing = Vec<(String, String)>;
@@ -638,9 +653,13 @@ fn listing_path(dir: &Path, digest: &str) -> PathBuf {
     dir.join("classpaths").join(format!("{digest}.json"))
 }
 
+fn listing_digest(listing: &Listing) -> Option<String> {
+    Some(bytecode::hash(&serde_json::to_vec(listing).ok()?))
+}
+
 /// Keeps a listing under its digest, for the records made against it.
 fn save_listing(dir: &Path, listing: &Listing) -> Result<String> {
-    let digest = bytecode::hash(&serde_json::to_vec(listing)?);
+    let digest = listing_digest(listing).ok_or("Cannot serialize class path listing")?;
     let path = listing_path(dir, &digest);
     if !path.is_file() {
         write_json(&path, listing)?;
@@ -1804,7 +1823,13 @@ impl Decider<'_> {
         if record.test != current.test_hash(test) {
             return Some("Test class changed".into());
         }
-        if record.build != current.build {
+        // Jars can change without any build-file edit: a republished SNAPSHOT, a dynamic
+        // version, `mavenLocal()`. Their listing is compared whenever it differs.
+        let jars_changed = self
+            .classpath
+            .as_ref()
+            .is_some_and(|now| Some(record.classpath.as_str()) != listing_digest(now).as_deref());
+        if record.build != current.build || jars_changed {
             // A build-input edit that only bumped versions reruns the users of the bumped jars.
             let then = self
                 .listings
@@ -2958,6 +2983,7 @@ pub fn run(config: &Config, workspace: &Path, run: Run) -> Result<u8> {
     let keyed = |key: &bytecode::Hasher| -> Result<String> {
         let mut key = key.clone();
         key.field(recorded_files(&dir, workspace).as_bytes());
+        key.field(Jars::open(&dir).state().as_bytes());
         key.field(agent_inputs(&dir)?.as_bytes());
         // IDE and plain Maven builds can change bytecode without changing workspace sources.
         key.field(output_state(workspace)?.as_bytes());
