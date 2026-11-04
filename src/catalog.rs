@@ -466,7 +466,7 @@ fn classify_commit(
         pom_only &= path.rsplit('/').next() == Some("pom.xml");
         let Ok(path) = Path::new(path).strip_prefix(prefix) else {
             // Shared inputs outside the project, such as a parent POM or CI scripts.
-            best = best.min(0);
+            best = 0;
             continue;
         };
         let path = path.to_string_lossy().replace('\\', "/");
