@@ -2,7 +2,13 @@ name: Test impact CI
 on:
   push:
   pull_request:
+  # A manual run executes every job; the compatibility matrix can be left out.
   workflow_dispatch:
+    inputs:
+      compatibility:
+        description: Also run the JVM version compatibility matrix
+        type: boolean
+        default: true
 permissions:
   contents: read
 concurrency:
@@ -181,7 +187,7 @@ jobs:
   compatibility:
     name: Version compatibility
     needs: [changes]
-    if: ${{ needs.changes.outputs.code == 'true' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+    if: ${{ needs.changes.outputs.code == 'true' && (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') || github.event_name == 'workflow_dispatch' && inputs.compatibility) }}
     uses: ./.github/workflows/compatibility.yml
   records:
     name: Test records ${{ matrix.shard }} (Maven and Gradle, JDK 25)
