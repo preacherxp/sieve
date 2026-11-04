@@ -39,8 +39,8 @@ support the case.
 5. Assert exact selected modules when module selection is the contract. Extra
    classes within those modules are expected. Keep optional class-level precision
    checks separate from correctness checks.
-6. `ALL` runs the full suite; `NONE` runs only `clean` under the current runner
-   contract. Ordinary build commands must continue to run all tests.
+6. `ALL` runs the full suite; `NONE` starts no build and leaves no test
+   reports under the current runner contract. Ordinary build commands must continue to run all tests.
 7. Production `sieve run` must fail on test/build failure. Failure-ignore flags
    belong only to deliberate mutation verification so all modules can finish.
 

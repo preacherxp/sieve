@@ -1764,13 +1764,26 @@ fn main_result() -> Result<u8> {
     let execution = config.all("Full execution for shadow observation");
     let execute = if observe { &execution } else { &selection };
     let build_filter = if observe { None } else { filter.as_deref() };
-    let status = Command::new(&executable)
-        .current_dir(&workspace)
-        .args(task_args(&config, execute, build_filter, &tasks))
-        .args(selecting)
-        .args(script_args)
-        .args(&extra)
-        .status()?;
+    // Nothing to compile or test: starting the build only to clean it would cost a build-tool
+    // start. Clearing the native reports keeps earlier results out of this run's report.
+    let built = !(execute.mode == "NONE"
+        && execute.modules.is_empty()
+        && tasks.is_empty()
+        && !receipt_requested);
+    let succeeded = if built {
+        Command::new(&executable)
+            .current_dir(&workspace)
+            .args(task_args(&config, execute, build_filter, &tasks))
+            .args(selecting)
+            .args(script_args)
+            .args(&extra)
+            .status()?
+            .success()
+    } else {
+        clear_reports(&config, &workspace)?;
+        eprintln!("sieve: nothing to build or test; the build tool was not started");
+        true
+    };
     // A build that got as far as selecting reports what it selected.
     let mut module_proposals: BTreeMap<String, observation::Proposal> = BTreeMap::new();
     if let Some(request) = &request {
@@ -1818,7 +1831,7 @@ fn main_result() -> Result<u8> {
             module_proposals,
             &workspace,
             &config.tool,
-            status.success(),
+            succeeded,
             &config.build_logic,
         );
         eprintln!(
@@ -1871,7 +1884,7 @@ fn main_result() -> Result<u8> {
                     before,
                     &after,
                     &reports::read_reports(&workspace, &config.tool)?,
-                    status.success(),
+                    succeeded,
                     inventory,
                 )
             })();
@@ -1889,7 +1902,7 @@ fn main_result() -> Result<u8> {
         &sieve_dir,
         &workspace,
         &config.tool,
-        true,
+        built,
         &unselected,
         None,
         &summary::test_dirs(&workspace, &modules, &config.tool),
@@ -1909,11 +1922,7 @@ fn main_result() -> Result<u8> {
     let observed_failure = selection.observation.as_ref().is_some_and(|observation| {
         !observation.failed_classes.is_empty() || observation.report_error.is_some()
     });
-    Ok(if status.success() && !observed_failure {
-        0
-    } else {
-        1
-    })
+    Ok(if succeeded && !observed_failure { 0 } else { 1 })
 }
 
 fn main() -> ExitCode {

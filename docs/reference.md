@@ -218,7 +218,8 @@ folder or outside the project so it does not become an untracked build input.
 The runner propagates build/test failures and accepts additional build arguments
 after `--`. It starts with `clean` to prevent stale XML reports; because a scoped Maven
 build cleans only its reactor, Sieve also deletes the Surefire/Failsafe report folders
-of the other modules. NONE runs only `clean`, without compilation or tests. No baseline metadata or selection cache is
+of the other modules. NONE starts no build: Sieve deletes the native test reports itself,
+without compilation or tests; with `--task`, NONE still runs those tasks. No baseline metadata or selection cache is
 needed for this algorithm. Ordinary Maven/Gradle commands still run all tests.
 
 ### Explicit native tasks

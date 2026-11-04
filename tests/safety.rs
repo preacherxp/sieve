@@ -422,6 +422,66 @@ fn committed_build_change_selects_only_after_the_graph_is_checked() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn nothing_to_test_starts_no_build_and_clears_old_reports() {
+    for tool in ["maven", "gradle"] {
+        let temp = fixture(tool);
+        let root = temp.path().join("project");
+        let started = temp.path().join("started");
+        let fake = temp.path().join("build-tool");
+        executable(
+            &fake,
+            &format!("#!/bin/sh\necho \"$@\" >> '{}'\n", started.display()),
+        );
+        let report = if tool == "maven" {
+            "pricing/target/surefire-reports/TEST-example.Old.xml"
+        } else {
+            "pricing/build/test-results/test/TEST-example.Old.xml"
+        };
+        write(&root, report, "<testsuite/>");
+        write(&root, "docs/notes.md", "documentation");
+        let output = Command::new(BIN)
+            .args([
+                "run",
+                "--workspace",
+                root.to_str().unwrap(),
+                "--base",
+                "HEAD",
+            ])
+            .arg("--executable")
+            .arg(&fake)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{tool}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !started.exists(),
+            "{tool}: {:?}",
+            fs::read_to_string(&started)
+        );
+        assert!(!root.join(report).exists(), "{tool}");
+        // Explicit tasks still run on NONE: downstream steps may need their outputs.
+        let output = Command::new(BIN)
+            .args([
+                "run",
+                "--workspace",
+                root.to_str().unwrap(),
+                "--base",
+                "HEAD",
+            ])
+            .args(["--task", "package", "--executable"])
+            .arg(&fake)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{tool}");
+        assert!(fs::read_to_string(&started).unwrap().contains("package"));
+    }
+}
+
 #[test]
 fn class_level_ignores_sources_whose_code_is_unchanged() {
     let temp = fixture("maven");

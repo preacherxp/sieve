@@ -27,7 +27,7 @@ Every path produces a `Selection` (`src/main.rs`) with one of four modes:
 - `MODULES`: changed modules plus their transitive dependents; test-only changes stay in
   their module unless it shares its tests.
 - `SUBSET`: named test classes inside the selected modules (class-level and local mode).
-- `NONE`: nothing to test. Module-level `NONE` runs only `clean`; class-level `NONE` still
+- `NONE`: nothing to test. Module-level `NONE` starts no build and deletes old test reports; class-level `NONE` still
   compiles and verifies the selected modules.
 
 Uncertainty always widens the selection; it never narrows it. Invalid configuration and
