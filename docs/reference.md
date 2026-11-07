@@ -807,6 +807,50 @@ mapped port.
 
 Workflows must live at the repository root under `.github/workflows/`.
 
+## When a selected run is not faster
+
+Selecting the right tests and finishing sooner are separate questions; so is whether a
+faster build shortens the whole pipeline once installation and warm-up count. Keep the
+first answered by validation (full-suite checks, `replay --run --plant`, `--observe`)
+before judging the second. A selected run can execute fewer tests and still take longer.
+The usual causes, and what to check:
+
+1. **Unequal caches.** When a selected run and a full run share a runner, the first one
+   pays for dependency downloads, repository metadata and container image pulls, and the
+   second reuses them. Every `run` therefore reports `cold_start` in its selection JSON:
+   artifacts it added to the Maven or Gradle dependency cache (count and bytes), container
+   images that were not present before, and the seconds Testcontainers logged for pulls;
+   build output names them as well. `replay` keeps pairs in which either run fetched
+   something out of its savings and counts them as unequal caches. Compare runs only when
+   neither fetched what the other had: warm both, alternate their order, or restore the
+   same caches for both.
+2. **Cheap omitted tests.** Test counts are no proxy for cost. Skipping dozens of fast unit
+   tests saves seconds; the saving is the duration of the skipped classes, which the
+   native reports of a full run show.
+3. **Expensive setup that still runs.** A `must_run` pattern, a changed DI component, or a
+   context-test base class can keep every integration test, with its database, mocks and
+   application context. The selection's `reasons` say why each class ran. That is
+   intended safety, not a failed selector; do not remove required checks to improve a chart.
+4. **The build lifecycle stays.** A single-module `clean verify` still compiles all sources,
+   runs coverage and packages the application, however few test classes run. Count the
+   build-tool starts in the log before blaming a second compilation: a message about
+   compiling test inventories alone does not mean a second build ran.
+5. **Conservative fallback.** Build or configuration changes, unknown paths and missing
+   history select `ALL`; a changed resource selects its module, which in a single-module
+   service is everything. Check `mode` and `reason` before comparing times.
+
+To evaluate a small source edit, select against the actual change-request base and keep
+that decision; label any source-only comparison you construct as an experiment, and never
+let it replace the normal validation.
+
+Measuring `cold_start` lists the dependency cache before and after each build, about 0.2 s
+for a few thousand artifacts. The cache is Maven's `~/.m2/repository`, or the
+`-Dmaven.repo.local` given after `--`, in `.mvn/maven.config` or in `MAVEN_OPTS` (a
+`localRepository` in `settings.xml` is not read), and Gradle's module cache below
+`GRADLE_USER_HOME` or `--gradle-user-home`. Installing project artifacts with `--task
+install` also adds to the cache and counts. Images are compared through `docker image ls`
+when Docker is reachable.
+
 ## Fixture benchmark
 
 `projects/maven` and `projects/gradle` are equivalent three-module Java/Kotlin builds.
@@ -995,7 +1039,9 @@ appears on stderr and, with `--output /tmp/replay.json`, in `/tmp/replay.json.md
 logs remain in `/tmp/replay.json.logs`. Preview runs without `--run` show selections
 without claiming measured savings. Run reports compare full and selected build wall time
 overall and by selection mode, excluding skipped or inconclusive pairs. The report also
-excludes pairs with differing failures or missing/invalid timing data. It shows failure
+excludes pairs with differing failures, missing/invalid timing data, or unequal caches (a
+run that fetched dependencies or images the other reused; see
+[When a selected run is not faster](#when-a-selected-run-is-not-faster)). It shows failure
 evidence and counts of full-suite selection reasons; inspect JSON for each commit's
 details. An intentional `ALL` run is not necessarily a fallback.
 
