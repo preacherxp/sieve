@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 mod bytecode;
 mod catalog;
 mod classes;
+mod coldstart;
 mod cosmetic;
 mod fingerprint;
 mod fixtures;
@@ -163,6 +164,10 @@ struct Selection {
     summary: Option<summary::Summary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     observation: Option<observation::Observation>,
+    /// `run` only: what the build fetched into its dependency cache and container images
+    /// before it could run; its time is comparable only with runs that fetched the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cold_start: Option<coldstart::ColdStart>,
 }
 
 impl Config {
@@ -399,6 +404,7 @@ impl Config {
             speedups: BTreeMap::new(),
             summary: None,
             observation: None,
+            cold_start: None,
             reason: reason.into(),
         }
     }
@@ -522,6 +528,7 @@ impl Config {
             speedups: BTreeMap::new(),
             summary: None,
             observation: None,
+            cold_start: None,
         }
     }
 }
@@ -1950,14 +1957,26 @@ fn main_result() -> Result<u8> {
         }
     }
     let succeeded = if built {
-        Command::new(&executable)
+        let mut build = Command::new(&executable);
+        build
             .current_dir(&workspace)
             .args(task_args(&config, execute, build_filter, &tasks))
             .args(selecting)
             .args(script_args)
-            .args(&extra)
-            .status()?
-            .success()
+            .args(&extra);
+        let args: Vec<String> = build
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let probe = coldstart::start(&workspace, &config.tool, &args);
+        let succeeded = build.status()?.success();
+        // The build's output went to the terminal, so only the caches tell what it fetched.
+        let cold = probe.finish(std::iter::empty());
+        if let Some(line) = cold.describe() {
+            eprintln!("sieve: {line}");
+        }
+        selection.cold_start = Some(cold);
+        succeeded
     } else {
         clear_reports(&config, &workspace)?;
         eprintln!("sieve: nothing to build or test; the build tool was not started");

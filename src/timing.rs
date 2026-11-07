@@ -29,6 +29,8 @@ pub struct Timed {
     /// Reports that could not be read, so that `failed` may be incomplete.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_error: Option<String>,
+    /// What the build fetched first; a run that fetched compares unfairly with one that did not.
+    pub cold_start: crate::coldstart::ColdStart,
     #[serde(skip)]
     pub compile_error: bool,
 }
@@ -215,6 +217,11 @@ fn compile_failure(line: &str) -> bool {
 /// Runs `command`, timestamping its output lines into `log`, and reads the test reports.
 pub fn run(command: &mut Command, log: &Path, workspace: &Path, tool: &str) -> Result<Timed> {
     clear_reports(workspace)?;
+    let args: Vec<String> = command
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let probe = crate::coldstart::start(workspace, tool, &args);
     let started = Instant::now();
     let mut child = command
         .stdout(Stdio::piped())
@@ -255,6 +262,7 @@ pub fn run(command: &mut Command, log: &Path, workspace: &Path, tool: &str) -> R
         writeln!(file, "{at:9.3} {line}")?;
     }
     let (context_seconds, container_seconds) = startups(&lines);
+    let cold_start = probe.finish(lines.iter().map(|(_, line)| line.as_str()));
     let (reports, report_error) = match crate::reports::read_reports(workspace, tool) {
         Ok(reports) => (reports, None),
         Err(error) => (Default::default(), Some(error.to_string())),
@@ -270,6 +278,7 @@ pub fn run(command: &mut Command, log: &Path, workspace: &Path, tool: &str) -> R
         executed: reports.executed,
         failed: reports.failed,
         report_error,
+        cold_start,
         compile_error: lines.iter().any(|(_, l)| compile_failure(l)),
     })
 }

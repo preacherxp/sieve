@@ -133,12 +133,27 @@ fn markdown(report: &Value) -> String {
             })
         })
     };
+    // A run that fetched dependencies or images the other reused started colder: its
+    // pair says more about the caches than about the selection.
+    let fetched = |run: &Value| {
+        let cold = &run["cold_start"];
+        ["artifacts", "images"]
+            .iter()
+            .any(|key| cold[key].as_u64().unwrap_or(0) > 0)
+            || cold["image_pull_seconds"].as_f64().unwrap_or(0.0) > 0.0
+    };
+    let cold: Vec<_> = replayed
+        .iter()
+        .filter(|r| fetched(&r[reference]) || fetched(&r["selected"]))
+        .collect();
     let pairs: Vec<_> = replayed
         .iter()
         .filter_map(|r| {
             if r["inconclusive"] != false
                 || !r["missed"].as_array()?.is_empty()
                 || added_failures(r)
+                || fetched(&r[reference])
+                || fetched(&r["selected"])
             {
                 return None;
             }
@@ -218,7 +233,21 @@ fn markdown(report: &Value) -> String {
             }
             text += ". Negative savings mean a slower selected run.\n";
         }
-        text += &format!("\nExcluded from savings: {} replayed commits with differing failures, validation problems, or missing/invalid timing. These are build wall times, not total CI job time.\n", replayed.len() - pairs.len());
+        text += &format!("\nExcluded from savings: {} replayed commits with differing failures, validation problems, unequal caches, or missing/invalid timing. These are build wall times, not total CI job time.\n", replayed.len() - pairs.len());
+        if !cold.is_empty() {
+            let total = |key: &str| -> u64 {
+                cold.iter()
+                    .flat_map(|r| {
+                        [
+                            &r[reference]["cold_start"][key],
+                            &r["selected"]["cold_start"][key],
+                        ]
+                    })
+                    .filter_map(Value::as_u64)
+                    .sum()
+            };
+            text += &format!("Unequal caches: in {} pairs a run fetched what the other reused ({} artifacts, {:.1} MB, {} container images in all); rerun with warm caches to compare them.\n", cold.len(), total("artifacts"), total("artifact_bytes") as f64 / 1_000_000.0, total("images"));
+        }
         if walk {
             text += "The full reference is the native build; warm-up and planted-bug runs are excluded from timing.\n";
         } else {
@@ -867,5 +896,34 @@ mod tests {
         assert!(report.contains("No observed full-suite test failures in this history window"));
         assert!(report.contains("Planted bugs: 2 exercised; 2 caused full-suite test failures; 1 fully reproduced by selection; 1 inconclusive."));
         assert!(report.contains("do not establish safety for future changes"));
+    }
+
+    #[test]
+    fn pairs_with_unequal_caches_stay_out_of_savings() {
+        let warm =
+            json!({"artifacts": 0, "artifact_bytes": 0, "images": 0, "image_pull_seconds": 0.0});
+        let report = markdown(&json!({
+            "summary": {"full_seconds": 1, "missed_failures": 0},
+            "records": [
+                {"selection": {"mode": "SUBSET"}, "inconclusive": false, "missed": [],
+                 "full": {"seconds": 10, "failed": [], "cold_start": warm},
+                 "selected": {"seconds": 4, "failed": [], "cold_start": warm}},
+                // The selected run ran first and pulled the image the full run reused.
+                {"selection": {"mode": "SUBSET"}, "inconclusive": false, "missed": [],
+                 "full": {"seconds": 10, "failed": [], "cold_start": warm},
+                 "selected": {"seconds": 27, "failed": [],
+                              "cold_start": {"artifacts": 3, "artifact_bytes": 2_500_000,
+                                             "images": 1, "image_pull_seconds": 15.0}}}
+            ]
+        }));
+        assert!(report.contains("usable timing pairs: 1."), "{report}");
+        assert!(
+            report.contains("full 10.0 s → selected 4.0 s; saved 6.0 s"),
+            "{report}"
+        );
+        assert!(
+            report.contains("Unequal caches: in 1 pairs a run fetched what the other reused (3 artifacts, 2.5 MB, 1 container images in all)"),
+            "{report}"
+        );
     }
 }
